@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { Prisma, type WalletTransactionType } from '@prisma/client';
 import { prisma, type Tx } from '../../config/prisma';
 import { logger } from '../../config/logger';
@@ -7,7 +8,9 @@ import { AppError } from '../../utils/errors';
 import { queue } from '../../workers/queue';
 import { audit } from '../audit-logs/audit.service';
 import { notifyOrganization } from '../notifications/notification.service';
+import { releaseSenderCredits } from '../senders/allocation.service';
 import { emitWebhookEvent } from '../webhooks/webhook.service';
+import { consumeLots, createLot, latestExpiry, readConsumption, restoreLots } from './creditLots';
 
 export interface LedgerEntry {
   organizationId: string;
@@ -19,6 +22,12 @@ export interface LedgerEntry {
   description: string;
   createdById?: string | null;
   metadata?: Record<string, unknown>;
+  /** Credits: when the added credits expire (null/omitted = never). */
+  expiresAt?: Date | null;
+  /** Credits: reference of the debit being reversed. The credits go back to the lots (and sender ID allocation) it consumed. */
+  restoreOf?: string;
+  /** Debits: consume this credit lot before the FEFO order (expiry, purchase reversal). */
+  preferLotId?: string;
 }
 
 export function isDuplicateReference(err: unknown): boolean {
@@ -38,6 +47,8 @@ export function isDuplicateReference(err: unknown): boolean {
  *   balanceBefore/balanceAfter are exact.
  * - `reference` is UNIQUE: re-applying the same payment/refund/debit fails and the whole
  *   transaction rolls back (callers treat that as "already applied").
+ * - Credit lots move with the balance (see creditLots.ts): debits consume lots FEFO and record
+ *   which lots they used; credits open a lot, or refill the lots of the debit they reverse.
  */
 export async function applyLedgerEntry(tx: Tx, entry: LedgerEntry) {
   if (!Number.isInteger(entry.amount) || entry.amount === 0) throw new Error('Ledger amount must be a non-zero integer');
@@ -64,9 +75,31 @@ export async function applyLedgerEntry(tx: Tx, entry: LedgerEntry) {
     await tx.wallet.update({ where: { id: wallet.id }, data: { balance: { increment: entry.amount } } });
   }
 
+  const transactionId = crypto.randomUUID();
+  let metadata = entry.metadata;
+  if (entry.amount < 0) {
+    metadata = { ...metadata, lots: await consumeLots(tx, wallet.id, -entry.amount, entry.preferLotId) };
+  } else {
+    const original = entry.restoreOf ? await tx.walletTransaction.findUnique({ where: { reference: entry.restoreOf } }) : null;
+    let leftover = entry.amount;
+    if (original) {
+      const consumed = readConsumption(original.metadata);
+      const r = await restoreLots(tx, consumed, entry.amount);
+      leftover = r.leftover;
+      metadata = { ...metadata, restoredLots: r.restored };
+      const allocationId = (original.metadata as { allocationId?: unknown } | null)?.allocationId;
+      if (typeof allocationId === 'string') await releaseSenderCredits(tx, allocationId, entry.amount);
+      if (leftover > 0) entry = { ...entry, expiresAt: await latestExpiry(tx, consumed) };
+    }
+    if (leftover > 0) {
+      await createLot(tx, { walletId: wallet.id, organizationId: entry.organizationId, transactionId, type: entry.type, credits: leftover, expiresAt: entry.expiresAt });
+    }
+  }
+
   const after = await tx.wallet.findUniqueOrThrow({ where: { id: wallet.id }, select: { balance: true } });
   const transaction = await tx.walletTransaction.create({
     data: {
+      id: transactionId,
       walletId: wallet.id,
       organizationId: entry.organizationId,
       type: entry.type,
@@ -76,7 +109,7 @@ export async function applyLedgerEntry(tx: Tx, entry: LedgerEntry) {
       reference: entry.reference,
       description: entry.description,
       createdById: entry.createdById ?? null,
-      metadata: entry.metadata as Prisma.InputJsonValue | undefined,
+      metadata: metadata as Prisma.InputJsonValue | undefined,
     },
   });
   return { transaction, duplicate: false as const };
@@ -185,4 +218,46 @@ export async function adminAdjust(
     if (isDuplicateReference(err)) throw AppError.conflict('An adjustment with this reference already exists', 'DUPLICATE_REFERENCE');
     throw err;
   }
+}
+
+/**
+ * Sweep: expire credit lots past their expiry. Each lot is written off with an EXPIRATION
+ * ledger entry (the lot itself is kept, with expiredAt set).
+ */
+export async function expireCreditLots() {
+  const now = new Date();
+  const due = await prisma.smsCreditLot.findMany({ where: { expiresAt: { lte: now }, remaining: { gt: 0 } }, orderBy: { expiresAt: 'asc' }, take: 200 });
+  const expired = new Map<string, number>();
+  for (const lot of due) {
+    try {
+      const n = await prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM wallets WHERE id = ${lot.walletId} FOR UPDATE`;
+        const fresh = await tx.smsCreditLot.findUniqueOrThrow({ where: { id: lot.id } });
+        if (fresh.remaining === 0 || !fresh.expiresAt || fresh.expiresAt > now) return 0;
+        await applyLedgerEntry(tx, {
+          organizationId: lot.organizationId,
+          type: 'EXPIRATION',
+          amount: -fresh.remaining,
+          reference: `expire:lot:${lot.id}:${now.getTime()}`,
+          description: `${fresh.remaining.toLocaleString()} credits expired (valid until ${fresh.expiresAt.toISOString().slice(0, 10)})`,
+          preferLotId: lot.id,
+          metadata: { lotId: lot.id, expiresAt: fresh.expiresAt },
+        });
+        await tx.smsCreditLot.update({ where: { id: lot.id }, data: { expiredAt: now } });
+        return fresh.remaining;
+      });
+      if (n > 0) expired.set(lot.organizationId, (expired.get(lot.organizationId) ?? 0) + n);
+    } catch (err) {
+      logger.error({ err, lotId: lot.id }, 'Credit lot expiry failed');
+    }
+  }
+  for (const [organizationId, credits] of expired) {
+    await notifyOrganization(
+      organizationId,
+      { type: 'CREDITS_EXPIRED', title: 'SMS credits expired', body: `${credits.toLocaleString()} unused SMS credits reached their expiry date and were removed from your wallet.`, link: '/app/wallet/transactions' },
+      'wallet.view',
+    );
+    await scheduleLowBalanceCheck(organizationId);
+  }
+  return { lots: due.length, organizations: expired.size };
 }

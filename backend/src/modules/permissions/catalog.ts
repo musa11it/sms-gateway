@@ -54,6 +54,7 @@ export const PERMISSIONS: PermissionDef[] = [
 
   P('senders.view', 'Sender IDs', 'View sender IDs', BOTH),
   P('senders.request', 'Sender IDs', 'Request sender IDs', ORG),
+  P('senders.allocate', 'Sender IDs', 'Allocate wallet credits to sender IDs and set their alerts', ORG),
   P('senders.review', 'Sender IDs', 'Review sender ID requests', PLAT),
   P('senders.approve', 'Sender IDs', 'Approve sender IDs', PLAT),
   P('senders.reject', 'Sender IDs', 'Reject sender IDs', PLAT),
@@ -267,7 +268,7 @@ export const SYSTEM_ROLES: RoleDef[] = [
     name: 'Finance',
     description: 'Buys credits and manages payments, invoices and spending reports.',
     scope: 'ORGANIZATION',
-    permissions: ['dashboard.view', 'organizations.view', 'wallet.view', 'wallet.purchase', 'payments.view', 'payments.create', 'invoices.view', 'reports.view', 'sms.view', 'senders.view'],
+    permissions: ['dashboard.view', 'organizations.view', 'wallet.view', 'wallet.purchase', 'payments.view', 'payments.create', 'invoices.view', 'reports.view', 'sms.view', 'senders.view', 'senders.allocate'],
   },
   {
     code: 'CUSTOMER_MARKETING',
@@ -332,6 +333,10 @@ export const GRANT_MIGRATIONS: { version: number; grants: Record<string, string[
   },
   {
     version: 3,
+    grants: {
+      CUSTOMER_MANAGER: ['senders.allocate'],
+      CUSTOMER_FINANCE: ['senders.allocate'],
+    },
     grants: { ADMIN: ['organizations.create'] },
   },
 ];

@@ -7,6 +7,7 @@ import { requireOrgPermission } from '../../middlewares/rbac';
 import { actorFromRequest, metaFromRequest } from '../../types/actor';
 import { AppError } from '../../utils/errors';
 import { asyncHandler, created, ok, paginated, paginationSchema, parse, toSkipTake, uuidParam } from '../../utils/http';
+import { MESSAGE_INPUT_HARD_LIMIT } from '../sms/segmentation.service';
 import * as svc from './campaign.service';
 
 export const campaignRouter = Router();
@@ -14,7 +15,7 @@ export const campaignRouter = Router();
 const body = z.object({
   name: z.string().trim().min(2).max(120),
   senderId: z.string().uuid(),
-  message: z.string().min(1).max(1600),
+  message: z.string().min(1).max(MESSAGE_INPUT_HARD_LIMIT),
   groupIds: z.array(z.string().uuid()).max(100).optional(),
   contactIds: z.array(z.string().uuid()).max(50_000).optional(),
   phones: z.array(z.string().trim().min(3).max(30)).max(50_000).optional(),

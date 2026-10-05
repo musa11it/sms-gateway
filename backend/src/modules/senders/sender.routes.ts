@@ -4,6 +4,7 @@ import { prisma } from '../../config/prisma';
 import { requireOrgPermission } from '../../middlewares/rbac';
 import { actorFromRequest, metaFromRequest } from '../../types/actor';
 import { asyncHandler, created, ok, parse, uuidParam } from '../../utils/http';
+import * as allocations from './allocation.service';
 import * as svc from './sender.service';
 
 export const senderRouter = Router();
@@ -25,6 +26,44 @@ senderRouter.get(
       orderBy: [{ status: 'asc' }, { createdAt: 'desc' }],
     });
     return ok(res, senders);
+  }),
+);
+
+// ── Credit allocations ──────────────────────────────────────────────────
+
+/** Wallet balance, credits reserved by allocations and every allocation with its usage. */
+senderRouter.get(
+  '/allocations',
+  requireOrgPermission('senders.view'),
+  asyncHandler(async (req, res) => ok(res, await allocations.allocationOverview(req.org!.id))),
+);
+
+const allocationBody = z.object({
+  allocated: z.coerce.number().int().min(1, 'Allocate at least 1 credit').max(100_000_000),
+  alertThresholds: z
+    .array(z.coerce.number().int().min(1).max(99))
+    .max(5)
+    .refine((t) => new Set(t).size === t.length, 'Thresholds must be different')
+    .optional(),
+});
+
+senderRouter.put(
+  '/:id/allocation',
+  requireOrgPermission('senders.allocate'),
+  asyncHandler(async (req, res) => {
+    const { id } = parse(uuidParam, req.params);
+    const body = parse(allocationBody, req.body);
+    return ok(res, await allocations.setAllocation(req.org!.id, id, body, actorFromRequest(req), metaFromRequest(req)), 'Allocation saved');
+  }),
+);
+
+senderRouter.delete(
+  '/:id/allocation',
+  requireOrgPermission('senders.allocate'),
+  asyncHandler(async (req, res) => {
+    const { id } = parse(uuidParam, req.params);
+    await allocations.removeAllocation(req.org!.id, id, actorFromRequest(req), metaFromRequest(req));
+    return ok(res, null, 'Allocation removed; its credits are available to all sender IDs again');
   }),
 );
 

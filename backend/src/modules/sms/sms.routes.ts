@@ -8,14 +8,21 @@ import { actorFromRequest, metaFromRequest } from '../../types/actor';
 import { AppError } from '../../utils/errors';
 import { asyncHandler, created, ok, paginated, paginationSchema, parse, toSkipTake, uuidParam } from '../../utils/http';
 import { resolveAudience } from '../contacts/contact.service';
+import { MESSAGE_INPUT_HARD_LIMIT, analyzeMessage, serializeEstimate } from './segmentation.service';
 import * as sms from './sms.service';
 
 export const smsRouter = Router();
 
+/** Provider cost and routing decisions are internal to the platform: never sent to customers. */
+function customerRecipient<T extends { providerCost?: unknown; providerId?: unknown; routingRuleId?: unknown; networkId?: unknown; capacityReleased?: unknown }>(r: T) {
+  const { providerCost: _cost, providerId: _provider, routingRuleId: _rule, networkId: _network, capacityReleased: _released, ...rest } = r;
+  return rest;
+}
+
 const sendBody = z
   .object({
     senderId: z.string().uuid(),
-    message: z.string().min(1, 'Message is required').max(1600),
+    message: z.string().min(1, 'Message is required').max(MESSAGE_INPUT_HARD_LIMIT),
     recipients: z.array(z.string().trim().min(1).max(30)).max(100_000).optional().default([]),
     contactIds: z.array(z.string().uuid()).max(100_000).optional(),
     groupIds: z.array(z.string().uuid()).max(100).optional(),
@@ -26,6 +33,16 @@ const sendBody = z
   .refine((b) => b.recipients.length || b.contactIds?.length || b.groupIds?.length, { message: 'Add at least one recipient', path: ['recipients'] })
   .refine((b) => !b.scheduledAt || b.scheduledAt.getTime() > Date.now(), { message: 'Scheduled time must be in the future', path: ['scheduledAt'] });
 
+/** Message-only preview (encoding, characters, segments, credits per recipient). /send recalculates everything. */
+smsRouter.post(
+  '/estimate',
+  requireOrgPermission('sms.view'),
+  asyncHandler(async (req, res) => {
+    const { message } = parse(z.object({ message: z.string().max(MESSAGE_INPUT_HARD_LIMIT) }), req.body);
+    return ok(res, serializeEstimate(await analyzeMessage(message)));
+  }),
+);
+
 /** Cost preview for the composer. Informational only — /send recalculates everything. */
 smsRouter.post(
   '/quote',
@@ -33,7 +50,7 @@ smsRouter.post(
   asyncHandler(async (req, res) => {
     const body = parse(
       z.object({
-        message: z.string().max(1600),
+        message: z.string().max(MESSAGE_INPUT_HARD_LIMIT),
         recipients: z.array(z.string().max(30)).max(100_000).optional().default([]),
         contactIds: z.array(z.string().uuid()).max(100_000).optional(),
         groupIds: z.array(z.string().uuid()).max(100).optional(),
@@ -50,6 +67,7 @@ smsRouter.post(
       duplicates: prepared.duplicates,
       optedOut: prepared.optedOut,
       balance: wallet?.balance ?? 0,
+      remainingAfterSend: (wallet?.balance ?? 0) - q.totalCredits,
       sufficientBalance: (wallet?.balance ?? 0) >= q.totalCredits,
     });
   }),
@@ -155,7 +173,7 @@ smsRouter.get(
       }),
       prisma.smsRecipient.count({ where }),
     ]);
-    return paginated(res, items, q.page, q.limit, total);
+    return paginated(res, items.map(customerRecipient), q.page, q.limit, total);
   }),
 );
 
@@ -173,7 +191,7 @@ smsRouter.get(
       },
     });
     if (!item) throw AppError.notFound('Message');
-    return ok(res, item);
+    return ok(res, customerRecipient(item));
   }),
 );
 

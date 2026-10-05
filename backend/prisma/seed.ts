@@ -122,21 +122,57 @@ async function seedPackages() {
   }
 }
 
+/** Default volume tiers for any-quantity purchases (only when no tier exists yet; Super Admin edits them afterwards). */
+async function seedPricingTiers() {
+  if ((await prisma.smsPricingTier.count()) > 0) return;
+  const tiers = [
+    { name: 'Starter', minQuantity: 1, maxQuantity: 1_000, unitPrice: '13' },
+    { name: 'Growth', minQuantity: 1_001, maxQuantity: 5_000, unitPrice: '11' },
+    { name: 'Business', minQuantity: 5_001, maxQuantity: 10_000, unitPrice: '9' },
+    { name: 'Volume', minQuantity: 10_001, maxQuantity: null, unitPrice: '8' },
+  ];
+  await prisma.smsPricingTier.createMany({ data: tiers.map((t, i) => ({ ...t, unitPrice: new Prisma.Decimal(t.unitPrice), currency: 'RWF', sortOrder: i + 1 })) });
+  console.log(`  + ${tiers.length} pricing tiers`);
+}
+
 /**
  * Upstream providers. Starting capacity is bought through the real purchase service (which
  * calls the simulated provider), so it appears as genuine provider spend in finance reports.
  */
 async function seedProviders(superAdminId: string) {
+  // Destination networks (Super Admin manages these and which providers serve them).
+  const networks: Record<string, string> = {};
+  for (const n of [
+    { code: 'RW-MTN', name: 'MTN Rwanda', prefixes: ['+25078', '+25079'] },
+    { code: 'RW-AIRTEL', name: 'Airtel Rwanda', prefixes: ['+25072', '+25073'] },
+  ]) {
+    const row = await prisma.smsNetwork.upsert({ where: { code: n.code }, create: { ...n, countryCode: 'RW', countryName: 'Rwanda' }, update: {} });
+    networks[n.code] = row.id;
+  }
   const defs = [
-    { code: 'MTN', name: 'MTN Rwanda', type: 'MNO' as const, costPerSms: '8.0000', routePrefixes: ['+25078', '+25079'], priority: 10, initial: 100_000, notes: 'Direct connection for MTN subscribers.' },
-    { code: 'AIRTEL', name: 'Airtel Rwanda', type: 'MNO' as const, costPerSms: '8.5000', routePrefixes: ['+25072', '+25073'], priority: 10, initial: 50_000, notes: 'Direct connection for Airtel subscribers.' },
-    { code: 'GENERIC', name: 'Global Aggregator', type: 'AGGREGATOR' as const, costPerSms: '11.0000', routePrefixes: [], priority: 100, initial: 20_000, notes: 'Catch-all route for other networks and international numbers.' },
+    { code: 'MTN', name: 'MTN Rwanda', type: 'MNO' as const, costPerSms: '8.0000', networks: ['RW-MTN'], servesAll: false, priority: 10, initial: 100_000, notes: 'Direct connection for MTN subscribers.' },
+    { code: 'AIRTEL', name: 'Airtel Rwanda', type: 'MNO' as const, costPerSms: '8.5000', networks: ['RW-AIRTEL'], servesAll: false, priority: 10, initial: 50_000, notes: 'Direct connection for Airtel subscribers.' },
+    { code: 'GENERIC', name: 'Global Aggregator', type: 'AGGREGATOR' as const, costPerSms: '11.0000', networks: [], servesAll: true, priority: 100, initial: 20_000, notes: 'Catch-all route for other networks and international numbers.' },
   ];
   const { purchaseCapacity } = await import('../src/modules/providers/provider.service');
   for (const d of defs) {
     const p = await prisma.smsProvider.upsert({
       where: { code: d.code },
-      create: { code: d.code, name: d.name, type: d.type, mode: 'SIMULATION', status: 'ACTIVE', currency: 'RWF', costPerSms: new Prisma.Decimal(d.costPerSms), routePrefixes: d.routePrefixes, priority: d.priority, notes: d.notes, lowCapacityThreshold: 10_000 },
+      create: {
+        code: d.code,
+        name: d.name,
+        type: d.type,
+        mode: 'SIMULATION',
+        status: 'ACTIVE',
+        currency: 'RWF',
+        costPerSms: new Prisma.Decimal(d.costPerSms),
+        routePrefixes: [],
+        servesAllDestinations: d.servesAll,
+        networks: { create: d.networks.map((code) => ({ networkId: networks[code] })) },
+        priority: d.priority,
+        notes: d.notes,
+        lowCapacityThreshold: 10_000,
+      },
       update: {},
     });
     if (p.totalPurchased === 0) {
@@ -299,6 +335,7 @@ async function main() {
   const roles = await seedRbac();
   await seedStaff(roles, passwordHash);
   await seedPackages();
+  await seedPricingTiers();
   const superAdmin = await prisma.user.findUniqueOrThrow({ where: { email: 'superadmin@example.com' } });
   await seedProviders(superAdmin.id);
   const { org, owner } = await seedDemoOrganization(roles, passwordHash);

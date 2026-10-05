@@ -17,7 +17,8 @@ import { useDebounce } from '@/hooks/useDebounce';
 import { contactService } from '@/services/contactService';
 import { senderService } from '@/services/senderService';
 import { smsService } from '@/services/smsService';
-import { cn, estimateSegments, fmtDateTime, fmtNumber, fmtRelative, titleCase } from '@/utils/format';
+import { cn, fmtDateTime, fmtNumber, fmtRelative, titleCase } from '@/utils/format';
+import { MessageEstimateBar, useMessageEstimate } from '@/components/sms/MessageEstimate';
 
 function parseNumbers(text: string) {
   return text
@@ -68,7 +69,7 @@ export function SendSmsPage() {
   }, [approved, senderId]);
 
   const numbers = useMemo(() => parseNumbers(numbersText), [numbersText]);
-  const local = estimateSegments(message);
+  const { estimate, pending: estimating } = useMessageEstimate(message);
   const quoteInput = useDebounce({ message, recipients: numbers, groupIds }, 400);
   const quote = useQuery({
     queryKey: ['sms-quote', quoteInput],
@@ -116,7 +117,7 @@ export function SendSmsPage() {
     );
 
   const hasRecipients = numbers.length > 0 || groupIds.length > 0;
-  const canSend = !!senderId && message.trim().length > 0 && hasRecipients && (!schedule || !!scheduledAt) && !!q && q.recipientCount > 0 && q.invalid.length === 0 && q.sufficientBalance;
+  const canSend = !!senderId && message.trim().length > 0 && hasRecipients && (!schedule || !!scheduledAt) && !!q && q.recipientCount > 0 && q.invalid.length === 0 && q.sufficientBalance && !estimate?.tooLong;
   const senderName = approved.find((s) => s.id === senderId)?.name ?? '';
 
   return (
@@ -174,15 +175,7 @@ export function SendSmsPage() {
 
           <Field label="Message" required>
             <Textarea rows={6} value={message} onChange={(e) => setMessage(e.target.value)} placeholder="Hi! Your order #1234 is ready for pickup." />
-            <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
-              <span className="flex items-center gap-2">
-                <Badge color={local.encoding === 'GSM7' ? 'gray' : 'amber'}>{local.encoding === 'GSM7' ? 'GSM-7' : 'Unicode (UCS-2)'}</Badge>
-                {local.encoding === 'UCS2' && <span>Emoji or special characters reduce characters per SMS to 70.</span>}
-              </span>
-              <span className="tabular-nums">
-                {local.characters} chars · {local.segments} SMS segment{local.segments === 1 ? '' : 's'}
-              </span>
-            </div>
+            <MessageEstimateBar estimate={estimate} pending={estimating} />
           </Field>
 
           <div className="rounded-xl border border-slate-200 p-4">
@@ -211,12 +204,13 @@ export function SendSmsPage() {
             ) : q ? (
               <dl className="space-y-2 text-sm">
                 <div className="flex justify-between"><dt className="text-slate-500">Recipients</dt><dd className="font-medium tabular-nums">{fmtNumber(q.recipientCount)}</dd></div>
-                <div className="flex justify-between"><dt className="text-slate-500">Segments per SMS</dt><dd className="font-medium tabular-nums">{q.segments}</dd></div>
+                <div className="flex justify-between"><dt className="text-slate-500">Encoding</dt><dd className="font-medium">{q.encoding === 'GSM7' ? 'GSM-7' : 'Unicode'}</dd></div>
+                <div className="flex justify-between"><dt className="text-slate-500">Segments per recipient</dt><dd className="font-medium tabular-nums">{q.segments}</dd></div>
                 {(q.duplicates > 0 || q.optedOut > 0) && (
                   <div className="flex justify-between text-xs"><dt className="text-slate-500">Skipped</dt><dd>{q.duplicates} duplicate · {q.optedOut} opted-out</dd></div>
                 )}
                 <div className="flex justify-between border-t border-slate-100 pt-2"><dt className="font-medium text-slate-700">Total credits</dt><dd className="text-lg font-semibold tabular-nums text-slate-900">{fmtNumber(q.totalCredits)}</dd></div>
-                <div className="flex justify-between text-xs"><dt className="text-slate-500">Balance after</dt><dd className={cn('tabular-nums', !q.sufficientBalance && 'font-semibold text-red-600')}>{fmtNumber(q.balance - q.totalCredits)}</dd></div>
+                <div className="flex justify-between text-xs"><dt className="text-slate-500">Balance after</dt><dd className={cn('tabular-nums', !q.sufficientBalance && 'font-semibold text-red-600')}>{fmtNumber(q.remainingAfterSend)}</dd></div>
               </dl>
             ) : (
               <p className="text-sm text-slate-500">Add recipients and a message to see the cost. Pricing is calculated by our servers.</p>

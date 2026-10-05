@@ -9,7 +9,7 @@ import { asyncHandler, created, ok, paginated, paginationSchema, parse, toSkipTa
 import { audit } from '../audit-logs/audit.service';
 import { rangeQuery, resolveRange } from '../reports/report.service';
 import { getSetting } from '../settings/settings.service';
-import { financialSeries, financialSummary, financialTables, providerBreakdown } from './finance.service';
+import { customerReport, financialSeries, financialSummary, financialTables, providerBreakdown } from './finance.service';
 
 export const adminFinanceRouter = Router();
 
@@ -43,6 +43,20 @@ adminFinanceRouter.get(
       providers,
       ...tables,
     });
+  }),
+);
+
+/** Per-customer purchases, usage, balance, provider cost and gross margin for the period. */
+adminFinanceRouter.get(
+  '/customers',
+  requirePlatformPermission('finance.view'),
+  asyncHandler(async (req, res) => {
+    const q = parse(rangeQuery.extend({ search: z.string().trim().max(100).optional() }), req.query);
+    const { from, to } = resolveRange(q, undefined, await earliestActivity());
+    const canProfit = req.user!.platformPermissions.has('profit.view');
+    let rows = await customerReport(from, to);
+    if (q.search) rows = rows.filter((r) => r.organization.name.toLowerCase().includes(q.search!.toLowerCase()));
+    return ok(res, { range: { from, to, range: q.range }, canViewProfit: canProfit, customers: rows.map((r) => (canProfit ? r : { ...r, grossMargin: null })) });
   }),
 );
 

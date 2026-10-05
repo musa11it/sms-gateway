@@ -8,7 +8,9 @@ import { actorFromRequest, metaFromRequest } from '../../types/actor';
 import { AppError } from '../../utils/errors';
 import { asyncHandler, created, ok, paginated, paginationSchema, parse, toSkipTake, uuidParam } from '../../utils/http';
 import { audit } from '../audit-logs/audit.service';
+import { rangeQuery, resolveRange } from '../reports/report.service';
 import { adjustCapacity, purchaseCapacity, serializeProvider } from './provider.service';
+import { createProvider, listProviders, providerCreateBody, providerDetail, providersOverview, providerUpdateBody, updateProvider } from './providerAdmin.service';
 
 export const adminProvidersRouter = Router();
 
@@ -21,13 +23,19 @@ const serializePurchase = (p: Prisma.ProviderPurchaseGetPayload<{ include: { pro
 adminProvidersRouter.get(
   '/',
   requirePlatformPermission('providers.view'),
-  asyncHandler(async (_req, res) => {
-    const providers = await prisma.smsProvider.findMany({ orderBy: [{ priority: 'asc' }, { name: 'asc' }] });
-    const last = await prisma.providerPurchase.groupBy({ by: ['providerId'], _max: { createdAt: true } });
-    return ok(
-      res,
-      providers.map((p) => ({ ...serializeProvider(p), lastPurchaseAt: last.find((l) => l.providerId === p.id)?._max.createdAt ?? null })),
-    );
+  asyncHandler(async (_req, res) => ok(res, await listProviders())),
+);
+
+/** Supply-side overview: capacity, cost and gross SMS margin for the period. */
+adminProvidersRouter.get(
+  '/overview',
+  requirePlatformPermission('providers.view'),
+  asyncHandler(async (req, res) => {
+    const { from, to } = resolveRange(parse(rangeQuery, req.query));
+    const overview = await providersOverview(from, to);
+    // Margin figures need profit.view, like the finance pages.
+    if (!req.user!.platformPermissions.has('profit.view')) overview.economics = { ...overview.economics, grossMargin: null, marginPercent: null };
+    return ok(res, overview);
   }),
 );
 
@@ -36,8 +44,15 @@ adminProvidersRouter.get(
   '/purchases',
   requirePlatformPermission('provider_purchases.view'),
   asyncHandler(async (req, res) => {
-    const q = parse(paginationSchema.extend({ providerId: z.string().uuid().optional(), status: z.enum(['PENDING', 'SUCCESS', 'FAILED']).optional() }), req.query);
-    const where: Prisma.ProviderPurchaseWhereInput = { ...(q.providerId ? { providerId: q.providerId } : {}), ...(q.status ? { status: q.status } : {}) };
+    const q = parse(
+      paginationSchema.extend({ providerId: z.string().uuid().optional(), status: z.enum(['PENDING', 'SUCCESS', 'FAILED']).optional(), from: z.coerce.date().optional(), to: z.coerce.date().optional() }),
+      req.query,
+    );
+    const where: Prisma.ProviderPurchaseWhereInput = {
+      ...(q.providerId ? { providerId: q.providerId } : {}),
+      ...(q.status ? { status: q.status } : {}),
+      ...(q.from || q.to ? { createdAt: { ...(q.from ? { gte: q.from } : {}), ...(q.to ? { lte: q.to } : {}) } } : {}),
+    };
     const [items, total] = await Promise.all([
       prisma.providerPurchase.findMany({ where, orderBy: { createdAt: 'desc' }, ...toSkipTake(q), include: { provider: { select: { code: true, name: true } } } }),
       prisma.providerPurchase.count({ where }),
@@ -80,8 +95,11 @@ adminProvidersRouter.get(
     }
     const since = new Date(Date.now() - 86_400_000);
     const traffic = await prisma.smsRecipient.groupBy({ by: ['status'], where: { providerId: id, createdAt: { gte: since } }, _count: true });
+    const { from, to } = resolveRange(parse(rangeQuery, req.query));
+    const detail = await providerDetail(id, from, to);
+    if (!req.user!.platformPermissions.has('profit.view')) detail.economics = { ...detail.economics, grossMargin: null, marginPercent: null };
     return ok(res, {
-      ...serializeProvider(p),
+      ...detail,
       network: adapter?.network ?? null,
       reportedBalance: reported,
       reportedBalanceError: reportedError,
@@ -92,41 +110,25 @@ adminProvidersRouter.get(
   }),
 );
 
-const providerConfig = z.object({
-  name: z.string().trim().min(2).max(80),
-  status: z.enum(['ACTIVE', 'INACTIVE', 'SUSPENDED']),
-  mode: z.enum(['SIMULATION', 'PRODUCTION']),
-  currency: z.string().trim().length(3).toUpperCase(),
-  costPerSms: z.string().regex(/^\d{1,8}(\.\d{1,4})?$/, 'Decimal with up to 4 places'),
-  routePrefixes: z.array(z.string().trim().regex(/^\+\d{1,8}$/, 'Prefixes look like +25078')).max(50),
-  priority: z.coerce.number().int().min(0).max(1000),
-  allowOverdraft: z.boolean(),
-  overdraftLimit: z.coerce.number().int().min(0).max(10_000_000),
-  lowCapacityThreshold: z.coerce.number().int().min(0).max(100_000_000),
-  notes: z.string().trim().max(1000).nullable(),
-});
+/** Register a new provider account. It only receives traffic once ACTIVE, healthy and its adapter is installed. */
+adminProvidersRouter.post(
+  '/',
+  requirePlatformPermission('providers.manage'),
+  asyncHandler(async (req, res) => {
+    const body = parse(providerCreateBody, req.body);
+    const p = await createProvider(body, actorFromRequest(req), metaFromRequest(req));
+    return created(res, serializeProvider(p), 'Provider created');
+  }),
+);
 
+/** Edit configuration: cost, priority, health, capacity reserve, destinations… (audited field by field). */
 adminProvidersRouter.patch(
   '/:id',
   requirePlatformPermission('providers.manage'),
   asyncHandler(async (req, res) => {
     const { id } = parse(uuidParam, req.params);
-    const body = parse(providerConfig.partial(), req.body);
-    const before = await prisma.smsProvider.findUnique({ where: { id } });
-    if (!before) throw AppError.notFound('Provider');
-    if (body.allowOverdraft === false || (body.overdraftLimit !== undefined && body.overdraftLimit < before.overdraftLimit)) {
-      const floor = (body.allowOverdraft ?? before.allowOverdraft) ? -(body.overdraftLimit ?? before.overdraftLimit) : 0;
-      if (before.capacityBalance < floor) throw AppError.conflict('Current capacity is below the new overdraft floor — buy capacity first', 'CAPACITY_BELOW_FLOOR');
-    }
-    const updated = await prisma.smsProvider.update({ where: { id }, data: { ...body, costPerSms: body.costPerSms ? new Prisma.Decimal(body.costPerSms) : undefined } });
-    await audit({
-      actor: actorFromRequest(req),
-      action: body.costPerSms && !new Prisma.Decimal(body.costPerSms).equals(before.costPerSms) ? 'PROVIDER_PRICING_CHANGED' : 'PROVIDER_UPDATED',
-      resource: 'sms_provider',
-      resourceId: id,
-      metadata: { changes: body, previousCostPerSms: before.costPerSms.toFixed(4) },
-      meta: metaFromRequest(req),
-    });
+    const body = parse(providerUpdateBody, req.body);
+    const updated = await updateProvider(id, body, actorFromRequest(req), metaFromRequest(req));
     return ok(res, serializeProvider(updated), 'Provider updated');
   }),
 );
@@ -161,6 +163,7 @@ adminProvidersRouter.post(
         amount: z.coerce.number().int().refine((v) => v !== 0, 'Amount cannot be zero'),
         reason: z.string().trim().min(5).max(500),
         reference: z.string().trim().min(3).max(100).regex(/^[\w\-./#]+$/),
+        unitCost: z.string().trim().regex(/^\d{1,8}(\.\d{1,4})?$/).optional(),
       }),
       req.body,
     );

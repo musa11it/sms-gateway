@@ -9,14 +9,15 @@ import type { Actor, RequestMeta } from '../../types/actor';
 import { actorUserId } from '../../types/actor';
 import { AppError, type FieldError } from '../../utils/errors';
 import { normalizePhone } from '../../utils/phone';
-import { calculateSegments } from '../../utils/segmentation';
 import { queue } from '../../workers/queue';
 import { audit } from '../audit-logs/audit.service';
 import { notifyOrganization } from '../notifications/notification.service';
 import { getSetting } from '../settings/settings.service';
 import { applyLedgerEntry, scheduleLowBalanceCheck } from '../wallet/wallet.service';
 import { releaseMessageCapacity, releaseRecipientCapacity, routeAndReserve } from '../providers/provider.service';
+import { checkAllocationAlert, reserveSenderCredits } from '../senders/allocation.service';
 import { emitWebhookEvent } from '../webhooks/webhook.service';
+import { analyzeMessage, assertSendable } from './segmentation.service';
 
 export interface RecipientInput {
   phone: string;
@@ -65,11 +66,10 @@ export async function prepareRecipients(organizationId: string, raw: (string | R
   return { recipients: [...unique.values()], invalid, duplicates: raw.length - invalid.length - unique.size - optedOut.length, optedOut: optedOut.length };
 }
 
+/** Server-side cost of a message: the active segmentation rules × recipients. Used by every send path. */
 export async function quote(message: string, recipientCount: number) {
-  const seg = calculateSegments(message);
-  const perSegment = await getSetting('sms.creditsPerSegment');
-  const creditsPerRecipient = seg.segments * perSegment;
-  return { ...seg, recipientCount, creditsPerRecipient, totalCredits: creditsPerRecipient * recipientCount };
+  const a = await analyzeMessage(message);
+  return { ...a, recipientCount, totalCredits: a.creditsPerRecipient * recipientCount };
 }
 
 // ── Send ────────────────────────────────────────────────────────────────
@@ -117,10 +117,7 @@ export async function sendSms(input: SendSmsInput) {
   }
 
   const q = await quote(body, prepared.recipients.length);
-  const maxSegments = await getSetting('sms.maxMessageSegments');
-  if (q.segments > maxSegments) {
-    throw AppError.unprocessable(`Message is too long (${q.segments} segments; maximum ${maxSegments})`, 'MESSAGE_TOO_LONG', [{ field: 'message', message: 'Too long' }]);
-  }
+  await assertSendable(q);
 
   const hourlyLimit = org.smsHourlyLimit ?? (await getSetting('rateLimits.smsRecipientsPerHour'));
   if (hourlyLimit > 0) {
@@ -134,6 +131,7 @@ export async function sendSms(input: SendSmsInput) {
   const messageId = crypto.randomUUID();
 
   let message;
+  let allocationId: string | null = null;
   try {
     message = await prisma.$transaction(
       async (tx) => {
@@ -151,6 +149,7 @@ export async function sendSms(input: SendSmsInput) {
             characterCount: q.characterCount,
             encoding: q.encoding,
             segments: q.segments,
+            segmentationVersion: q.segmentationVersion,
             recipientCount: prepared.recipients.length,
             creditsPerRecipient: q.creditsPerRecipient,
             totalCredits: q.totalCredits,
@@ -177,10 +176,14 @@ export async function sendSms(input: SendSmsInput) {
               providerId: route.providerId,
               provider: route.adapterKey,
               providerCost: route.unitCost.mul(q.segments).toDecimalPlaces(4),
+              networkId: route.networkId,
+              routingRuleId: route.routingRuleId,
               status: 'QUEUED' as const,
             };
           }),
         });
+        // Sender IDs with a credit allocation draw from it; others may only use unreserved credits.
+        ({ allocationId } = await reserveSenderCredits(tx, { organizationId: org.id, senderId: sender.id, senderName: sender.name, credits: q.totalCredits }));
         // Credits are deducted when the message is accepted (reserved for scheduled sends;
         // refunded if cancelled or rejected by the provider).
         await applyLedgerEntry(tx, {
@@ -190,7 +193,7 @@ export async function sendSms(input: SendSmsInput) {
           reference: `sms:${messageId}`,
           description: `${input.source === 'CAMPAIGN' ? 'Campaign' : 'SMS'} to ${prepared.recipients.length.toLocaleString()} recipient(s) × ${q.segments} segment(s)`,
           createdById: actorUserId(input.actor),
-          metadata: { messageId, recipients: prepared.recipients.length, segments: q.segments, source: input.source },
+          metadata: { messageId, recipients: prepared.recipients.length, segments: q.segments, segmentationVersion: q.segmentationVersion, source: input.source, ...(allocationId ? { allocationId } : {}) },
         });
         await audit(
           {
@@ -199,7 +202,7 @@ export async function sendSms(input: SendSmsInput) {
             resource: 'sms_message',
             resourceId: messageId,
             organizationId: org.id,
-            metadata: { recipients: prepared.recipients.length, segments: q.segments, credits: q.totalCredits, sender: sender.name, source: input.source, scheduledAt: scheduled },
+            metadata: { recipients: prepared.recipients.length, encoding: q.encoding, characters: q.characterCount, segments: q.segments, segmentationVersion: q.segmentationVersion, credits: q.totalCredits, sender: sender.name, source: input.source, scheduledAt: scheduled },
             meta: input.meta,
           },
           tx,
@@ -220,6 +223,7 @@ export async function sendSms(input: SendSmsInput) {
 
   if (!scheduled) await queue.enqueue('sms.dispatch', { messageId }, { jobId: messageId, attempts: 5 });
   await scheduleLowBalanceCheck(org.id);
+  if (allocationId) await checkAllocationAlert(allocationId);
   return {
     message,
     duplicate: false as const,
@@ -249,6 +253,7 @@ async function refundRecipient(recipient: SmsRecipient, reason: string, segments
       type: 'REFUND',
       amount: recipient.credits,
       reference: `refund:sms:${recipient.id}:${recipient.attempts}`,
+      restoreOf: `sms:${recipient.messageId}`,
       description: `Refund: message to ${recipient.phone} rejected (${reason})`,
       metadata: { recipientId: recipient.id, messageId: recipient.messageId },
     });
@@ -454,6 +459,7 @@ export async function cancelScheduledMessage(organizationId: string | null, mess
       type: 'REFUND',
       amount: msg.totalCredits,
       reference: `refund:sms-cancel:${msg.id}`,
+      restoreOf: `sms:${msg.id}`,
       description: `Refund: scheduled ${msg.campaignId ? 'campaign' : 'message'} cancelled`,
       createdById: actorUserId(actor),
       metadata: { messageId: msg.id },
@@ -479,6 +485,7 @@ export async function retryRecipient(recipientId: string, actor: Actor, meta?: R
 
   await prisma.$transaction(async (tx) => {
     if (r.refunded) {
+      const { allocationId } = await reserveSenderCredits(tx, { organizationId: r.organizationId, senderId: r.message.senderId, senderName: r.message.senderName, credits: r.credits });
       await applyLedgerEntry(tx, {
         organizationId: r.organizationId,
         type: 'SMS_DEBIT',
@@ -486,14 +493,21 @@ export async function retryRecipient(recipientId: string, actor: Actor, meta?: R
         reference: `retry:sms:${r.id}:${r.attempts}`,
         description: `Retry of message to ${r.phone}`,
         createdById: actorUserId(actor),
-        metadata: { recipientId: r.id },
+        metadata: { recipientId: r.id, ...(allocationId ? { allocationId } : {}) },
       });
     }
     let reroute = {};
     if (r.capacityReleased || !r.providerId) {
       const routes = await routeAndReserve(tx, { reservationRef: `retry:${r.id}:${r.attempts}`, phones: [r.phone], segmentsPerRecipient: r.message.segments, actor });
       const route = routes.get(r.phone)!;
-      reroute = { providerId: route.providerId, provider: route.adapterKey, providerCost: route.unitCost.mul(r.message.segments).toDecimalPlaces(4), capacityReleased: false };
+      reroute = {
+        providerId: route.providerId,
+        provider: route.adapterKey,
+        providerCost: route.unitCost.mul(r.message.segments).toDecimalPlaces(4),
+        networkId: route.networkId,
+        routingRuleId: route.routingRuleId,
+        capacityReleased: false,
+      };
     }
     await tx.smsRecipient.update({
       where: { id: r.id },

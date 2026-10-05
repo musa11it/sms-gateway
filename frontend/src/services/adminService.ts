@@ -1,4 +1,4 @@
-import { get, getPage, http, patch, post, put } from '@/api/client';
+import { del, get, getPage, http, patch, post, put } from '@/api/client';
 import type {
   ApiKey,
   AuditLog,
@@ -7,6 +7,9 @@ import type {
   Organization,
   Payment,
   PermissionDef,
+  PriceQuote,
+  PricingTier,
+  SegmentationConfig,
   Role,
   SenderId,
   SeriesPoint,
@@ -205,6 +208,11 @@ export const adminService = {
   packages: () => get<SmsPackage[]>('/admin/billing/packages'),
   createPackage: (body: Record<string, unknown>) => post<SmsPackage>('/admin/billing/packages', body),
   updatePackage: (id: string, body: Record<string, unknown>) => patch<SmsPackage>(`/admin/billing/packages/${id}`, body),
+  pricingTiers: () => get<PricingTier[]>('/admin/pricing/tiers'),
+  createPricingTier: (body: Record<string, unknown>) => post<PricingTier>('/admin/pricing/tiers', body),
+  updatePricingTier: (id: string, body: Record<string, unknown>) => patch<PricingTier>(`/admin/pricing/tiers/${id}`, body),
+  deletePricingTier: (id: string) => del(`/admin/pricing/tiers/${id}`),
+  pricingQuote: (quantity: number) => get<PriceQuote>('/admin/pricing/quote', { quantity }),
   wallets: (params: P) => getPage<{ id: string; balance: number; lowBalanceThreshold: number; updatedAt: string; organization: { id: string; name: string; status: string } }>('/admin/billing/wallets', params),
   ledger: (params: P) => getPage<WalletTransaction>('/admin/billing/wallet-transactions', params),
   adjustWallet: (organizationId: string, body: { kind: 'CREDIT' | 'DEBIT' | 'REFUND'; amount: number; reason: string; reference: string }) =>
@@ -220,6 +228,15 @@ export const adminService = {
   auditLogs: (params: P) => getPage<AuditLog>('/admin/audit-logs', params),
   settings: () => get<Setting[]>('/admin/settings'),
   updateSetting: (key: string, value: unknown) => put(`/admin/settings/${key}`, { value }),
+  segmentation: () =>
+    get<{
+      active: SegmentationConfig;
+      versions: SegmentationConfig[];
+      limits: Record<'gsm7SingleSegment' | 'gsm7MultiSegment' | 'ucs2SingleSegment' | 'ucs2MultiSegment' | 'maxMessageCharacters', { min: number; max: number }>;
+      creditsPerSegment: number;
+      maxMessageSegments: number;
+    }>('/admin/settings/sms-segmentation'),
+  updateSegmentation: (body: Record<string, unknown>) => put<SegmentationConfig>('/admin/settings/sms-segmentation', body),
   providers: () => get<ProviderStatus>('/admin/settings/providers/status'),
 
   apiKeys: (params: P) => getPage<ApiKey>('/admin/api-keys', params),

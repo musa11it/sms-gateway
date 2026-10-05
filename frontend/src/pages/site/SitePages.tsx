@@ -184,7 +184,7 @@ const USE_CASES = [
 const FAQS = [
   ['How quickly can I start sending?', 'Create an account, verify your email and submit your business details. Once our team approves your business and your sender ID, you can buy credits and send immediately.'],
   ['Why do you verify businesses?', 'Verification protects recipients from scams and spam and keeps sender names trustworthy. Every sender ID is reviewed before it can be used.'],
-  ['How is SMS cost calculated?', 'One credit covers one SMS segment to one recipient. Standard messages fit 160 characters per segment (153 when split); messages with emoji or special characters use 70 (67). The platform calculates cost before you send.'],
+  ['How is SMS cost calculated?', 'One credit covers one SMS segment to one recipient. By default, standard messages fit 160 characters per segment (153 when split) and messages with emoji or special characters fit 70 (67). The platform shows the exact cost before you send.'],
   ['Do credits expire?', 'Each package lists its validity. Your wallet history shows every purchase and deduction.'],
   ['Can I integrate SMS into my own software?', 'Yes. Create an API key in the Developer section, send messages with a single HTTP request and receive delivery reports through signed webhooks.'],
   ['Can my team use the same account?', 'Yes. Invite team members and give each person a role — owner, manager, finance, marketing, developer or staff — with exactly the access they need.'],

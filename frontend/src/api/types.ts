@@ -84,6 +84,7 @@ export interface Wallet {
   lowBalanceThreshold: number;
   isLow: boolean;
   thisMonth: { purchased: number; consumed: number };
+  expiringSoon?: { credits: number; withinDays: number; nextExpiry: { at: string; credits: number } | null };
 }
 
 export interface WalletTransaction {
@@ -125,6 +126,11 @@ export interface Payment {
   credits: number;
   amount: string;
   feeAmount?: string;
+  pricingTierId?: string | null;
+  unitPrice?: string | null;
+  tierMinQuantity?: number | null;
+  tierMaxQuantity?: number | null;
+  creditValidityDays?: number | null;
   currency: string;
   status: PaymentStatus;
   failureReason: string | null;
@@ -200,6 +206,7 @@ export interface Quote {
   segments: number;
   perSegment: number;
   remainingInSegment: number;
+  segmentationVersion: number;
   recipientCount: number;
   creditsPerRecipient: number;
   totalCredits: number;
@@ -207,7 +214,32 @@ export interface Quote {
   duplicates: number;
   optedOut: number;
   balance: number;
+  remainingAfterSend: number;
   sufficientBalance: boolean;
+}
+
+export interface MessageEstimate {
+  encoding: 'GSM7' | 'UCS2';
+  characterCount: number;
+  units: number;
+  segmentCount: number;
+  creditsPerRecipient: number;
+  charactersPerSingleSegment: number;
+  charactersPerMultipartSegment: number;
+  remainingInSegment: number;
+  maxMessageCharacters: number;
+  tooLong: boolean;
+  segmentationVersion: number;
+}
+
+export interface SegmentationConfig {
+  version: number;
+  gsm7: { singleSegment: number; multiSegment: number };
+  ucs2: { singleSegment: number; multiSegment: number };
+  maxMessageCharacters: number;
+  reason: string | null;
+  createdAt: string;
+  createdBy: string | null;
 }
 
 export interface Contact {
@@ -366,4 +398,63 @@ export interface SmsTotals {
   cancelled: number;
   deliveryRate: number | null;
   deliveryRateBasis: { final: number; total: number };
+}
+
+export interface PricingTier {
+  id: string;
+  name: string | null;
+  minQuantity: number;
+  maxQuantity: number | null;
+  unitPrice: string;
+  currency: string;
+  isActive: boolean;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+  purchaseCount?: number;
+}
+
+export interface PriceQuote {
+  quantity: number;
+  tier: { id: string; name: string | null; minQuantity: number; maxQuantity: number | null; label: string };
+  unitPrice: string;
+  subtotal: string;
+  savings: { comparedToUnitPrice: string; amount: string; percent: number } | null;
+  total: string;
+  currency: string;
+}
+
+export interface SenderAllocation {
+  id: string;
+  senderId: string;
+  allocated: number;
+  used: number;
+  remaining: number;
+  usagePercent: number;
+  isActive: boolean;
+  alertThresholds: number[];
+  lastAlertThreshold: number | null;
+  updatedAt: string;
+  senderName?: string;
+  senderStatus?: SenderStatus;
+}
+
+export interface AllocationOverview {
+  balance: number;
+  reserved: number;
+  unallocated: number;
+  allocations: SenderAllocation[];
+}
+
+export interface CustomerFinanceRow {
+  organization: { id: string; name: string };
+  smsPurchased: number;
+  revenue: string;
+  refunds: string;
+  smsUsed: number;
+  currentBalance: number;
+  messagesRouted: number;
+  providerUsage: { providerId: string | null; provider: string; messages: number }[];
+  providerCost: string;
+  grossMargin: string | null;
 }

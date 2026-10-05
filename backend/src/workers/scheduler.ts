@@ -7,6 +7,7 @@ import {
   recoverStalledDispatches,
   releaseDueScheduledMessages,
 } from '../modules/sms/sms.service';
+import { expireCreditLots } from '../modules/wallet/wallet.service';
 import { enqueueDueWebhookDeliveries } from '../modules/webhooks/webhook.service';
 
 /**
@@ -25,6 +26,7 @@ const tasks: Task[] = [
   { name: 'retry-webhooks', everyMs: 10_000, run: enqueueDueWebhookDeliveries },
   { name: 'recover-stalled-dispatch', everyMs: 60_000, run: recoverStalledDispatches },
   { name: 'reconcile-payments', everyMs: 30_000, run: reconcilePendingPayments },
+  { name: 'expire-credit-lots', everyMs: 3_600_000, run: expireCreditLots },
   {
     name: 'expire-invitations',
     everyMs: 3_600_000,

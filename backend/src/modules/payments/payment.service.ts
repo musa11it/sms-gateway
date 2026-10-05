@@ -16,6 +16,7 @@ import { getSetting } from '../settings/settings.service';
 import { applyLedgerEntry, isDuplicateReference, scheduleLowBalanceCheck } from '../wallet/wallet.service';
 import { emitWebhookEvent } from '../webhooks/webhook.service';
 import { platformAverageCost } from '../providers/provider.service';
+import { calculateSmsPurchasePrice } from '../pricing/pricing.service';
 
 const FINAL = new Set(['SUCCESS', 'FAILED', 'CANCELLED', 'REFUNDED']);
 
@@ -39,6 +40,11 @@ export function serializePayment(p: Payment & { invoice?: { id: string; number: 
     payerPhone: p.payerPhone,
     packageId: p.packageId,
     packageName: p.packageName,
+    pricingTierId: p.pricingTierId,
+    unitPrice: p.unitPrice?.toFixed(2) ?? null,
+    tierMinQuantity: p.tierMinQuantity,
+    tierMaxQuantity: p.tierMaxQuantity,
+    creditValidityDays: p.creditValidityDays,
     credits: p.credits,
     amount: p.amount.toFixed(2),
     feeAmount: p.feeAmount.toFixed(2),
@@ -55,7 +61,7 @@ export function serializePayment(p: Payment & { invoice?: { id: string; number: 
 
 export async function createPayment(
   organizationId: string,
-  input: { packageId: string; method: 'MOBILE_MONEY' | 'CARD' | 'BANK_TRANSFER'; payerPhone?: string | null },
+  input: { packageId?: string; quantity?: unknown; method: 'MOBILE_MONEY' | 'CARD' | 'BANK_TRANSFER'; payerPhone?: string | null },
   actor: Actor,
   meta?: RequestMeta,
 ) {
@@ -63,8 +69,28 @@ export async function createPayment(
   if (org.status === 'SUSPENDED') throw AppError.forbidden('Organization is suspended', 'ORGANIZATION_SUSPENDED');
   if (org.status !== 'ACTIVE') throw AppError.forbidden('Your organization must be approved before buying SMS', 'ORGANIZATION_NOT_APPROVED');
 
-  const pkg = await prisma.smsPackage.findUnique({ where: { id: input.packageId } });
-  if (!pkg || !pkg.isActive) throw AppError.unprocessable('This package is not available', 'PACKAGE_UNAVAILABLE');
+  // What is bought and its price are decided here, on the server — never taken from the client.
+  let order: Pick<Prisma.PaymentUncheckedCreateInput, 'packageId' | 'packageName' | 'credits' | 'amount' | 'currency' | 'pricingTierId' | 'unitPrice' | 'tierMinQuantity' | 'tierMaxQuantity' | 'creditValidityDays'>;
+  if (input.quantity !== undefined) {
+    const quote = await calculateSmsPurchasePrice(input.quantity);
+    const validity = await getSetting('billing.creditValidityDays');
+    order = {
+      packageId: null,
+      packageName: `${quote.quantity.toLocaleString('en-US')} SMS credits`,
+      credits: quote.quantity,
+      amount: new Prisma.Decimal(quote.total),
+      currency: quote.currency,
+      pricingTierId: quote.tier.id,
+      unitPrice: new Prisma.Decimal(quote.unitPrice),
+      tierMinQuantity: quote.tier.minQuantity,
+      tierMaxQuantity: quote.tier.maxQuantity,
+      creditValidityDays: validity > 0 ? validity : null,
+    };
+  } else {
+    const pkg = input.packageId ? await prisma.smsPackage.findUnique({ where: { id: input.packageId } }) : null;
+    if (!pkg || !pkg.isActive) throw AppError.unprocessable('This package is not available', 'PACKAGE_UNAVAILABLE');
+    order = { packageId: pkg.id, packageName: pkg.name, credits: pkg.credits, amount: pkg.price, currency: pkg.currency, creditValidityDays: pkg.validityDays };
+  }
 
   let payerPhone: string | null = null;
   if (input.method === 'MOBILE_MONEY') {
@@ -73,24 +99,19 @@ export async function createPayment(
   }
 
   const provider = PaymentProviderFactory.getActive();
-  // Amount/credits come from the package on the server — never from the client.
   const payment = await prisma.payment.create({
     data: {
       organizationId,
-      packageId: pkg.id,
+      ...order,
       reference: newReference(),
       provider: provider.name,
       method: input.method,
       payerPhone,
-      packageName: pkg.name,
-      credits: pkg.credits,
-      amount: pkg.price,
-      currency: pkg.currency,
       status: 'PENDING',
       createdById: actorUserId(actor),
     },
   });
-  await audit({ actor, action: 'PAYMENT_CREATED', resource: 'payment', resourceId: payment.id, organizationId, metadata: { reference: payment.reference, amount: payment.amount.toFixed(2), currency: payment.currency, credits: payment.credits }, meta });
+  await audit({ actor, action: 'PAYMENT_CREATED', resource: 'payment', resourceId: payment.id, organizationId, metadata: { reference: payment.reference, amount: payment.amount.toFixed(2), currency: payment.currency, credits: payment.credits, unitPrice: payment.unitPrice?.toFixed(2) ?? null, pricingTierId: payment.pricingTierId }, meta });
 
   try {
     const init = await provider.initializePayment({
@@ -99,7 +120,7 @@ export async function createPayment(
       currency: payment.currency,
       method: input.method,
       payerPhone,
-      description: `${pkg.name} (${pkg.credits.toLocaleString()} SMS credits)`,
+      description: payment.packageId ? `${payment.packageName} (${payment.credits.toLocaleString()} SMS credits)` : payment.packageName,
       callbackUrl: `${env.API_PUBLIC_URL}/api/v1/callbacks/payments/${provider.name}`,
     });
     const updated = await prisma.payment.update({ where: { id: payment.id }, data: { status: 'PROCESSING', providerReference: init.providerReference } });
@@ -168,9 +189,10 @@ async function finalizeSuccess(payment: Payment, fee: Prisma.Decimal, actor: Act
         type: 'PURCHASE',
         amount: payment.credits,
         reference: `payment:${payment.id}`,
-        description: `Purchase: ${payment.packageName}`,
+        description: payment.unitPrice ? `Purchased ${payment.credits.toLocaleString()} SMS credits at ${payment.currency} ${payment.unitPrice.toFixed(2)}` : `Purchase: ${payment.packageName}`,
         createdById: payment.createdById,
         metadata: { paymentId: payment.id, reference: payment.reference },
+        expiresAt: payment.creditValidityDays ? new Date(Date.now() + payment.creditValidityDays * 86_400_000) : null,
       });
       if (entry.duplicate) return;
 
@@ -214,7 +236,7 @@ async function finalizeSuccess(payment: Payment, fee: Prisma.Decimal, actor: Act
           currency: payment.currency,
         },
       });
-      await audit({ actor, action: 'SMS_PACKAGE_PURCHASED', resource: 'customer_purchase', resourceId: payment.id, organizationId: payment.organizationId, metadata: { package: payment.packageName, credits: payment.credits, revenue: total.toFixed(2), fee: fee.toFixed(2) }, meta }, tx);
+      await audit({ actor, action: 'SMS_PACKAGE_PURCHASED', resource: 'customer_purchase', resourceId: payment.id, organizationId: payment.organizationId, metadata: { package: payment.packageName, credits: payment.credits, unitPrice: payment.unitPrice?.toFixed(2) ?? null, pricingTierId: payment.pricingTierId, revenue: total.toFixed(2), fee: fee.toFixed(2) }, meta }, tx);
       await audit({ actor, action: 'PAYMENT_VERIFIED', resource: 'payment', resourceId: payment.id, organizationId: payment.organizationId, metadata: { reference: payment.reference, amount: total.toFixed(2), invoice: invoiceNumber }, meta }, tx);
       await audit({ actor, action: 'WALLET_CREDITED', resource: 'wallet', resourceId: entry.transaction.walletId, organizationId: payment.organizationId, metadata: { credits: payment.credits, paymentId: payment.id, balanceAfter: entry.transaction.balanceAfter }, meta }, tx);
       credited = true;
@@ -288,11 +310,14 @@ export async function refundPayment(paymentId: string, reason: string, actor: Ac
     await prisma.$transaction(async (tx) => {
       const claimed = await tx.payment.updateMany({ where: { id: paymentId, status: 'SUCCESS' }, data: { status: 'REFUNDED', refundedAt: new Date(), failureReason: reason } });
       if (claimed.count === 0) throw AppError.conflict('Payment was already refunded', 'ALREADY_REFUNDED');
+      const purchase = await tx.walletTransaction.findUnique({ where: { reference: `payment:${payment.id}` }, select: { id: true } });
+      const lot = purchase ? await tx.smsCreditLot.findUnique({ where: { sourceTransactionId: purchase.id }, select: { id: true } }) : null;
       await applyLedgerEntry(tx, {
         organizationId: payment.organizationId,
         type: 'ADJUSTMENT',
         amount: -payment.credits,
         reference: `payment-refund:${payment.id}`,
+        preferLotId: lot?.id,
         description: `Payment ${payment.reference} refunded: ${reason}`,
         createdById: actorUserId(actor),
         metadata: { paymentId },

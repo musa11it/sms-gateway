@@ -38,6 +38,9 @@ const admin = () => import('@/pages/admin/AdminPages');
 const adminOrgs = () => import('@/pages/admin/OrganizationPages');
 const adminReview = () => import('@/pages/admin/ReviewPages');
 const adminBilling = () => import('@/pages/admin/BillingPages');
+const smsCommerce = () => import('@/pages/admin/SmsCommercePages');
+const smsConfig = () => import('@/pages/admin/SmsConfigurationPage');
+const providerMgmt = () => import('@/pages/admin/ProviderManagementPages');
 const adminAccess = () => import('@/pages/admin/AccessPages');
 const misc = () => import('@/pages/MiscPages');
 const site = () => import('@/pages/site/SitePages');
@@ -89,9 +92,14 @@ const adminRoutes: RouteObject[] = [
   { path: 'payments/invoices/:id', element: guard('invoices.view', page(adminBilling, 'AdminInvoicePage'), true) },
   { path: 'wallets', element: guard('wallet.view', page(adminBilling, 'WalletsPage'), true) },
   { path: 'packages', element: guard('packages.view', page(adminBilling, 'PackagesPage'), true) },
+  { path: 'pricing', element: guard('packages.view', page(smsCommerce, 'PricingTiersPage'), true) },
+  { path: 'customer-report', element: guard('finance.view', page(smsCommerce, 'CustomerFinanceReportPage'), true) },
   { path: 'reports', element: guard('reports.view', page(admin, 'AdminReportsPage'), true) },
   { path: 'finance', element: guard('finance.view', page(business, 'FinancePage'), true) },
-  { path: 'providers', element: guard('providers.view', page(business, 'ProvidersPage'), true) },
+  { path: 'providers', element: guard('providers.view', page(providerMgmt, 'ProvidersPage'), true) },
+  { path: 'providers/:id', element: guard('providers.view', page(providerMgmt, 'ProviderDetailPage'), true) },
+  { path: 'routing', element: guard('providers.view', page(providerMgmt, 'RoutingRulesPage'), true) },
+  { path: 'routing/simulator', element: guard('providers.view', page(providerMgmt, 'RoutingSimulatorPage'), true) },
   { path: 'provider-purchases', element: guard('provider_purchases.view', page(business, 'ProviderPurchasesPage'), true) },
   { path: 'provider-wallets', element: guard('providers.view', page(business, 'CapacityLedgerPage'), true) },
   { path: 'sales', element: guard('finance.view', page(business, 'CustomerSalesPage'), true) },
@@ -104,6 +112,7 @@ const adminRoutes: RouteObject[] = [
   { path: 'roles', element: guard('roles.view', page(adminAccess, 'RolesPage'), true) },
   { path: 'audit-logs', element: guard('audit_logs.view', page(adminAccess, 'AuditLogsPage'), true) },
   { path: 'settings', element: guard(['settings.view', 'providers.view'], page(adminAccess, 'SystemSettingsPage'), true) },
+  { path: 'sms-configuration', element: guard('settings.view', page(smsConfig, 'SmsConfigurationPage'), true) },
   { path: 'account', element: page(settings, 'SettingsPage') },
   { path: 'notifications', element: page(settings, 'NotificationsPage') },
   { path: '*', element: page(misc, 'NotFoundPage') },
