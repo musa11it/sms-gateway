@@ -1,0 +1,1338 @@
+// SMS Gateway SaaS - database schema
+// Conventions:
+//  - UUID primary keys, snake_case table names, camelCase fields.
+//  - Money is stored as Decimal(14,2); SMS credits are integers.
+//  - Every tenant-owned table carries organizationId and is indexed on it.
+//  - audit_logs and wallet_transactions are append-only (enforced by DB triggers, see migrations).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Enums
+// ─────────────────────────────────────────────────────────────
+
+enum UserStatus {
+  PENDING_EMAIL_VERIFICATION
+  PENDING_REVIEW
+  ACTIVE
+  REJECTED
+  SUSPENDED
+  DEACTIVATED
+}
+
+enum OrganizationStatus {
+  DRAFT
+  PENDING_REVIEW
+  ACTIVE
+  REJECTED
+  SUSPENDED
+}
+
+enum RoleScope {
+  PLATFORM
+  ORGANIZATION
+}
+
+enum MemberStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+  REVOKED
+}
+
+enum VerificationStatus {
+  DRAFT
+  SUBMITTED
+  UNDER_REVIEW
+  MORE_INFORMATION_REQUIRED
+  APPROVED
+  REJECTED
+  SUSPENDED
+}
+
+enum DocumentStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  REPLACEMENT_REQUESTED
+}
+
+enum SenderStatus {
+  PENDING
+  UNDER_REVIEW
+  NEEDS_INFORMATION
+  APPROVED
+  REJECTED
+  SUSPENDED
+}
+
+enum WalletTransactionType {
+  PURCHASE
+  SMS_DEBIT
+  REFUND
+  ADMIN_CREDIT
+  ADMIN_DEBIT
+  ADJUSTMENT
+  EXPIRATION
+}
+
+enum PaymentStatus {
+  PENDING
+  PROCESSING
+  SUCCESS
+  FAILED
+  CANCELLED
+  REFUNDED
+}
+
+enum PaymentMethod {
+  MOBILE_MONEY
+  CARD
+  BANK_TRANSFER
+}
+
+enum InvoiceStatus {
+  PAID
+  VOID
+  REFUNDED
+}
+
+enum SmsEncoding {
+  GSM7
+  UCS2
+}
+
+enum SmsSource {
+  DASHBOARD
+  API
+  CAMPAIGN
+}
+
+enum SmsBatchStatus {
+  SCHEDULED
+  QUEUED
+  PROCESSING
+  SENT
+  COMPLETED
+  CANCELLED
+  FAILED
+}
+
+enum SmsRecipientStatus {
+  QUEUED
+  PROCESSING
+  SENT
+  DELIVERED
+  FAILED
+  EXPIRED
+  CANCELLED
+}
+
+enum DeliveryReportSource {
+  SUBMISSION
+  CALLBACK
+  POLL
+}
+
+enum CampaignStatus {
+  DRAFT
+  SCHEDULED
+  QUEUED
+  PROCESSING
+  COMPLETED
+  PARTIALLY_COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum ContactStatus {
+  ACTIVE
+  UNSUBSCRIBED
+  BLOCKED
+}
+
+enum WebhookDeliveryStatus {
+  PENDING
+  SUCCESS
+  RETRYING
+  FAILED
+}
+
+enum EmailStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+enum ActorType {
+  USER
+  API_KEY
+  SYSTEM
+}
+
+// ─────────────────────────────────────────────────────────────
+// Identity & access
+// ─────────────────────────────────────────────────────────────
+
+model User {
+  id                String     @id @default(uuid()) @db.Uuid
+  email             String     @unique
+  phone             String?    @unique
+  fullName          String
+  passwordHash      String
+  status            UserStatus @default(PENDING_EMAIL_VERIFICATION)
+  emailVerifiedAt   DateTime?
+  phoneVerifiedAt   DateTime?
+  lastLoginAt       DateTime?
+  statusReason      String?
+  passwordChangedAt DateTime?
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  sessions           Session[]
+  tokens             UserToken[]
+  roles              UserRole[]
+  memberships        OrganizationMember[]
+  notifications      Notification[]
+  invitationsSent    OrganizationInvitation[] @relation("InvitedBy")
+  auditLogs          AuditLog[]
+  walletTransactions WalletTransaction[]
+  apiKeysCreated     ApiKey[]
+
+  @@index([status])
+  @@index([createdAt])
+  @@map("users")
+}
+
+model Session {
+  id               String    @id @default(uuid()) @db.Uuid
+  userId           String    @db.Uuid
+  refreshTokenHash String    @unique
+  userAgent        String?
+  ipAddress        String?
+  expiresAt        DateTime
+  lastUsedAt       DateTime  @default(now())
+  revokedAt        DateTime?
+  revokedReason    String?
+  createdAt        DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+enum UserTokenType {
+  EMAIL_VERIFICATION
+  PASSWORD_RESET
+  PHONE_VERIFICATION
+}
+
+model UserToken {
+  id        String        @id @default(uuid()) @db.Uuid
+  userId    String        @db.Uuid
+  type      UserTokenType
+  tokenHash String        @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime      @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, type])
+  @@map("user_tokens")
+}
+
+model Permission {
+  id          String    @id @default(uuid()) @db.Uuid
+  key         String
+  scope       RoleScope
+  group       String
+  description String
+  createdAt   DateTime  @default(now())
+
+  roles RolePermission[]
+
+  @@unique([key, scope])
+  @@map("permissions")
+}
+
+model Role {
+  id             String    @id @default(uuid()) @db.Uuid
+  // Stable machine name for system roles (e.g. SUPER_ADMIN); unique per scope/organization.
+  code           String
+  name           String
+  description    String?
+  scope          RoleScope
+  isSystem       Boolean   @default(false)
+  // null = platform-wide role definition; set = custom role owned by one organization.
+  organizationId String?   @db.Uuid
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organization Organization?            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  permissions  RolePermission[]
+  users        UserRole[]
+  members      OrganizationMember[]
+  invitations  OrganizationInvitation[]
+
+  @@unique([scope, organizationId, code])
+  @@index([organizationId])
+  @@map("roles")
+}
+
+model RolePermission {
+  roleId       String   @db.Uuid
+  permissionId String   @db.Uuid
+  createdAt    DateTime @default(now())
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+// Platform (staff) role assignment
+model UserRole {
+  userId       String   @db.Uuid
+  roleId       String   @db.Uuid
+  assignedById String?  @db.Uuid
+  createdAt    DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Restrict)
+
+  @@id([userId, roleId])
+  @@map("user_roles")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Organizations / tenants
+// ─────────────────────────────────────────────────────────────
+
+model Organization {
+  id                    String             @id @default(uuid()) @db.Uuid
+  name                  String
+  slug                  String             @unique
+  status                OrganizationStatus @default(DRAFT)
+  statusReason          String?
+  businessType          String?
+  country               String?
+  address               String?
+  city                  String?
+  registrationNumber    String?
+  taxId                 String?
+  website               String?
+  contactPersonName     String?
+  contactPersonPhone    String?
+  contactPersonEmail    String?
+  smsPurpose            String?
+  expectedMonthlyVolume Int?
+  // Optional per-organization cap on recipients per hour (null = platform default)
+  smsHourlyLimit        Int?
+  timezone              String             @default("Africa/Kigali")
+  approvedAt            DateTime?
+  suspendedAt           DateTime?
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+
+  members           OrganizationMember[]
+  invitations       OrganizationInvitation[]
+  roles             Role[]
+  verifications     Verification[]
+  documents         VerificationDocument[]
+  wallet            Wallet?
+  senders           SenderId[]
+  contacts          Contact[]
+  contactGroups     ContactGroup[]
+  campaigns         Campaign[]
+  smsMessages       SmsMessage[]
+  smsRecipients     SmsRecipient[]
+  payments          Payment[]
+  invoices          Invoice[]
+  apiKeys           ApiKey[]
+  apiLogs           ApiRequestLog[]
+  webhooks          Webhook[]
+  customerPurchases CustomerPurchase[]
+  refunds           Refund[]
+  notifications     Notification[]
+  auditLogs         AuditLog[]
+  walletTxns        WalletTransaction[]
+
+  @@index([status])
+  @@index([createdAt])
+  @@map("organizations")
+}
+
+model OrganizationMember {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @db.Uuid
+  userId         String       @db.Uuid
+  roleId         String       @db.Uuid
+  status         MemberStatus @default(ACTIVE)
+  isOwner        Boolean      @default(false)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role         Role         @relation(fields: [roleId], references: [id], onDelete: Restrict)
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+  @@map("organization_members")
+}
+
+model OrganizationInvitation {
+  id             String           @id @default(uuid()) @db.Uuid
+  organizationId String           @db.Uuid
+  email          String
+  roleId         String           @db.Uuid
+  tokenHash      String           @unique
+  status         InvitationStatus @default(PENDING)
+  invitedById    String           @db.Uuid
+  expiresAt      DateTime
+  acceptedAt     DateTime?
+  createdAt      DateTime         @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  role         Role         @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  invitedBy    User         @relation("InvitedBy", fields: [invitedById], references: [id])
+
+  @@index([organizationId, status])
+  @@index([email])
+  @@map("organization_invitations")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Verification (KYB)
+// ─────────────────────────────────────────────────────────────
+
+model Verification {
+  id             String             @id @default(uuid()) @db.Uuid
+  organizationId String             @db.Uuid
+  status         VerificationStatus @default(DRAFT)
+  submittedAt    DateTime?
+  submittedById  String?            @db.Uuid
+  reviewedAt     DateTime?
+  reviewedById   String?            @db.Uuid
+  reviewNote     String?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  documents    VerificationDocument[]
+  reviews      VerificationReview[]
+
+  @@index([organizationId])
+  @@index([status])
+  @@map("verifications")
+}
+
+// Immutable history of every review decision on a verification.
+model VerificationReview {
+  id             String   @id @default(uuid()) @db.Uuid
+  verificationId String   @db.Uuid
+  organizationId String   @db.Uuid
+  reviewerId     String?  @db.Uuid
+  action         String
+  fromStatus     String?
+  toStatus       String?
+  note           String?
+  createdAt      DateTime @default(now())
+
+  verification Verification @relation(fields: [verificationId], references: [id], onDelete: Cascade)
+
+  @@index([verificationId, createdAt])
+  @@map("verification_reviews")
+}
+
+model VerificationDocument {
+  id             String         @id @default(uuid()) @db.Uuid
+  organizationId String         @db.Uuid
+  verificationId String         @db.Uuid
+  documentType   String
+  originalName   String
+  mimeType       String
+  sizeBytes      Int
+  // Opaque storage key relative to the configured storage root. Never returned to clients.
+  storageKey     String         @unique
+  checksum       String
+  status         DocumentStatus @default(PENDING)
+  reviewNote     String?
+  uploadedById   String         @db.Uuid
+  reviewedById   String?        @db.Uuid
+  reviewedAt     DateTime?
+  createdAt      DateTime       @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  verification Verification @relation(fields: [verificationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([verificationId])
+  @@map("verification_documents")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Sender IDs
+// ─────────────────────────────────────────────────────────────
+
+model SenderId {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @db.Uuid
+  name           String
+  status         SenderStatus @default(PENDING)
+  purpose        String
+  sampleMessage  String?
+  useCase        String?
+  reviewNote     String?
+  requestedById  String       @db.Uuid
+  reviewedById   String?      @db.Uuid
+  reviewedAt     DateTime?
+  approvedAt     DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organization  Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  smsMessages   SmsMessage[]
+  campaigns     Campaign[]
+  reviews       SenderIdReview[]
+  registrations SenderIdRegistration[]
+
+  @@unique([organizationId, name])
+  @@index([status])
+  @@index([name])
+  @@map("sender_ids")
+}
+
+model SenderIdReview {
+  id             String   @id @default(uuid()) @db.Uuid
+  senderId       String   @db.Uuid
+  organizationId String   @db.Uuid
+  reviewerId     String?  @db.Uuid
+  action         String
+  fromStatus     String
+  toStatus       String
+  note           String?
+  createdAt      DateTime @default(now())
+
+  sender SenderId @relation(fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@index([senderId, createdAt])
+  @@map("sender_id_reviews")
+}
+
+// Registration of an approved sender ID with each upstream provider/network.
+model SenderIdRegistration {
+  id                String   @id @default(uuid()) @db.Uuid
+  senderId          String   @db.Uuid
+  providerId        String   @db.Uuid
+  status            String
+  providerReference String?
+  message           String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  sender   SenderId    @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  provider SmsProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@unique([senderId, providerId])
+  @@map("sender_id_registrations")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Upstream SMS providers (our supply side)
+// ─────────────────────────────────────────────────────────────
+
+enum ProviderType {
+  MNO
+  AGGREGATOR
+}
+
+enum ProviderMode {
+  SIMULATION
+  PRODUCTION
+}
+
+enum ProviderStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
+enum ProviderPurchaseStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
+enum CapacityEntryType {
+  PURCHASE
+  USAGE
+  RELEASE
+  ADJUSTMENT
+}
+
+model SmsProvider {
+  id                   String         @id @default(uuid()) @db.Uuid
+  // Stable code used to resolve the adapter (e.g. MTN + SIMULATION -> "mtn:simulation").
+  code                 String         @unique
+  name                 String
+  type                 ProviderType
+  mode                 ProviderMode   @default(SIMULATION)
+  status               ProviderStatus @default(ACTIVE)
+  currency             String         @default("RWF")
+  // Current price quoted by the provider per SMS (default unit cost for new purchases).
+  costPerSms           Decimal        @db.Decimal(14, 4)
+  // Destination prefixes this provider serves (E.164). Empty = catch-all route.
+  routePrefixes        String[]       @default([])
+  priority             Int            @default(100)
+  // Capacity inventory (always changed together with the append-only capacity ledger).
+  capacityBalance      Int            @default(0)
+  totalPurchased       Int            @default(0)
+  totalUsed            Int            @default(0)
+  totalSpent           Decimal        @default(0) @db.Decimal(14, 2)
+  allowOverdraft       Boolean        @default(false)
+  overdraftLimit       Int            @default(0)
+  lowCapacityThreshold Int            @default(10000)
+  notes                String?
+  lastTransactionAt    DateTime?
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+
+  purchases     ProviderPurchase[]
+  ledger        ProviderCapacityLedger[]
+  recipients    SmsRecipient[]
+  registrations SenderIdRegistration[]
+
+  @@index([status])
+  @@map("sms_providers")
+}
+
+model ProviderPurchase {
+  id                String                 @id @default(uuid()) @db.Uuid
+  reference         String                 @unique
+  providerId        String                 @db.Uuid
+  quantity          Int
+  unitCost          Decimal                @db.Decimal(14, 4)
+  totalCost         Decimal                @db.Decimal(14, 2)
+  currency          String
+  status            ProviderPurchaseStatus @default(PENDING)
+  providerReference String?
+  failureReason     String?
+  notes             String?
+  createdById       String?                @db.Uuid
+  completedAt       DateTime?
+  createdAt         DateTime               @default(now())
+
+  provider SmsProvider @relation(fields: [providerId], references: [id], onDelete: Restrict)
+
+  @@index([providerId, createdAt])
+  @@index([status, createdAt])
+  @@map("provider_purchases")
+}
+
+model ProviderCapacityLedger {
+  id            String            @id @default(uuid()) @db.Uuid
+  providerId    String            @db.Uuid
+  type          CapacityEntryType
+  // Signed SMS count: + adds capacity, - consumes it.
+  amount        Int
+  balanceBefore Int
+  balanceAfter  Int
+  // Idempotency reference (purchase:<id>, usage:<messageId>:<providerId>, release:<recipientId>:<n> ...)
+  reference     String            @unique
+  description   String
+  unitCost      Decimal?          @db.Decimal(14, 4)
+  createdById   String?           @db.Uuid
+  createdAt     DateTime          @default(now())
+
+  provider SmsProvider @relation(fields: [providerId], references: [id], onDelete: Restrict)
+
+  @@index([providerId, createdAt])
+  @@map("provider_capacity_ledger")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Wallet & billing
+// ─────────────────────────────────────────────────────────────
+
+model Wallet {
+  id                   String    @id @default(uuid()) @db.Uuid
+  organizationId       String    @unique @db.Uuid
+  balance              Int       @default(0)
+  lowBalanceThreshold  Int       @default(500)
+  lowBalanceNotifiedAt DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  transactions WalletTransaction[]
+
+  @@map("wallets")
+}
+
+model WalletTransaction {
+  id             String                @id @default(uuid()) @db.Uuid
+  walletId       String                @db.Uuid
+  organizationId String                @db.Uuid
+  type           WalletTransactionType
+  // Signed credit amount: positive = credit, negative = debit.
+  amount         Int
+  balanceBefore  Int
+  balanceAfter   Int
+  // Idempotency reference (e.g. payment:<id>, sms:<id>, refund:sms:<recipientId>).
+  reference      String                @unique
+  description    String
+  createdById    String?               @db.Uuid
+  metadata       Json?
+  createdAt      DateTime              @default(now())
+
+  wallet       Wallet       @relation(fields: [walletId], references: [id], onDelete: Restrict)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  createdBy    User?        @relation(fields: [createdById], references: [id])
+
+  @@index([organizationId, createdAt])
+  @@index([type])
+  @@map("wallet_transactions")
+}
+
+model SmsPackage {
+  id                    String   @id @default(uuid()) @db.Uuid
+  name                  String
+  description           String?
+  credits               Int
+  price                 Decimal  @db.Decimal(14, 2)
+  currency              String   @default("RWF")
+  // Optional explicit provider-cost estimate for the whole package (margin planning).
+  estimatedProviderCost Decimal? @db.Decimal(14, 2)
+  validityDays          Int?
+  isActive              Boolean  @default(true)
+  isPopular             Boolean  @default(false)
+  sortOrder             Int      @default(0)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  payments          Payment[]
+  customerPurchases CustomerPurchase[]
+
+  @@index([isActive])
+  @@map("sms_packages")
+}
+
+model Payment {
+  id                String        @id @default(uuid()) @db.Uuid
+  organizationId    String        @db.Uuid
+  packageId         String?       @db.Uuid
+  // Our reference, sent to the provider. Unique.
+  reference         String        @unique
+  provider          String
+  providerReference String?       @unique
+  method            PaymentMethod
+  payerPhone        String?
+  // Snapshot of what was purchased (package may change later).
+  packageName       String
+  credits           Int
+  amount            Decimal       @db.Decimal(14, 2)
+  currency          String
+  status            PaymentStatus @default(PENDING)
+  // Processing fee charged by the payment provider (reported by provider, else configured rate).
+  feeAmount         Decimal       @default(0) @db.Decimal(14, 2)
+  failureReason     String?
+  createdById       String?       @db.Uuid
+  verifiedAt        DateTime?
+  creditedAt        DateTime?
+  refundedAt        DateTime?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  package      SmsPackage?       @relation(fields: [packageId], references: [id], onDelete: SetNull)
+  invoice      Invoice?
+  events       PaymentEvent[]
+  purchase     CustomerPurchase?
+  refund       Refund?
+
+  @@index([organizationId, createdAt])
+  @@index([status])
+  @@map("payments")
+}
+
+// Raw provider notifications, deduplicated for webhook idempotency.
+model PaymentEvent {
+  id              String    @id @default(uuid()) @db.Uuid
+  paymentId       String?   @db.Uuid
+  provider        String
+  providerEventId String
+  eventType       String
+  payload         Json
+  processedAt     DateTime?
+  createdAt       DateTime  @default(now())
+
+  payment Payment? @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+
+  @@unique([provider, providerEventId])
+  @@index([paymentId])
+  @@map("payment_events")
+}
+
+model Invoice {
+  id             String        @id @default(uuid()) @db.Uuid
+  number         String        @unique
+  organizationId String        @db.Uuid
+  paymentId      String        @unique @db.Uuid
+  // Snapshot of billing identity at issue time.
+  customerName   String
+  customerEmail  String?
+  billingAddress String?
+  taxId          String?
+  description    String
+  quantity       Int
+  unitPrice      Decimal       @db.Decimal(14, 4)
+  subtotal       Decimal       @db.Decimal(14, 2)
+  taxRate        Decimal       @db.Decimal(5, 2)
+  taxAmount      Decimal       @db.Decimal(14, 2)
+  total          Decimal       @db.Decimal(14, 2)
+  currency       String
+  status         InvoiceStatus @default(PAID)
+  issuedAt       DateTime      @default(now())
+  createdAt      DateTime      @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  payment      Payment      @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+
+  @@index([organizationId, issuedAt])
+  @@map("invoices")
+}
+
+// Distributed lease for periodic sweeps: only one process runs a given task at a time.
+model JobLease {
+  name        String   @id
+  owner       String
+  lockedUntil DateTime
+
+  @@map("job_leases")
+}
+
+// One row per successful credit sale (the revenue side of the business).
+model CustomerPurchase {
+  id                    String   @id @default(uuid()) @db.Uuid
+  organizationId        String   @db.Uuid
+  paymentId             String   @unique @db.Uuid
+  packageId             String?  @db.Uuid
+  packageName           String
+  credits               Int
+  revenue               Decimal  @db.Decimal(14, 2)
+  // Provider cost of the credits sold, estimated at sale time (package estimate or weighted-average provider cost).
+  estimatedProviderCost Decimal  @db.Decimal(14, 2)
+  paymentFee            Decimal  @db.Decimal(14, 2)
+  // revenue - estimatedProviderCost - paymentFee
+  contribution          Decimal  @db.Decimal(14, 2)
+  currency              String
+  createdAt             DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  payment      Payment      @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  package      SmsPackage?  @relation(fields: [packageId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+  @@index([createdAt])
+  @@map("customer_purchases")
+}
+
+model Refund {
+  id              String   @id @default(uuid()) @db.Uuid
+  organizationId  String   @db.Uuid
+  paymentId       String   @unique @db.Uuid
+  amount          Decimal  @db.Decimal(14, 2)
+  currency        String
+  creditsReversed Int
+  reason          String
+  createdById     String?  @db.Uuid
+  createdAt       DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  payment      Payment      @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+
+  @@index([createdAt])
+  @@map("refunds")
+}
+
+enum ExpenseCategory {
+  INFRASTRUCTURE
+  SOFTWARE
+  PERSONNEL
+  MARKETING
+  REGULATORY
+  PAYMENT_PROCESSING
+  OTHER
+}
+
+// Operating expenses not already captured by provider purchases or payment fees.
+model Expense {
+  id          String          @id @default(uuid()) @db.Uuid
+  category    ExpenseCategory
+  description String
+  vendor      String?
+  reference   String?
+  amount      Decimal         @db.Decimal(14, 2)
+  currency    String
+  incurredAt  DateTime
+  createdById String?         @db.Uuid
+  deletedAt   DateTime?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@index([incurredAt])
+  @@map("expenses")
+}
+
+model ContactInquiry {
+  id          String    @id @default(uuid()) @db.Uuid
+  name        String
+  email       String
+  phone       String?
+  company     String?
+  message     String
+  status      String    @default("NEW")
+  ipAddress   String?
+  handledAt   DateTime?
+  handledById String?   @db.Uuid
+  createdAt   DateTime  @default(now())
+
+  @@index([status, createdAt])
+  @@map("contact_inquiries")
+}
+
+model Counter {
+  key   String @id
+  value Int    @default(0)
+
+  @@map("counters")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Contacts
+// ─────────────────────────────────────────────────────────────
+
+model Contact {
+  id             String        @id @default(uuid()) @db.Uuid
+  organizationId String        @db.Uuid
+  name           String?
+  phone          String
+  email          String?
+  tags           String[]      @default([])
+  status         ContactStatus @default(ACTIVE)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  organization       Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  groups             ContactGroupMember[]
+  campaignRecipients CampaignRecipient[]
+
+  @@unique([organizationId, phone])
+  @@index([organizationId, createdAt])
+  @@index([phone])
+  @@map("contacts")
+}
+
+model ContactGroup {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @db.Uuid
+  name           String
+  description    String?
+  color          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  members      ContactGroupMember[]
+  campaigns    CampaignGroup[]
+
+  @@unique([organizationId, name])
+  @@map("contact_groups")
+}
+
+model ContactGroupMember {
+  groupId   String   @db.Uuid
+  contactId String   @db.Uuid
+  createdAt DateTime @default(now())
+
+  group   ContactGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  contact Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@id([groupId, contactId])
+  @@index([contactId])
+  @@map("contact_group_members")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Campaigns & messaging
+// ─────────────────────────────────────────────────────────────
+
+model Campaign {
+  id             String         @id @default(uuid()) @db.Uuid
+  organizationId String         @db.Uuid
+  name           String
+  senderId       String         @db.Uuid
+  message        String
+  status         CampaignStatus @default(DRAFT)
+  scheduledAt    DateTime?
+  timezone       String         @default("Africa/Kigali")
+  failureReason  String?
+  createdById    String         @db.Uuid
+  launchedAt     DateTime?
+  completedAt    DateTime?
+  cancelledAt    DateTime?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  sender       SenderId            @relation(fields: [senderId], references: [id], onDelete: Restrict)
+  groups       CampaignGroup[]
+  recipients   CampaignRecipient[]
+  smsMessage   SmsMessage?
+
+  @@index([organizationId, createdAt])
+  @@index([status])
+  @@map("campaigns")
+}
+
+// Audience: whole contact groups...
+model CampaignGroup {
+  campaignId String @db.Uuid
+  groupId    String @db.Uuid
+
+  campaign Campaign     @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  group    ContactGroup @relation(fields: [groupId], references: [id], onDelete: Restrict)
+
+  @@id([campaignId, groupId])
+  @@map("campaign_groups")
+}
+
+// ...plus individually selected contacts or raw numbers.
+model CampaignRecipient {
+  id         String   @id @default(uuid()) @db.Uuid
+  campaignId String   @db.Uuid
+  contactId  String?  @db.Uuid
+  phone      String
+  createdAt  DateTime @default(now())
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contact  Contact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+
+  @@unique([campaignId, phone])
+  @@index([campaignId])
+  @@map("campaign_recipients")
+}
+
+// One send request (single SMS, bulk send, API call or campaign launch).
+model SmsMessage {
+  id                  String         @id @default(uuid()) @db.Uuid
+  organizationId      String         @db.Uuid
+  senderId            String         @db.Uuid
+  senderName          String
+  campaignId          String?        @unique @db.Uuid
+  apiKeyId            String?        @db.Uuid
+  createdById         String?        @db.Uuid
+  source              SmsSource
+  body                String
+  characterCount      Int
+  encoding            SmsEncoding
+  segments            Int
+  recipientCount      Int
+  creditsPerRecipient Int
+  totalCredits        Int
+  status              SmsBatchStatus @default(QUEUED)
+  scheduledAt         DateTime?
+  timezone            String?
+  idempotencyKey      String?
+  clientReference     String?
+  processedAt         DateTime?
+  completedAt         DateTime?
+  cancelledAt         DateTime?
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+
+  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  sender       SenderId       @relation(fields: [senderId], references: [id], onDelete: Restrict)
+  campaign     Campaign?      @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  apiKey       ApiKey?        @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
+  recipients   SmsRecipient[]
+
+  @@unique([organizationId, idempotencyKey])
+  @@index([organizationId, createdAt])
+  @@index([status, scheduledAt])
+  @@map("sms_messages")
+}
+
+// Per-recipient delivery unit. This is the "message id" exposed through the public API.
+model SmsRecipient {
+  id                String             @id @default(uuid()) @db.Uuid
+  messageId         String             @db.Uuid
+  organizationId    String             @db.Uuid
+  campaignId        String?            @db.Uuid
+  contactId         String?            @db.Uuid
+  phone             String
+  status            SmsRecipientStatus @default(QUEUED)
+  credits           Int
+  // Adapter key (e.g. mtn:simulation) and the provider account the message was routed to.
+  provider          String?
+  providerId        String?            @db.Uuid
+  // Provider cost of this recipient's segments (weighted-average cost at reservation time).
+  providerCost      Decimal?           @db.Decimal(14, 4)
+  capacityReleased  Boolean            @default(false)
+  providerMessageId String?            @unique
+  errorCode         String?
+  errorMessage      String?
+  attempts          Int                @default(0)
+  refunded          Boolean            @default(false)
+  submittedAt       DateTime?
+  sentAt            DateTime?
+  deliveredAt       DateTime?
+  failedAt          DateTime?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  message         SmsMessage          @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  organization    Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  smsProvider     SmsProvider?        @relation(fields: [providerId], references: [id], onDelete: SetNull)
+  deliveryReports SmsDeliveryReport[]
+
+  @@index([messageId, status])
+  @@index([organizationId, createdAt])
+  @@index([campaignId])
+  @@index([status, updatedAt])
+  @@index([phone])
+  @@map("sms_recipients")
+}
+
+model SmsDeliveryReport {
+  id                String               @id @default(uuid()) @db.Uuid
+  recipientId       String               @db.Uuid
+  providerMessageId String?
+  provider          String
+  status            SmsRecipientStatus
+  providerStatus    String?
+  errorCode         String?
+  errorMessage      String?
+  source            DeliveryReportSource
+  payload           Json?
+  occurredAt        DateTime
+  createdAt         DateTime             @default(now())
+
+  recipient SmsRecipient @relation(fields: [recipientId], references: [id], onDelete: Cascade)
+
+  @@index([recipientId])
+  @@index([providerMessageId])
+  @@map("sms_delivery_reports")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Developer platform
+// ─────────────────────────────────────────────────────────────
+
+model ApiKey {
+  id                 String    @id @default(uuid()) @db.Uuid
+  organizationId     String    @db.Uuid
+  name               String
+  // Public identifier embedded in the key; used for lookup.
+  prefix             String    @unique
+  // HMAC-SHA256(pepper, secret). The raw secret is shown exactly once.
+  keyHash            String
+  lastFour           String
+  scopes             String[]  @default(["sms.send", "sms.read"])
+  allowedIps         String[]  @default([])
+  // Descriptive environment label (production / staging / development).
+  environment        String    @default("production")
+  isEnabled          Boolean   @default(true)
+  // Per-key override of the public API rate limit (requests/minute).
+  rateLimitPerMinute Int?
+  createdById        String    @db.Uuid
+  lastUsedAt         DateTime?
+  lastUsedIp         String?
+  usageCount         Int       @default(0)
+  expiresAt          DateTime?
+  revokedAt          DateTime?
+  revokedById        String?   @db.Uuid
+  createdAt          DateTime  @default(now())
+
+  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy    User            @relation(fields: [createdById], references: [id])
+  smsMessages  SmsMessage[]
+  logs         ApiRequestLog[]
+
+  @@index([organizationId])
+  @@map("api_keys")
+}
+
+model ApiRequestLog {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @db.Uuid
+  apiKeyId       String?  @db.Uuid
+  method         String
+  path           String
+  statusCode     Int
+  durationMs     Int
+  ipAddress      String?
+  userAgent      String?
+  errorCode      String?
+  requestId      String?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  apiKey       ApiKey?      @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+  @@index([apiKeyId, createdAt])
+  @@map("api_request_logs")
+}
+
+model Webhook {
+  id              String   @id @default(uuid()) @db.Uuid
+  organizationId  String   @db.Uuid
+  url             String
+  description     String?
+  events          String[]
+  // AES-256-GCM encrypted signing secret (needed in plaintext to sign payloads).
+  secretEncrypted String
+  isActive        Boolean  @default(true)
+  createdById     String   @db.Uuid
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  deliveries   WebhookDelivery[]
+
+  @@index([organizationId])
+  @@map("webhooks")
+}
+
+model WebhookDelivery {
+  id             String                @id @default(uuid()) @db.Uuid
+  webhookId      String                @db.Uuid
+  organizationId String                @db.Uuid
+  event          String
+  eventId        String
+  payload        Json
+  status         WebhookDeliveryStatus @default(PENDING)
+  attempts       Int                   @default(0)
+  nextAttemptAt  DateTime?
+  responseStatus Int?
+  responseBody   String?
+  lastError      String?
+  durationMs     Int?
+  deliveredAt    DateTime?
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+
+  webhook Webhook @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+
+  @@unique([webhookId, eventId])
+  @@index([status, nextAttemptAt])
+  @@index([organizationId, createdAt])
+  @@map("webhook_deliveries")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Platform services
+// ─────────────────────────────────────────────────────────────
+
+model Notification {
+  id             String    @id @default(uuid()) @db.Uuid
+  userId         String    @db.Uuid
+  organizationId String?   @db.Uuid
+  type           String
+  title          String
+  body           String
+  link           String?
+  readAt         DateTime?
+  createdAt      DateTime  @default(now())
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt, createdAt])
+  @@map("notifications")
+}
+
+model AuditLog {
+  id             String    @id @default(uuid()) @db.Uuid
+  actorType      ActorType
+  // Set when actorType = USER
+  actorId        String?   @db.Uuid
+  // Set when actorType = API_KEY
+  apiKeyId       String?   @db.Uuid
+  actorEmail     String?
+  organizationId String?   @db.Uuid
+  action         String
+  resource       String
+  resourceId     String?
+  metadata       Json?
+  ipAddress      String?
+  userAgent      String?
+  requestId      String?
+  createdAt      DateTime  @default(now())
+
+  actor        User?         @relation(fields: [actorId], references: [id], onDelete: Restrict)
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+
+  @@index([organizationId, createdAt])
+  @@index([actorId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+model SystemSetting {
+  key         String   @id
+  value       Json
+  description String?
+  updatedById String?  @db.Uuid
+  updatedAt   DateTime @updatedAt
+
+  @@map("system_settings")
+}
+
+// Outbound email outbox. The configured mailer driver delivers these.
+model EmailMessage {
+  id        String      @id @default(uuid()) @db.Uuid
+  to        String
+  subject   String
+  text      String
+  html      String?
+  template  String
+  status    EmailStatus @default(PENDING)
+  error     String?
+  sentAt    DateTime?
+  createdAt DateTime    @default(now())
+
+  @@index([to, createdAt])
+  @@map("email_messages")
+}
+
+// State store owned by the *simulated* external providers (SMS + payments).
+// Business logic never reads this table; it stands in for the provider's own systems.
+model SimulatorRecord {
+  id        String   @id
+  kind      String
+  payload   Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([kind])
+  @@map("simulator_records")
+}
