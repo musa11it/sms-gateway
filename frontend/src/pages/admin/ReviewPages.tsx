@@ -128,13 +128,16 @@ export function VerificationDetailPage() {
                       <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-500"><FileText className="h-5 w-5" /></span>
                       <div className="min-w-0">
                         <p className="text-sm font-medium text-slate-900">{label(d.documentType)}</p>
-                        <p className="truncate text-xs text-slate-500">{d.originalName} · {fmtBytes(d.sizeBytes)} · {fmtDate(d.createdAt)}</p>
+                        <p className="truncate text-xs text-slate-500">
+                          {d.value ? (/^https?:\/\//.test(d.value) ? <a href={d.value} target="_blank" rel="noopener noreferrer" className="link">{d.value}</a> : d.value) : d.originalName}
+                          {d.sizeBytes != null && ` · ${fmtBytes(d.sizeBytes)}`} · {fmtDate(d.createdAt)}
+                        </p>
                         {d.reviewNote && <p className="text-xs text-amber-700">{d.reviewNote}</p>}
                       </div>
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
                       <StatusBadge status={d.status} />
-                      <Button size="xs" variant="secondary" icon={<Eye className="h-3 w-3" />} onClick={() => downloadFile(`/admin/verifications/documents/${d.id}/download`, d.originalName, true).catch((e) => toast.error(errorMessage(e)))}>View</Button>
+                      {!d.value && <Button size="xs" variant="secondary" icon={<Eye className="h-3 w-3" />} onClick={() => downloadFile(`/admin/verifications/documents/${d.id}/download`, d.originalName, true).catch((e) => toast.error(errorMessage(e)))}>View</Button>}
                       {open && canAdmin('verification.review') && (
                         <Select className="h-7 w-auto py-0 text-xs" value="" onChange={(e) => e.target.value && setDocAction({ id: d.id, decision: e.target.value as 'APPROVED' })}>
                           <option value="">Mark as…</option>

@@ -32,6 +32,7 @@ const wallet = () => import('@/pages/wallet/WalletPages');
 const developer = () => import('@/pages/developer/DeveloperPages');
 const docs = () => import('@/pages/developer/DocsPage');
 const reports = () => import('@/pages/dashboard/ReportsPage');
+const integrations = () => import('@/pages/admin/IntegrationPages');
 const settings = () => import('@/pages/settings/SettingsPages');
 const admin = () => import('@/pages/admin/AdminPages');
 const adminOrgs = () => import('@/pages/admin/OrganizationPages');
@@ -98,6 +99,7 @@ const adminRoutes: RouteObject[] = [
   { path: 'inquiries', element: guard('inquiries.view', page(business, 'InquiriesPage'), true) },
   { path: 'developer/api-usage', element: guard('api_keys.view', page(business, 'AdminApiUsagePage'), true) },
   { path: 'developer/webhooks', element: guard('webhooks.view', page(business, 'AdminWebhooksPage'), true) },
+  { path: 'integrations', element: guard('integrations.view', page(integrations, 'IntegrationsPage'), true) },
   { path: 'api-keys', element: guard('api_keys.view', page(adminAccess, 'AdminApiKeysPage'), true) },
   { path: 'roles', element: guard('roles.view', page(adminAccess, 'RolesPage'), true) },
   { path: 'audit-logs', element: guard('audit_logs.view', page(adminAccess, 'AuditLogsPage'), true) },

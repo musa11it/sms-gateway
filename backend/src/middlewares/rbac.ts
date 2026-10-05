@@ -6,13 +6,15 @@ import { AppError } from '../utils/errors';
  * Used on /api/v1/admin routes.
  */
 export function requirePlatformPermission(...keys: string[]): RequestHandler {
-  return (req, _res, next) => {
+  const handler: RequestHandler = (req, _res, next) => {
     const perms = req.user?.platformPermissions;
     if (!perms) return next(AppError.unauthorized());
     const missing = keys.filter((k) => !perms.has(k));
     if (missing.length) return next(AppError.forbidden(undefined, 'PERMISSION_DENIED'));
     next();
   };
+  // Lets the API documentation read which permissions each route enforces.
+  return Object.assign(handler, { requiredPermissions: keys });
 }
 
 /** Requires the user to hold at least one platform permission (i.e. be staff). */

@@ -76,6 +76,7 @@ export function AdminLayout() {
         { label: 'API usage', to: '/admin/developer/api-usage', visible: canAdmin('api_keys.view') },
         { label: 'API keys', to: '/admin/api-keys', visible: canAdmin('api_keys.view') },
         { label: 'Webhooks', to: '/admin/developer/webhooks', visible: canAdmin('webhooks.view') },
+        { label: 'Integrations', to: '/admin/integrations', visible: canAdmin('integrations.view') },
       ],
     },
     { label: 'Reports', to: '/admin/reports', icon: BarChart3, visible: canAdmin('reports.view') },

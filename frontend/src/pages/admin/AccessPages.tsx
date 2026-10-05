@@ -20,6 +20,7 @@ import { adminService } from '@/services/adminService';
 import { businessService } from '@/services/businessService';
 import { fmtDateTime, fmtNumber, fmtRelative, titleCase } from '@/utils/format';
 import { PermissionMatrix } from '../settings/SettingsPages';
+import { RequirementsEditor } from './RequirementsEditor';
 
 export function AdminApiKeysPage() {
   const { canAdmin } = usePermissions();
@@ -27,6 +28,7 @@ export function AdminApiKeysPage() {
   const [status, setStatus] = useState('active');
   const [revoke, setRevoke] = useState<string | null>(null);
   const q = useQuery({ queryKey: ['admin', 'api-keys', page, status], queryFn: () => adminService.apiKeys({ page, limit: 20, status: status || undefined }) });
+  const toggle = useApiMutation(({ id, enabled }: { id: string; enabled: boolean }) => adminService.setApiKeyEnabled(id, enabled), { success: (_d, v) => (v.enabled ? 'API key enabled' : 'API key disabled'), invalidate: [['admin', 'api-keys']] });
   const revokeM = useApiMutation((id: string) => adminService.revokeApiKey(id), { success: 'API key revoked', invalidate: [['admin', 'api-keys']], onSuccess: () => setRevoke(null) });
   return (
     <div className="space-y-6">
@@ -45,7 +47,12 @@ export function AdminApiKeysPage() {
             { key: 'u', header: 'Requests', cell: (k) => fmtNumber(k.usageCount) },
             { key: 'l', header: 'Last used', cell: (k) => (k.lastUsedAt ? `${fmtRelative(k.lastUsedAt)} · ${k.lastUsedIp ?? ''}` : 'Never') },
             { key: 's', header: 'Status', cell: (k) => <StatusBadge status={k.status} /> },
-            { key: 'a', header: '', className: 'text-right', cell: (k) => canAdmin('api_keys.revoke') && k.status === 'ACTIVE' && <Button size="xs" variant="secondary" className="text-red-600" onClick={() => setRevoke(k.id)}>Revoke</Button> },
+            { key: 'a', header: '', className: 'text-right', cell: (k) => canAdmin('api_keys.revoke') && (k.status === 'ACTIVE' || k.status === 'DISABLED') && (
+              <span className="inline-flex gap-2">
+                <Button size="xs" variant="secondary" loading={toggle.isPending && toggle.variables?.id === k.id} onClick={() => toggle.mutate({ id: k.id, enabled: k.status === 'DISABLED' })}>{k.status === 'DISABLED' ? 'Enable' : 'Disable'}</Button>
+                <Button size="xs" variant="secondary" className="text-red-600" onClick={() => setRevoke(k.id)}>Revoke</Button>
+              </span>
+            ) },
           ]}
           empty={<EmptyState icon={<KeyRound />} title="No API keys" />}
         />
@@ -194,12 +201,15 @@ function SettingRow({ s, editable }: { s: Setting; editable: boolean }) {
   );
 }
 
+const REQUIREMENTS_KEY = 'verification.requiredDocuments';
+
 export function SystemSettingsPage() {
   const { canAdmin } = usePermissions();
   const settings = useQuery({ queryKey: ['admin', 'settings'], queryFn: adminService.settings, enabled: canAdmin('settings.view') });
   const providers = useQuery({ queryKey: ['admin', 'provider-status'], queryFn: adminService.providers, enabled: canAdmin('providers.view'), refetchInterval: 30_000 });
   const accounts = useQuery({ queryKey: ['admin', 'providers'], queryFn: businessService.providers, enabled: canAdmin('providers.view') });
   const p = providers.data;
+  const requirements = settings.data?.find((s) => s.key === REQUIREMENTS_KEY);
   return (
     <div className="space-y-6">
       <PageHeader title="System settings" description="Provider configuration and platform-wide business settings." />
@@ -239,11 +249,12 @@ export function SystemSettingsPage() {
           </Card>
         </div>
       )}
+      {canAdmin('settings.view') && requirements && <RequirementsEditor setting={requirements} editable={canAdmin('settings.update')} />}
       {canAdmin('settings.view') && (
         <Card padded={false}>
           <CardHeader title="Business settings" description="Validated on the server. Changes are audit logged." />
           {settings.isLoading ? <PageLoader /> : settings.error ? <ErrorState error={settings.error} /> : (
-            <div className="divide-y divide-slate-100">{settings.data?.map((s) => <SettingRow key={s.key} s={s} editable={canAdmin('settings.update')} />)}</div>
+            <div className="divide-y divide-slate-100">{settings.data?.filter((s) => s.key !== REQUIREMENTS_KEY).map((s) => <SettingRow key={s.key} s={s} editable={canAdmin('settings.update')} />)}</div>
           )}
         </Card>
       )}

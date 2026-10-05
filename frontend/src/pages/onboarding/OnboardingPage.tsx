@@ -4,7 +4,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { z } from 'zod';
-import { ArrowLeft, ArrowRight, Check, Clock3, FileText, Hourglass, LogOut, MailCheck, PartyPopper, RefreshCw, Trash2, Upload } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, Clock3, FileText, Hourglass, Link2, LogOut, MailCheck, PartyPopper, RefreshCw, Trash2, Upload } from 'lucide-react';
 import { toast } from 'sonner';
 import { errorMessage } from '@/api/client';
 import type { Organization } from '@/api/types';
@@ -18,7 +18,7 @@ import { DescriptionList } from '@/components/ui/Misc';
 import { useApiMutation } from '@/hooks/useApiMutation';
 import { useLogout, useMe } from '@/hooks/useAuth';
 import { authService } from '@/services/authService';
-import { organizationService, type VerificationOverview } from '@/services/organizationService';
+import { organizationService, type VerificationOverview, type VerificationRequirement } from '@/services/organizationService';
 import { cn, fmtBytes, fmtDateTime } from '@/utils/format';
 import { handleFormError } from '@/utils/forms';
 
@@ -267,17 +267,54 @@ function OrganizationStep({ org, overview, onBack, onNext }: { org: Organization
   );
 }
 
+const FORMAT_MIME = { PDF: 'application/pdf', PNG: 'image/png', JPEG: 'image/jpeg' } as const;
+const FORMAT_LABEL = { PDF: 'PDF', PNG: 'PNG', JPEG: 'JPEG' } as const;
+
+/** Link / text / date / choice answer for one verification item. */
+function ValueInput({ requirement, current, onSave, saving }: { requirement: VerificationRequirement; current?: string | null; onSave: (value: string) => void; saving: boolean }) {
+  const [value, setValue] = useState(current ?? '');
+  useEffect(() => setValue(current ?? ''), [current]);
+  const common = { value, onChange: (e: { target: { value: string } }) => setValue(e.target.value), 'aria-label': requirement.label };
+  return (
+    <form
+      className="flex w-full max-w-md items-center gap-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (value.trim()) onSave(value.trim());
+      }}
+    >
+      {requirement.kind === 'SELECT' ? (
+        <Select {...common}>
+          <option value="">Choose…</option>
+          {requirement.options?.map((o) => <option key={o} value={o}>{o}</option>)}
+        </Select>
+      ) : requirement.kind === 'TEXT' ? (
+        <Input {...common} maxLength={requirement.maxLength ?? 500} />
+      ) : requirement.kind === 'DATE' ? (
+        <Input {...common} type="date" />
+      ) : (
+        <Input {...common} type="url" placeholder="https://example.com" />
+      )}
+      <Button type="submit" variant="secondary" size="sm" loading={saving} disabled={!value.trim() || value.trim() === current}>
+        Save
+      </Button>
+    </form>
+  );
+}
+
 function DocumentsStep({ overview, onBack, onNext }: { overview: VerificationOverview; onBack: () => void; onNext: () => void }) {
   const qc = useQueryClient();
   const inputs = useRef<Record<string, HTMLInputElement | null>>({});
   const [uploading, setUploading] = useState<string | null>(null);
-  const remove = useApiMutation((id: string) => organizationService.deleteDocument(id), { success: 'Document removed', invalidate: [['verification']] });
+  const remove = useApiMutation((id: string) => organizationService.deleteDocument(id), { success: 'Removed', invalidate: [['verification']] });
+  const saveValue = useApiMutation(({ type, value }: { type: string; value: string }) => organizationService.submitDocumentValue(type, value), { success: 'Saved', invalidate: [['verification']] });
 
-  const upload = async (type: string, file: File) => {
-    if (file.size > 5 * 1024 * 1024) return toast.error('File is larger than 5 MB');
-    setUploading(type);
+  const upload = async (r: VerificationRequirement, file: File) => {
+    const maxMb = r.maxSizeMb ?? 5;
+    if (file.size > maxMb * 1024 * 1024) return toast.error(`File is larger than ${maxMb} MB`);
+    setUploading(r.type);
     try {
-      await organizationService.uploadDocument(type, file);
+      await organizationService.uploadDocument(r.type, file);
       toast.success('Document uploaded');
       await qc.invalidateQueries({ queryKey: ['verification'] });
     } catch (e) {
@@ -291,36 +328,39 @@ function DocumentsStep({ overview, onBack, onNext }: { overview: VerificationOve
     <div className="space-y-6">
       <div>
         <h2 className="text-lg font-semibold text-slate-900">Upload verification documents</h2>
-        <p className="mt-1 text-sm text-slate-500">PDF, PNG or JPEG, up to 5 MB each. Documents are stored privately and only visible to our review team.</p>
+        <p className="mt-1 text-sm text-slate-500">Provide the items below. Files are stored privately and only visible to our review team.</p>
       </div>
       <div className="space-y-3">
         {overview.requirements.map((r) => {
           const docs = overview.documents.filter((d) => d.documentType === r.type);
           const active = docs.find((d) => ['PENDING', 'APPROVED'].includes(d.status));
+          const isFile = r.kind === 'FILE';
+          const formats = r.allowedFormats ?? (['PDF', 'PNG', 'JPEG'] as const);
           return (
             <div key={r.type} className={cn('rounded-xl border p-4 transition', active ? 'border-emerald-200 bg-emerald-50/40' : 'border-slate-200 bg-white')}>
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-3">
                   <span className={cn('flex h-10 w-10 items-center justify-center rounded-lg', active ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500')}>
-                    {active ? <Check className="h-5 w-5" /> : <FileText className="h-5 w-5" />}
+                    {active ? <Check className="h-5 w-5" /> : isFile ? <FileText className="h-5 w-5" /> : <Link2 className="h-5 w-5" />}
                   </span>
                   <div>
                     <p className="text-sm font-medium text-slate-900">
                       {r.label} {r.required ? <span className="text-red-500">*</span> : <span className="text-xs font-normal text-slate-400">(optional)</span>}
                     </p>
                     {r.description && <p className="text-xs text-slate-500">{r.description}</p>}
+                    {isFile && <p className="text-xs text-slate-400">{formats.map((f) => FORMAT_LABEL[f]).join(', ')} · up to {r.maxSizeMb ?? 5} MB</p>}
                   </div>
                 </div>
-                {overview.canEdit && (
+                {overview.canEdit && isFile && (
                   <>
                     <input
                       type="file"
-                      accept="application/pdf,image/png,image/jpeg"
+                      accept={formats.map((f) => FORMAT_MIME[f]).join(',')}
                       className="hidden"
                       ref={(el) => (inputs.current[r.type] = el)}
                       onChange={(e) => {
                         const f = e.target.files?.[0];
-                        if (f) void upload(r.type, f);
+                        if (f) void upload(r, f);
                         e.target.value = '';
                       }}
                     />
@@ -329,21 +369,29 @@ function DocumentsStep({ overview, onBack, onNext }: { overview: VerificationOve
                     </Button>
                   </>
                 )}
+                {overview.canEdit && !isFile && (
+                  <ValueInput
+                    requirement={r}
+                    current={active?.value}
+                    saving={saveValue.isPending && saveValue.variables?.type === r.type}
+                    onSave={(value) => saveValue.mutate({ type: r.type, value })}
+                  />
+                )}
               </div>
               {docs.length > 0 && (
                 <ul className="mt-3 space-y-1.5 border-t border-slate-100 pt-3">
                   {docs.map((d) => (
                     <li key={d.id} className="flex items-center justify-between gap-3 text-sm">
                       <span className="flex min-w-0 items-center gap-2">
-                        <FileText className="h-4 w-4 shrink-0 text-slate-400" />
-                        <span className="truncate text-slate-700">{d.originalName}</span>
-                        <span className="shrink-0 text-xs text-slate-400">{fmtBytes(d.sizeBytes)}</span>
+                        {d.value ? <Link2 className="h-4 w-4 shrink-0 text-slate-400" /> : <FileText className="h-4 w-4 shrink-0 text-slate-400" />}
+                        <span className="truncate text-slate-700">{d.value ?? d.originalName}</span>
+                        {d.sizeBytes != null && <span className="shrink-0 text-xs text-slate-400">{fmtBytes(d.sizeBytes)}</span>}
                         <StatusBadge status={d.status} />
                       </span>
                       <span className="flex items-center gap-2">
                         {d.reviewNote && <span className="text-xs text-amber-700">{d.reviewNote}</span>}
                         {overview.canEdit && d.status !== 'APPROVED' && (
-                          <button className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-600" onClick={() => remove.mutate(d.id)} aria-label="Remove document">
+                          <button className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-600" onClick={() => remove.mutate(d.id)} aria-label="Remove">
                             <Trash2 className="h-4 w-4" />
                           </button>
                         )}

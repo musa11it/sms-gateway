@@ -345,6 +345,9 @@ model Organization {
   expectedMonthlyVolume Int?
   // Optional per-organization cap on recipients per hour (null = platform default)
   smsHourlyLimit        Int?
+  // Platform control over API keys: switch the whole organization off, or cap its scopes (null = all).
+  apiAccessEnabled      Boolean            @default(true)
+  apiAllowedScopes      Json?
   timezone              String             @default("Africa/Kigali")
   approvedAt            DateTime?
   suspendedAt           DateTime?
@@ -468,11 +471,13 @@ model VerificationDocument {
   verificationId String         @db.Char(36)
   documentType   String
   originalName   String         @db.Text
-  mimeType       String
-  sizeBytes      Int
+  // For URL / TEXT / DATE / SELECT requirements the answer lives here and the file columns are null.
+  value          String?        @db.Text
+  mimeType       String?
+  sizeBytes      Int?
   // Opaque storage key relative to the configured storage root. Never returned to clients.
-  storageKey     String         @unique
-  checksum       String
+  storageKey     String?        @unique
+  checksum       String?
   status         DocumentStatus @default(PENDING)
   reviewNote     String?        @db.Text
   uploadedById   String         @db.Char(36)
@@ -1337,4 +1342,31 @@ model SimulatorRecord {
 
   @@index([kind])
   @@map("simulator_records")
+}
+
+// Platform-level credentials for trusted external systems (e.g. the finance system). Unlike
+// api_keys these are not tied to an organization; a Super Admin issues, scopes and revokes them.
+model IntegrationClient {
+  id          String    @id @default(uuid()) @db.Char(36)
+  name        String
+  // Public identifier embedded in the key; used for lookup.
+  prefix      String    @unique
+  // HMAC-SHA256(pepper, secret). The raw secret is shown exactly once.
+  keyHash     String
+  lastFour    String
+  scopes      Json
+  allowedIps  Json
+  isEnabled   Boolean   @default(true)
+  expiresAt   DateTime?
+  // Non-interactive service account the credential acts as (audit trail, ownership columns).
+  userId      String?   @db.Char(36)
+  createdById String    @db.Char(36)
+  lastUsedAt  DateTime?
+  lastUsedIp  String?
+  usageCount  Int       @default(0)
+  revokedAt   DateTime?
+  revokedById String?   @db.Char(36)
+  createdAt   DateTime  @default(now())
+
+  @@map("integration_clients")
 }

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { isProduction } from '../config/env';
 import { prisma } from '../config/prisma';
 import { authenticate, requireVerifiedEmail } from '../middlewares/auth';
+import { authenticateStaff } from '../middlewares/integrationAuth';
 import { orgContext } from '../middlewares/organization';
 import { adminLimiter } from '../middlewares/rateLimit';
 import { requireStaff } from '../middlewares/rbac';
@@ -30,6 +31,8 @@ import { adminFinanceRouter } from '../modules/finance/admin.finance.routes';
 import { adminProvidersRouter } from '../modules/providers/admin.providers.routes';
 import { adminDeveloperRouter } from '../modules/api-keys/admin.developer.routes';
 import { adminInquiriesRouter, siteRouter } from '../modules/site/site.routes';
+import { adminIntegrationsRouter } from '../modules/integrations/admin.integrations.routes';
+import { financeIntegrationRouter } from '../modules/integrations/finance.routes';
 import { adminVerificationRouter } from '../modules/verification/admin.verification.routes';
 import { verificationRouter } from '../modules/verification/verification.routes';
 import { walletRouter } from '../modules/wallet/wallet.routes';
@@ -45,6 +48,9 @@ apiRouter.use('/invitations', invitationRouter);
 
 /** Public API (API key auth) — /api/v1/public/... */
 apiRouter.use('/public', publicRouter);
+
+/** External systems (integration-key auth) — /api/v1/integrations/... */
+apiRouter.use('/integrations/finance', financeIntegrationRouter);
 
 /** Public website (no auth): pricing and contact form. */
 apiRouter.use('/site', siteRouter);
@@ -84,22 +90,26 @@ apiRouter.use('/notifications', authenticate, notificationRouter);
 
 // ── Platform admin API: staff only, permission-checked per route ────────
 const admin = Router();
-admin.use(authenticate, requireStaff, adminLimiter);
-admin.use('/reports', adminReportsRouter);
-admin.use('/users', adminUsersRouter);
-admin.use('/organizations', adminOrganizationsRouter);
-admin.use('/verifications', adminVerificationRouter);
-admin.use('/senders', adminSendersRouter);
-admin.use('/sms', adminSmsRouter);
-admin.use('/billing', adminBillingRouter);
-admin.use('/roles', adminRolesRouter);
-admin.use('/audit-logs', adminAuditRouter);
-admin.use('/settings', adminSettingsRouter);
-admin.use('/api-keys', adminApiKeysRouter);
-admin.use('/finance', adminFinanceRouter);
-admin.use('/providers', adminProvidersRouter);
-admin.use('/developer', adminDeveloperRouter);
-admin.use('/inquiries', adminInquiriesRouter);
+admin.use(authenticateStaff, requireStaff, adminLimiter);
+export const adminMounts: [string, Router][] = [
+  ['/reports', adminReportsRouter],
+  ['/users', adminUsersRouter],
+  ['/organizations', adminOrganizationsRouter],
+  ['/verifications', adminVerificationRouter],
+  ['/senders', adminSendersRouter],
+  ['/sms', adminSmsRouter],
+  ['/billing', adminBillingRouter],
+  ['/roles', adminRolesRouter],
+  ['/audit-logs', adminAuditRouter],
+  ['/settings', adminSettingsRouter],
+  ['/api-keys', adminApiKeysRouter],
+  ['/finance', adminFinanceRouter],
+  ['/providers', adminProvidersRouter],
+  ['/developer', adminDeveloperRouter],
+  ['/inquiries', adminInquiriesRouter],
+  ['/integrations', adminIntegrationsRouter],
+];
+for (const [path, router] of adminMounts) admin.use(path, router);
 apiRouter.use('/admin', admin);
 
 // ── Development-only: outbox viewer (no real email delivery in dev) ─────

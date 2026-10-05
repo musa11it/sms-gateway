@@ -5,7 +5,7 @@ import { prisma } from '../../config/prisma';
 import { requirePlatformPermission } from '../../middlewares/rbac';
 import { actorFromRequest, metaFromRequest } from '../../types/actor';
 import { asyncHandler, ok, paginated, paginationSchema, parse, toSkipTake, uuidParam } from '../../utils/http';
-import { revokeApiKey, serializeApiKey } from './apiKey.service';
+import { revokeApiKey, serializeApiKey, setApiKeyEnabled } from './apiKey.service';
 
 export const adminApiKeysRouter = Router();
 
@@ -33,5 +33,16 @@ adminApiKeysRouter.post(
     const { id } = parse(uuidParam, req.params);
     await revokeApiKey(null, id, actorFromRequest(req), metaFromRequest(req));
     return ok(res, null, 'API key revoked');
+  }),
+);
+
+adminApiKeysRouter.post(
+  '/:id/:action(enable|disable)',
+  requirePlatformPermission('api_keys.revoke'),
+  asyncHandler(async (req, res) => {
+    const { id } = parse(uuidParam, { id: req.params.id });
+    const enable = req.params.action === 'enable';
+    await setApiKeyEnabled(null, id, enable, actorFromRequest(req), metaFromRequest(req));
+    return ok(res, null, enable ? 'API key enabled' : 'API key disabled');
   }),
 );
