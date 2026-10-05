@@ -6,7 +6,8 @@ import { deleteFile, saveFile } from '../../utils/storage';
 import { ALLOWED_DOCUMENT_TYPES, detectFileType } from '../../middlewares/upload';
 import { audit } from '../audit-logs/audit.service';
 import { notifyOrganization, notifyStaff } from '../notifications/notification.service';
-import { getSetting } from '../settings/settings.service';
+import { getSetting, type DocumentRequirement } from '../settings/settings.service';
+import { env } from '../../config/env';
 
 const EDITABLE = ['DRAFT', 'MORE_INFORMATION_REQUIRED', 'REJECTED'] as const;
 
@@ -37,7 +38,7 @@ export async function getVerificationOverview(organizationId: string) {
   const documents = await prisma.verificationDocument.findMany({
     where: { verificationId: v.id },
     orderBy: { createdAt: 'desc' },
-    select: { id: true, documentType: true, originalName: true, mimeType: true, sizeBytes: true, status: true, reviewNote: true, createdAt: true, reviewedAt: true },
+    select: { id: true, documentType: true, originalName: true, value: true, mimeType: true, sizeBytes: true, status: true, reviewNote: true, createdAt: true, reviewedAt: true },
   });
   const missingFields = REQUIRED_PROFILE_FIELDS.filter(([k]) => !org[k]).map(([k, label]) => ({ field: k, label }));
   const missingDocuments = requirements
@@ -55,6 +56,21 @@ export async function getVerificationOverview(organizationId: string) {
   };
 }
 
+const FORMAT_MIME = { PDF: 'application/pdf', PNG: 'image/png', JPEG: 'image/jpeg' } as const;
+const DOCUMENT_SELECT = { id: true, documentType: true, originalName: true, value: true, mimeType: true, sizeBytes: true, status: true, createdAt: true } as const;
+
+async function requirementFor(documentType: string): Promise<DocumentRequirement> {
+  const requirement = (await getSetting('verification.requiredDocuments')).find((r) => r.type === documentType);
+  if (!requirement) throw AppError.unprocessable('Unknown document type', 'INVALID_DOCUMENT_TYPE', [{ field: 'documentType', message: 'Unknown document type' }]);
+  return requirement;
+}
+
+async function editableVerification(organizationId: string) {
+  const v = await getCurrentVerification(organizationId);
+  if (!(EDITABLE as readonly string[]).includes(v.status)) throw AppError.conflict('Verification is under review and cannot be changed', 'VERIFICATION_LOCKED');
+  return v;
+}
+
 export async function uploadDocument(
   organizationId: string,
   file: { buffer: Buffer; mimetype: string; originalname: string; size: number },
@@ -62,15 +78,17 @@ export async function uploadDocument(
   actor: Actor,
   meta?: RequestMeta,
 ) {
-  const requirements = await getSetting('verification.requiredDocuments');
-  if (!requirements.some((r) => r.type === documentType)) {
-    throw AppError.unprocessable('Unknown document type', 'INVALID_DOCUMENT_TYPE', [{ field: 'documentType', message: 'Unknown document type' }]);
-  }
+  const requirement = await requirementFor(documentType);
+  if (requirement.kind !== 'FILE') throw AppError.unprocessable(`${requirement.label} is not a file upload`, 'INVALID_DOCUMENT_KIND', [{ field: 'documentType', message: 'This item does not accept a file' }]);
+
+  const formats = requirement.allowedFormats ?? (Object.keys(FORMAT_MIME) as (keyof typeof FORMAT_MIME)[]);
   const detected = detectFileType(file.buffer);
   if (!detected || detected !== file.mimetype) throw AppError.unprocessable('File content does not match its type (PDF, PNG or JPEG only)', 'INVALID_FILE_CONTENT');
+  if (!formats.some((f) => FORMAT_MIME[f] === detected)) throw AppError.unprocessable(`Only ${formats.join(', ')} files are accepted for ${requirement.label}`, 'INVALID_FILE_TYPE', [{ field: 'file', message: `Allowed: ${formats.join(', ')}` }]);
+  const maxBytes = Math.min(env.UPLOAD_MAX_BYTES, Math.round((requirement.maxSizeMb ?? Infinity) * 1024 * 1024));
+  if (file.size > maxBytes) throw AppError.unprocessable(`File is too large (max ${Math.round((maxBytes / 1024 / 1024) * 10) / 10} MB)`, 'FILE_TOO_LARGE', [{ field: 'file', message: 'File is too large' }]);
 
-  const v = await getCurrentVerification(organizationId);
-  if (!(EDITABLE as readonly string[]).includes(v.status)) throw AppError.conflict('Verification is under review and cannot be changed', 'VERIFICATION_LOCKED');
+  const v = await editableVerification(organizationId);
 
   const stored = await saveFile(organizationId, file.buffer, ALLOWED_DOCUMENT_TYPES[detected]);
   const safeName = file.originalname.replace(/[^\w.\- ]/g, '_').slice(0, 150) || 'document';
@@ -86,9 +104,57 @@ export async function uploadDocument(
       checksum: stored.checksum,
       uploadedById: actorUserId(actor)!,
     },
-    select: { id: true, documentType: true, originalName: true, mimeType: true, sizeBytes: true, status: true, createdAt: true },
+    select: DOCUMENT_SELECT,
   });
   await audit({ actor, action: 'DOCUMENT_UPLOADED', resource: 'verification_document', resourceId: doc.id, organizationId, metadata: { documentType, sizeBytes: file.size }, meta });
+  return doc;
+}
+
+/** Validates an answer for a non-file requirement and returns it in its stored form. */
+function normalizeValue(requirement: DocumentRequirement, raw: string): string {
+  const value = raw.trim();
+  const fail = (message: string): never => {
+    throw AppError.unprocessable(message, 'INVALID_VALUE', [{ field: 'value', message }]);
+  };
+  if (!value) return fail('A value is required');
+  switch (requirement.kind) {
+    case 'URL': {
+      let url: URL;
+      try {
+        url = new URL(/^[a-z][a-z0-9+.-]*:/i.test(value) ? value : `https://${value}`);
+      } catch {
+        return fail('Enter a valid link');
+      }
+      if (!['http:', 'https:'].includes(url.protocol) || !url.hostname.includes('.')) return fail('Enter a valid http(s) link');
+      return url.toString().slice(0, 2000);
+    }
+    case 'TEXT':
+      if (value.length > (requirement.maxLength ?? 500)) return fail(`Must be at most ${requirement.maxLength ?? 500} characters`);
+      return value;
+    case 'DATE':
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(Date.parse(value))) return fail('Enter a valid date (YYYY-MM-DD)');
+      return value;
+    case 'SELECT':
+      if (!requirement.options?.includes(value)) return fail('Choose one of the available options');
+      return value;
+    default:
+      return fail('This item requires a file upload');
+  }
+}
+
+/** Saves the answer to a link / text / date / choice requirement, replacing any earlier answer that is not yet approved. */
+export async function submitDocumentValue(organizationId: string, documentType: string, rawValue: string, actor: Actor, meta?: RequestMeta) {
+  const requirement = await requirementFor(documentType);
+  const value = normalizeValue(requirement, rawValue);
+  const v = await editableVerification(organizationId);
+  const doc = await prisma.$transaction(async (tx) => {
+    await tx.verificationDocument.deleteMany({ where: { verificationId: v.id, documentType, status: { not: 'APPROVED' } } });
+    return tx.verificationDocument.create({
+      data: { organizationId, verificationId: v.id, documentType, originalName: value.slice(0, 150), value, uploadedById: actorUserId(actor)! },
+      select: DOCUMENT_SELECT,
+    });
+  });
+  await audit({ actor, action: 'DOCUMENT_UPLOADED', resource: 'verification_document', resourceId: doc.id, organizationId, metadata: { documentType, kind: requirement.kind }, meta });
   return doc;
 }
 
@@ -99,7 +165,7 @@ export async function deleteDocument(organizationId: string, id: string, actor: 
     throw AppError.conflict('This document can no longer be removed', 'VERIFICATION_LOCKED');
   }
   await prisma.verificationDocument.delete({ where: { id } });
-  await deleteFile(doc.storageKey);
+  if (doc.storageKey) await deleteFile(doc.storageKey);
   await audit({ actor, action: 'DOCUMENT_DELETED', resource: 'verification_document', resourceId: id, organizationId, meta });
 }
 

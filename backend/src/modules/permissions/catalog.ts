@@ -38,6 +38,7 @@ export const PERMISSIONS: PermissionDef[] = [
   P('users.approve', 'Users', 'Approve or reject user accounts', PLAT),
 
   P('organizations.view', 'Organizations', 'View organization details', BOTH),
+  P('organizations.create', 'Organizations', 'Create organizations and give users access to them', PLAT),
   P('organizations.update', 'Organizations', 'Update organization profile', BOTH),
   P('organizations.suspend', 'Organizations', 'Suspend or reactivate organizations', PLAT),
 
@@ -116,6 +117,9 @@ export const PERMISSIONS: PermissionDef[] = [
   P('profit.view', 'Finance', 'View margin and profit calculations', PLAT),
   P('expenses.view', 'Finance', 'View operating expenses', PLAT),
   P('expenses.manage', 'Finance', 'Record and edit operating expenses', PLAT),
+
+  P('integrations.view', 'Integrations', 'View external system credentials and their activity', PLAT),
+  P('integrations.manage', 'Integrations', 'Issue, restrict, disable and revoke credentials for external systems', PLAT),
 
   P('inquiries.view', 'Support', 'View and handle contact inquiries from the website', PLAT),
 
@@ -333,6 +337,7 @@ export const GRANT_MIGRATIONS: { version: number; grants: Record<string, string[
       CUSTOMER_MANAGER: ['senders.allocate'],
       CUSTOMER_FINANCE: ['senders.allocate'],
     },
+    grants: { ADMIN: ['organizations.create'] },
   },
 ];
 

@@ -17,9 +17,17 @@ import { notifyOrganization } from '../notifications/notification.service';
  * - secret: shown once; only HMAC-SHA256(API_KEY_PEPPER, secret) is stored
  */
 const KEY_RE = /^sgw_live_([0-9a-f]{12})_([A-Za-z0-9]{40})$/;
-export const API_SCOPES = ['sms.send', 'sms.read', 'balance.read'] as const;
+import { ORGANIZATION_SCOPES } from '../integrations/scopes';
 
-function base62(len: number): string {
+export const API_SCOPES = ORGANIZATION_SCOPES;
+
+/** Scopes an organization may use: all organization scopes unless an admin capped them. */
+export function allowedScopesFor(org: { apiAllowedScopes: Prisma.JsonValue }): string[] {
+  const capped = stringList(org.apiAllowedScopes);
+  return org.apiAllowedScopes === null ? [...API_SCOPES] : API_SCOPES.filter((s) => capped.includes(s));
+}
+
+export function base62(len: number): string {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
   const bytes = crypto.randomBytes(len * 2);
   let out = '';
@@ -29,7 +37,7 @@ function base62(len: number): string {
   return out.length === len ? out : base62(len);
 }
 
-function hashSecret(secret: string) {
+export function hashSecret(secret: string) {
   return hmacSha256(env.API_KEY_PEPPER, secret);
 }
 
@@ -67,6 +75,10 @@ export async function createApiKey(
 ) {
   const org = await prisma.organization.findUniqueOrThrow({ where: { id: organizationId } });
   if (org.status !== 'ACTIVE') throw AppError.forbidden('Your organization must be approved to create API keys', 'ORGANIZATION_NOT_APPROVED');
+  if (!org.apiAccessEnabled) throw AppError.forbidden('API access is disabled for your organization. Contact support.', 'API_ACCESS_DISABLED');
+  const allowed = allowedScopesFor(org);
+  const denied = (input.scopes ?? []).filter((sc) => !allowed.includes(sc));
+  if (denied.length) throw AppError.forbidden(`Your organization is not permitted to use: ${denied.join(', ')}`, 'SCOPE_NOT_PERMITTED');
   for (const ip of input.allowedIps ?? []) {
     if (!net.isIP(ip)) throw AppError.unprocessable(`"${ip}" is not a valid IP address`, 'INVALID_IP', [{ field: 'allowedIps', message: 'Invalid IP address' }]);
   }
@@ -79,7 +91,7 @@ export async function createApiKey(
       prefix,
       keyHash: hashSecret(secret),
       lastFour: secret.slice(-4),
-      scopes: input.scopes?.length ? input.scopes : ['sms.send', 'sms.read', 'balance.read'],
+      scopes: input.scopes?.length ? input.scopes : allowed,
       allowedIps: input.allowedIps ?? [],
       expiresAt: input.expiresAt ?? null,
       environment: input.environment ?? 'production',
@@ -129,7 +141,7 @@ export async function authenticateApiKey(raw: string | undefined, ip: string | u
   const match = raw ? KEY_RE.exec(raw.trim()) : null;
   if (!match) throw AppError.unauthorized('Missing or malformed API key', 'INVALID_API_KEY');
   const [, prefix, secret] = match;
-  const key = await prisma.apiKey.findUnique({ where: { prefix } });
+  const key = await prisma.apiKey.findUnique({ where: { prefix }, include: { organization: { select: { apiAccessEnabled: true, apiAllowedScopes: true } } } });
   // Compare even when the key is missing so timing does not reveal valid prefixes.
   const valid = safeEqual(hashSecret(secret), key?.keyHash ?? '0'.repeat(64));
   if (!key || !valid) throw AppError.unauthorized('Invalid API key', 'INVALID_API_KEY');
@@ -140,6 +152,9 @@ export async function authenticateApiKey(raw: string | undefined, ip: string | u
   if (allowedIps.length && (!ip || !allowedIps.includes(ip.replace(/^::ffff:/, '')))) {
     throw AppError.forbidden('Requests from this IP address are not allowed for this key', 'IP_NOT_ALLOWED');
   }
+  // The platform can switch API access off for an organization, or cap its scopes, at any time.
+  if (!key.organization.apiAccessEnabled) throw AppError.forbidden('API access is disabled for this organization', 'API_ACCESS_DISABLED');
+  const allowed = allowedScopesFor(key.organization);
   await prisma.apiKey.update({ where: { id: key.id }, data: { lastUsedAt: new Date(), lastUsedIp: ip, usageCount: { increment: 1 } } });
-  return { id: key.id, organizationId: key.organizationId, prefix: key.prefix, scopes: stringList(key.scopes), rateLimitPerMinute: key.rateLimitPerMinute };
+  return { id: key.id, organizationId: key.organizationId, prefix: key.prefix, scopes: stringList(key.scopes).filter((sc) => allowed.includes(sc)), rateLimitPerMinute: key.rateLimitPerMinute };
 }

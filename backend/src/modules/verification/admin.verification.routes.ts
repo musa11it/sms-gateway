@@ -44,7 +44,7 @@ adminVerificationRouter.get(
       where: { id },
       include: {
         organization: { include: { members: { where: { isOwner: true }, include: { user: { select: { id: true, fullName: true, email: true, phone: true, status: true, emailVerifiedAt: true } } } } } },
-        documents: { orderBy: { createdAt: 'desc' }, select: { id: true, documentType: true, originalName: true, mimeType: true, sizeBytes: true, status: true, reviewNote: true, createdAt: true, reviewedAt: true } },
+        documents: { orderBy: { createdAt: 'desc' }, select: { id: true, documentType: true, originalName: true, value: true, mimeType: true, sizeBytes: true, status: true, reviewNote: true, createdAt: true, reviewedAt: true } },
         reviews: { orderBy: { createdAt: 'desc' }, take: 50 },
       },
     });
@@ -65,7 +65,7 @@ adminVerificationRouter.get(
   asyncHandler(async (req, res) => {
     const { id } = parse(uuidParam, req.params);
     const doc = await prisma.verificationDocument.findUnique({ where: { id } });
-    if (!doc) throw AppError.notFound('Document');
+    if (!doc || !doc.storageKey || !doc.mimeType) throw AppError.notFound('Document');
     await audit({ actor: actorFromRequest(req), action: 'DOCUMENT_VIEWED', resource: 'verification_document', resourceId: id, organizationId: doc.organizationId, meta: metaFromRequest(req) });
     res.setHeader('Content-Type', doc.mimeType);
     res.setHeader('Content-Disposition', `inline; filename="${doc.originalName.replace(/"/g, '')}"`);

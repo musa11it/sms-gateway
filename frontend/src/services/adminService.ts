@@ -20,6 +20,7 @@ import type {
   VerificationStatus,
   WalletTransaction,
 } from '@/api/types';
+import type { VerificationItem, VerificationRequirement } from '@/services/organizationService';
 
 export interface AdminUser {
   id: string;
@@ -35,6 +36,18 @@ export interface AdminUser {
   memberships: { isOwner: boolean; organization: { id: string; name: string; status: string }; role: { name: string } }[];
 }
 
+export interface CreateOrganizationBody {
+  name: string;
+  businessType?: string;
+  country?: string;
+  city?: string;
+  address?: string;
+  registrationNumber?: string;
+  owner: { fullName: string; email: string; phone?: string };
+  activate: boolean;
+  apiAccess?: { enabled: boolean; allowedScopes: string[] | null };
+}
+
 export interface AdminOrgRow extends Organization {
   owner: { fullName: string; email: string } | null;
   balance: number;
@@ -42,7 +55,42 @@ export interface AdminOrgRow extends Organization {
   senderCount: number;
 }
 
+export interface ApiScope {
+  key: string;
+  level: 'PLATFORM' | 'ORGANIZATION';
+  group: string;
+  label: string;
+  description: string;
+  highRisk?: boolean;
+}
+
+export interface IntegrationClient {
+  id: string;
+  name: string;
+  maskedKey: string;
+  scopes: string[];
+  allowedIps: string[];
+  expiresAt: string | null;
+  lastUsedAt: string | null;
+  lastUsedIp: string | null;
+  usageCount: number;
+  status: 'ACTIVE' | 'DISABLED' | 'EXPIRED' | 'REVOKED';
+  createdAt: string;
+}
+
+export interface IntegrationActivity {
+  id: string;
+  action: string;
+  resourceId: string | null;
+  organizationId: string | null;
+  metadata: Record<string, unknown> | null;
+  ipAddress: string | null;
+  createdAt: string;
+}
+
 export interface AdminOrgDetail extends Organization {
+  apiAccessEnabled: boolean;
+  apiAllowedScopes: string[] | null;
   wallet: { id: string; balance: number; lowBalanceThreshold: number } | null;
   members: { id: string; isOwner: boolean; user: { id: string; fullName: string; email: string; status: string; lastLoginAt: string | null }; role: { name: string } }[];
   senders: SenderId[];
@@ -67,8 +115,8 @@ export interface VerificationDetail {
   submittedAt: string | null;
   reviewedAt: string | null;
   organization: Organization & { members: { user: { id: string; fullName: string; email: string; phone: string | null; status: string; emailVerifiedAt: string | null } }[] };
-  documents: { id: string; documentType: string; originalName: string; mimeType: string; sizeBytes: number; status: string; reviewNote: string | null; createdAt: string }[];
-  requirements: { type: string; label: string; required: boolean }[];
+  documents: VerificationItem[];
+  requirements: VerificationRequirement[];
   history: { id: string; action: string; createdAt: string; metadata: Record<string, unknown> | null; actor: { fullName: string } | null }[];
   reviews: { id: string; action: string; fromStatus: string | null; toStatus: string | null; note: string | null; createdAt: string }[];
 }
@@ -129,6 +177,9 @@ export const adminService = {
 
   organizations: (params: P) => getPage<AdminOrgRow>('/admin/organizations', params),
   organization: (id: string) => get<AdminOrgDetail>(`/admin/organizations/${id}`),
+  createOrganization: (body: CreateOrganizationBody) => post<{ organization: { id: string; name: string }; owner: { email: string; created: boolean; temporaryPassword: string | null } }>('/admin/organizations', body),
+  organizationRoles: (id: string) => get<{ id: string; name: string; description: string | null }[]>(`/admin/organizations/${id}/roles`),
+  grantOrganizationAccess: (id: string, body: { person: { fullName: string; email: string; phone?: string }; roleId: string }) => post<{ user: { email: string; created: boolean; temporaryPassword: string | null } }>(`/admin/organizations/${id}/members`, body),
   setOrganizationStatus: (id: string, action: 'suspend' | 'reactivate', reason?: string) => post(`/admin/organizations/${id}/status`, { action, reason }),
 
   verifications: (params: P) => getPage<VerificationRow>('/admin/verifications', params),
@@ -190,4 +241,13 @@ export const adminService = {
 
   apiKeys: (params: P) => getPage<ApiKey>('/admin/api-keys', params),
   revokeApiKey: (id: string) => post(`/admin/api-keys/${id}/revoke`),
+  setApiKeyEnabled: (id: string, enabled: boolean) => post(`/admin/api-keys/${id}/${enabled ? 'enable' : 'disable'}`),
+  setOrganizationApiAccess: (id: string, body: { enabled: boolean; allowedScopes: string[] | null }) => put(`/admin/organizations/${id}/api-access`, body),
+
+  apiScopes: () => get<ApiScope[]>('/admin/integrations/scopes'),
+  integrations: () => get<IntegrationClient[]>('/admin/integrations'),
+  createIntegration: (body: { name: string; scopes: string[]; allowedIps: string[]; expiresAt?: string | null }) => post<{ integration: IntegrationClient; secret: string }>('/admin/integrations', body),
+  setIntegrationEnabled: (id: string, enabled: boolean) => post(`/admin/integrations/${id}/${enabled ? 'enable' : 'disable'}`),
+  revokeIntegration: (id: string) => post(`/admin/integrations/${id}/revoke`),
+  integrationActivity: (id: string) => get<IntegrationActivity[]>(`/admin/integrations/${id}/activity`),
 };

@@ -66,3 +66,11 @@ export function publicApiLimiter(fixedLimit?: number, multiplier = 1) {
     keyGenerator: (req) => (req.apiKey ? `key:${req.apiKey.id}` : `ip:${req.ip}`),
   });
 }
+
+/** External integrations (e.g. the finance system): limited per credential, not per IP. */
+export const integrationLimiter = rateLimit({
+  ...base,
+  windowMs: 60_000,
+  limit: 120,
+  keyGenerator: (req) => (req.integration ? `integration:${req.integration.id}` : `ip:${req.ip}`),
+});

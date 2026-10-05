@@ -33,13 +33,24 @@ verificationRouter.post(
   }),
 );
 
+verificationRouter.post(
+  '/documents/value',
+  requireVerifiedEmail,
+  requireOrgPermission('verification.submit'),
+  asyncHandler(async (req, res) => {
+    const body = parse(z.object({ documentType: z.string().trim().min(1).max(64), value: z.string().trim().min(1).max(2000) }), req.body);
+    const doc = await svc.submitDocumentValue(req.org!.id, body.documentType, body.value, actorFromRequest(req), metaFromRequest(req));
+    return created(res, doc, 'Saved');
+  }),
+);
+
 verificationRouter.get(
   '/documents/:id/download',
   requireOrgPermission('verification.view'),
   asyncHandler(async (req, res) => {
     const { id } = parse(uuidParam, req.params);
     const doc = await prisma.verificationDocument.findFirst({ where: { id, organizationId: req.org!.id } });
-    if (!doc) throw AppError.notFound('Document');
+    if (!doc || !doc.storageKey || !doc.mimeType) throw AppError.notFound('Document');
     res.setHeader('Content-Type', doc.mimeType);
     res.setHeader('Content-Disposition', `inline; filename="${doc.originalName.replace(/"/g, '')}"`);
     res.setHeader('X-Content-Type-Options', 'nosniff');

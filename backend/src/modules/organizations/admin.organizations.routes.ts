@@ -1,11 +1,13 @@
 import { Router } from 'express';
-import type { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from '../../config/prisma';
 import { requirePlatformPermission } from '../../middlewares/rbac';
 import { actorFromRequest, metaFromRequest } from '../../types/actor';
 import { AppError } from '../../utils/errors';
-import { asyncHandler, ok, paginated, paginationSchema, parse, toSkipTake, uuidParam } from '../../utils/http';
+import { asyncHandler, created, ok, paginated, paginationSchema, parse, toSkipTake, uuidParam } from '../../utils/http';
+import { ORGANIZATION_SCOPES } from '../integrations/scopes';
+import { createOrganizationByAdmin, grantOrganizationAccess } from './admin.provisioning.service';
 import { audit } from '../audit-logs/audit.service';
 import { notifyOrganization } from '../notifications/notification.service';
 import { syncVerificationSuspension } from '../verification/verification.service';
@@ -44,6 +46,70 @@ adminOrganizationsRouter.get(
       q.limit,
       total,
     );
+  }),
+);
+
+const person = z.object({ fullName: z.string().trim().min(2).max(120), email: z.string().trim().toLowerCase().email().max(255), phone: z.string().trim().max(30).optional() });
+const text = (max: number) => z.string().trim().max(max).optional();
+
+/** Creates an organization and its owner. Activating skips verification, so it also needs verification.approve. */
+adminOrganizationsRouter.post(
+  '/',
+  requirePlatformPermission('organizations.create'),
+  asyncHandler(async (req, res) => {
+    const body = parse(
+      z.object({
+        name: z.string().trim().min(2).max(160),
+        businessType: text(80),
+        country: text(80),
+        city: text(80),
+        address: text(500),
+        registrationNumber: text(80),
+        taxId: text(80),
+        website: text(300),
+        contactPersonName: text(120),
+        contactPersonPhone: text(30),
+        contactPersonEmail: text(255),
+        smsPurpose: text(1000),
+        owner: person,
+        activate: z.boolean().default(false),
+        apiAccess: z.object({ enabled: z.boolean(), allowedScopes: z.array(z.enum(ORGANIZATION_SCOPES)).nullable() }).optional(),
+      }),
+      req.body,
+    );
+    const perms = req.user!.platformPermissions;
+    if (body.activate && !perms.has('verification.approve')) throw AppError.forbidden('Approving an organization without verification needs the verification.approve permission', 'PERMISSION_DENIED');
+    if (body.apiAccess && !perms.has('api_keys.revoke')) throw AppError.forbidden('Setting API access needs the api_keys.revoke permission', 'PERMISSION_DENIED');
+    const { name, owner, activate, apiAccess, ...profile } = body;
+    const result = await createOrganizationByAdmin({ name, owner, activate, apiAccess, profile }, actorFromRequest(req), metaFromRequest(req));
+    return created(res, result, result.owner.created ? 'Organization created — copy the owner’s temporary password now, it will not be shown again' : 'Organization created');
+  }),
+);
+
+/** Roles that can be given to a person for this organization (system roles and its own custom roles, never Owner). */
+adminOrganizationsRouter.get(
+  '/:id/roles',
+  requirePlatformPermission('organizations.view'),
+  asyncHandler(async (req, res) => {
+    const { id } = parse(uuidParam, req.params);
+    const roles = await prisma.role.findMany({
+      where: { scope: 'ORGANIZATION', code: { not: 'CUSTOMER_OWNER' }, OR: [{ organizationId: null }, { organizationId: id }] },
+      orderBy: [{ isSystem: 'desc' }, { name: 'asc' }],
+      select: { id: true, name: true, description: true, isSystem: true },
+    });
+    return ok(res, roles);
+  }),
+);
+
+/** Gives a person access to an existing organization. */
+adminOrganizationsRouter.post(
+  '/:id/members',
+  requirePlatformPermission('organizations.create'),
+  asyncHandler(async (req, res) => {
+    const { id } = parse(uuidParam, req.params);
+    const body = parse(z.object({ person, roleId: z.string().uuid() }), req.body);
+    const result = await grantOrganizationAccess(id, body, actorFromRequest(req), metaFromRequest(req));
+    return created(res, result, result.user.created ? 'Access granted — copy the temporary password now, it will not be shown again' : 'Access granted');
   }),
 );
 
@@ -120,5 +186,24 @@ adminOrganizationsRouter.patch(
     const updated = await prisma.organization.update({ where: { id }, data: body });
     await audit({ actor: actorFromRequest(req), action: 'ORGANIZATION_UPDATED', resource: 'organization', resourceId: id, organizationId: id, metadata: { fields: Object.keys(body), byStaff: true }, meta: metaFromRequest(req) });
     return ok(res, updated, 'Organization updated');
+  }),
+);
+
+/** Platform control over an organization's API keys: on/off and a ceiling on the scopes it may use. */
+adminOrganizationsRouter.put(
+  '/:id/api-access',
+  requirePlatformPermission('api_keys.revoke'),
+  asyncHandler(async (req, res) => {
+    const { id } = parse(uuidParam, req.params);
+    const body = parse(z.object({ enabled: z.boolean(), allowedScopes: z.array(z.enum(ORGANIZATION_SCOPES)).nullable() }), req.body);
+    const before = await prisma.organization.findUnique({ where: { id }, select: { apiAccessEnabled: true, apiAllowedScopes: true } });
+    if (!before) throw AppError.notFound('Organization');
+    const org = await prisma.organization.update({
+      where: { id },
+      data: { apiAccessEnabled: body.enabled, apiAllowedScopes: body.allowedScopes ?? Prisma.DbNull },
+      select: { apiAccessEnabled: true, apiAllowedScopes: true },
+    });
+    await audit({ actor: actorFromRequest(req), action: 'ORGANIZATION_API_ACCESS_CHANGED', resource: 'organization', resourceId: id, organizationId: id, metadata: { before, after: org }, meta: metaFromRequest(req) });
+    return ok(res, org, 'API access updated');
   }),
 );
