@@ -16,7 +16,6 @@ import {
   Radio,
   Receipt,
   ShoppingCart,
-  SlidersHorizontal,
   Trash2,
   TrendingUp,
   Webhook as WebhookIcon,
@@ -25,14 +24,14 @@ import {
 import { Badge, StatusBadge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Card, CardHeader, StatCard } from '@/components/ui/Card';
-import { Alert, EmptyState, ErrorState, PageLoader, Skeleton } from '@/components/ui/Feedback';
-import { Checkbox, Field, Input, Select, Textarea } from '@/components/ui/Form';
-import { ConfirmDialog, Drawer, Modal } from '@/components/ui/Overlay';
+import { EmptyState, ErrorState, PageLoader, Skeleton } from '@/components/ui/Feedback';
+import { Field, Input, Select } from '@/components/ui/Form';
+import { ConfirmDialog, Modal } from '@/components/ui/Overlay';
 import { DataTable, Pagination } from '@/components/ui/Table';
-import { DescriptionList, PageHeader, ProgressBar, Tabs } from '@/components/ui/Misc';
+import { DescriptionList, PageHeader, Tabs } from '@/components/ui/Misc';
 import { useApiMutation } from '@/hooks/useApiMutation';
 import { usePermissions } from '@/hooks/useAuth';
-import { businessService, type Expense, type Provider } from '@/services/businessService';
+import { businessService, type Expense } from '@/services/businessService';
 import { cn, fmtDate, fmtDateTime, fmtMoney, fmtNumber, fmtRelative, titleCase } from '@/utils/format';
 import { RangePicker, useRange } from '../dashboard/ReportsPage';
 
@@ -276,295 +275,38 @@ export function FinancePage() {
 
 // ── Providers ──────────────────────────────────────────────────────────
 
-function PurchaseModal({ provider, onClose }: { provider: Provider | null; onClose: () => void }) {
-  const [quantity, setQuantity] = useState('100000');
-  const [unitCost, setUnitCost] = useState('');
-  const [notes, setNotes] = useState('');
-  const qty = Number(quantity) || 0;
-  const unit = unitCost || provider?.costPerSms || '0';
-  const m = useApiMutation(() => businessService.purchaseCapacity(provider!.id, { quantity: qty, unitCost: unitCost || undefined, notes: notes || undefined }), {
-    success: (p) => `Purchased ${fmtNumber(p.quantity)} SMS from ${p.provider.name} (${p.reference})`,
-    invalidate: [['admin', 'providers'], ['admin', 'provider'], ['admin', 'provider-purchases'], ['admin', 'capacity'], ['admin', 'finance']],
-    onSuccess: () => {
-      onClose();
-      setNotes('');
-      setUnitCost('');
-    },
-  });
-  if (!provider) return null;
-  const quick = [10_000, 50_000, 100_000, 500_000];
-  return (
-    <Modal
-      open
-      onClose={onClose}
-      title={`Purchase SMS capacity · ${provider.name}`}
-      description={provider.effectiveMode === 'SIMULATION' ? 'Simulated provider: the order is placed with the MTN/Airtel/aggregator simulator, not a real network.' : 'This places a real order with the provider.'}
-      footer={
-        <>
-          <Button variant="secondary" onClick={onClose}>Cancel</Button>
-          <Button loading={m.isPending} disabled={qty < 100} onClick={() => m.mutate(undefined)}>Purchase {fmtNumber(qty)} SMS</Button>
-        </>
-      }
-    >
-      <div className="space-y-4">
-        <div className="flex flex-wrap gap-2">
-          {quick.map((qv) => (
-            <button key={qv} type="button" onClick={() => setQuantity(String(qv))} className={cn('rounded-lg border px-3 py-1.5 text-sm', qty === qv ? 'border-brand-500 bg-brand-50 text-brand-700' : 'border-slate-200 hover:bg-slate-50')}>
-              {fmtNumber(qv)}
-            </button>
-          ))}
-        </div>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="SMS quantity" required><Input type="number" min={100} value={quantity} onChange={(e) => setQuantity(e.target.value)} /></Field>
-          <Field label="Unit cost (per SMS)" hint={`Provider price: ${provider.currency} ${provider.costPerSms}`}><Input value={unitCost} onChange={(e) => setUnitCost(e.target.value)} placeholder={provider.costPerSms} /></Field>
-        </div>
-        <Field label="Notes"><Input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="e.g. Q4 bulk order" /></Field>
-        <div className="flex items-center justify-between rounded-xl bg-slate-50 p-4 ring-1 ring-inset ring-slate-100">
-          <span className="text-sm text-slate-600">Provider cost</span>
-          <span className="text-xl font-semibold tabular-nums">{provider.currency} {fmtNumber(Math.round(qty * Number(unit) * 100) / 100)}</span>
-        </div>
-        <p className="text-xs text-slate-500">A purchase record and a capacity ledger entry are created. The cost is recorded as provider spend in finance reports.</p>
-      </div>
-    </Modal>
-  );
-}
-
-function ProviderConfigModal({ provider, onClose }: { provider: Provider | null; onClose: () => void }) {
-  const [form, setForm] = useState<Record<string, string | boolean>>({});
-  const [loaded, setLoaded] = useState<string | null>(null);
-  if (provider && loaded !== provider.id) {
-    setLoaded(provider.id);
-    setForm({
-      name: provider.name,
-      status: provider.status,
-      mode: provider.mode,
-      currency: provider.currency,
-      costPerSms: provider.costPerSms,
-      routePrefixes: provider.routePrefixes.join(', '),
-      priority: String(provider.priority),
-      allowOverdraft: provider.allowOverdraft,
-      overdraftLimit: String(provider.overdraftLimit),
-      lowCapacityThreshold: String(provider.lowCapacityThreshold),
-      notes: provider.notes ?? '',
-    });
-  }
-  const m = useApiMutation(
-    () =>
-      businessService.updateProvider(provider!.id, {
-        name: form.name as string,
-        status: form.status as Provider['status'],
-        mode: form.mode as Provider['mode'],
-        currency: form.currency as string,
-        costPerSms: form.costPerSms as string,
-        routePrefixes: String(form.routePrefixes).split(/[\s,]+/).filter(Boolean),
-        priority: Number(form.priority),
-        allowOverdraft: !!form.allowOverdraft,
-        overdraftLimit: Number(form.overdraftLimit),
-        lowCapacityThreshold: Number(form.lowCapacityThreshold),
-        notes: (form.notes as string) || null,
-      }),
-    { success: 'Provider updated', invalidate: [['admin', 'providers'], ['admin', 'provider']], onSuccess: () => { setLoaded(null); onClose(); } },
-  );
-  if (!provider) return null;
-  const set = (key: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => setForm((f) => ({ ...f, [key]: e.target.value }));
-  return (
-    <Modal open onClose={() => { setLoaded(null); onClose(); }} title={`Configure ${provider.name}`} size="lg" footer={<><Button variant="secondary" onClick={onClose}>Cancel</Button><Button loading={m.isPending} onClick={() => m.mutate(undefined)}>Save</Button></>}>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="Name"><Input value={form.name as string} onChange={set('name')} /></Field>
-        <Field label="Status">
-          <Select value={form.status as string} onChange={set('status')}><option value="ACTIVE">Active</option><option value="INACTIVE">Inactive</option><option value="SUSPENDED">Suspended</option></Select>
-        </Field>
-        <Field label="Mode" hint="Production needs an installed production adapter and SMS_PROVIDER_MODE=production.">
-          <Select value={form.mode as string} onChange={set('mode')}><option value="SIMULATION">Simulation</option><option value="PRODUCTION">Production</option></Select>
-        </Field>
-        <Field label="Cost per SMS"><Input value={form.costPerSms as string} onChange={set('costPerSms')} /></Field>
-        <Field label="Currency"><Input value={form.currency as string} onChange={set('currency')} maxLength={3} /></Field>
-        <Field label="Priority" hint="Lower is preferred"><Input type="number" value={form.priority as string} onChange={set('priority')} /></Field>
-        <Field label="Route prefixes" hint="E.164 prefixes this provider serves, e.g. +25078, +25079. Empty = catch-all route." className="sm:col-span-2"><Input value={form.routePrefixes as string} onChange={set('routePrefixes')} className="font-mono" /></Field>
-        <Field label="Low capacity alert at"><Input type="number" value={form.lowCapacityThreshold as string} onChange={set('lowCapacityThreshold')} /></Field>
-        <div className="space-y-2">
-          <Checkbox label="Allow overdraft" description="Let sends continue briefly below zero capacity" checked={!!form.allowOverdraft} onChange={(e) => setForm((f) => ({ ...f, allowOverdraft: e.target.checked }))} />
-          {form.allowOverdraft && <Input type="number" value={form.overdraftLimit as string} onChange={set('overdraftLimit')} placeholder="Overdraft limit (SMS)" />}
-        </div>
-        <Field label="Notes" className="sm:col-span-2"><Textarea rows={2} value={form.notes as string} onChange={set('notes')} /></Field>
-      </div>
-    </Modal>
-  );
-}
-
-function ProviderDrawer({ id, onClose }: { id: string | null; onClose: () => void }) {
-  const q = useQuery({ queryKey: ['admin', 'provider', id], queryFn: () => businessService.provider(id!), enabled: !!id });
-  const ledger = useQuery({ queryKey: ['admin', 'capacity', id], queryFn: () => businessService.ledger({ page: 1, limit: 15, providerId: id }), enabled: !!id });
-  const p = q.data;
-  return (
-    <Drawer open={!!id} onClose={onClose} title={p?.name ?? 'Provider'} description={p ? `${p.adapterKey} · ${p.network ?? 'no adapter'}` : undefined} width="max-w-2xl">
-      {q.isLoading || !p ? (
-        <PageLoader />
-      ) : (
-        <div className="space-y-6">
-          <div className="grid grid-cols-3 gap-3">
-            {[
-              ['Our ledger', fmtNumber(p.capacityBalance)],
-              ['Provider reports', p.reportedBalance?.available != null ? fmtNumber(p.reportedBalance.available) : '—'],
-              ['Difference', p.reconciliationDifference != null ? fmtNumber(p.reconciliationDifference) : '—'],
-            ].map(([l, v]) => (
-              <div key={l} className="rounded-lg bg-slate-50 p-3"><p className="text-xs text-slate-500">{l}</p><p className="text-lg font-semibold tabular-nums">{v}</p></div>
-            ))}
-          </div>
-          {p.reconciliationDifference != null && p.reconciliationDifference !== 0 && (
-            <Alert tone="info">A small difference is normal while messages are in flight or after capacity is released on our side. Record a manual adjustment to reconcile persistent differences.</Alert>
-          )}
-          <DescriptionList
-            items={[
-              { label: 'Type', value: p.type === 'MNO' ? 'Mobile network operator' : 'Aggregator' },
-              { label: 'Mode', value: <Badge color={p.effectiveMode === 'SIMULATION' ? 'amber' : 'green'}>{titleCase(p.effectiveMode)}</Badge> },
-              { label: 'Adapter', value: p.adapterInstalled ? <Badge color="green">installed</Badge> : <Badge color="red">not installed</Badge> },
-              { label: 'Routes', value: p.routePrefixes.length ? p.routePrefixes.join(', ') : 'Catch-all' },
-              { label: 'Current price / SMS', value: `${p.currency} ${p.costPerSms}` },
-              { label: 'Average cost (WAC)', value: `${p.currency} ${p.averageCost}` },
-              { label: 'Purchased / used', value: `${fmtNumber(p.totalPurchased)} / ${fmtNumber(p.totalUsed)}` },
-              { label: 'Total spent', value: fmtMoney(p.totalSpent, p.currency) },
-              { label: 'Traffic (24h)', value: p.traffic24h.map((t) => `${titleCase(t.status)} ${t.count}`).join(' · ') || '—' },
-              { label: 'Notes', value: p.notes },
-            ]}
-          />
-          <div>
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Recent capacity movements</p>
-            <DataTable
-              rows={ledger.data?.data}
-              loading={ledger.isLoading}
-              columns={[
-                { key: 'd', header: 'Date', cell: (e) => <span className="text-xs text-slate-500">{fmtDateTime(e.createdAt)}</span> },
-                { key: 't', header: 'Type', cell: (e) => <Badge color={e.type === 'PURCHASE' ? 'green' : e.type === 'USAGE' ? 'gray' : e.type === 'RELEASE' ? 'blue' : 'amber'}>{titleCase(e.type)}</Badge> },
-                { key: 'a', header: 'SMS', cell: (e) => <span className={cn('tabular-nums font-medium', e.amount > 0 && 'text-emerald-600')}>{e.amount > 0 ? '+' : ''}{fmtNumber(e.amount)}</span> },
-                { key: 'b', header: 'Balance', cell: (e) => fmtNumber(e.balanceAfter) },
-              ]}
-              empty={<EmptyState title="No movements" className="py-6" />}
-            />
-          </div>
-        </div>
-      )}
-    </Drawer>
-  );
-}
-
-export function ProvidersPage() {
-  const { canAdmin } = usePermissions();
-  const q = useQuery({ queryKey: ['admin', 'providers'], queryFn: businessService.providers, refetchInterval: 15_000 });
-  const [purchase, setPurchase] = useState<Provider | null>(null);
-  const [config, setConfig] = useState<Provider | null>(null);
-  const [detail, setDetail] = useState<string | null>(null);
-  const [adjust, setAdjust] = useState<Provider | null>(null);
-  const [adjAmount, setAdjAmount] = useState('');
-  const [adjReason, setAdjReason] = useState('');
-  const [adjRef, setAdjRef] = useState('');
-  const adjustM = useApiMutation(() => businessService.adjustCapacity(adjust!.id, { amount: Number(adjAmount), reason: adjReason, reference: adjRef }), {
-    success: 'Capacity adjusted',
-    invalidate: [['admin', 'providers'], ['admin', 'capacity']],
-    onSuccess: () => setAdjust(null),
-  });
-
-  return (
-    <div className="space-y-6">
-      <PageHeader title="SMS providers" description="Upstream networks and aggregators we buy SMS capacity from. Customer messages are routed by destination prefix." />
-      {q.data?.some((p) => p.effectiveMode === 'SIMULATION') && (
-        <Alert tone="warning" title="Simulation mode">Providers run on simulators (SMS_PROVIDER_MODE=simulation). No real SMS are sent and no real money is spent with the networks.</Alert>
-      )}
-      {q.isLoading ? (
-        <div className="grid gap-4 lg:grid-cols-3">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-72 rounded-xl" />)}</div>
-      ) : q.error ? (
-        <Card><ErrorState error={q.error} /></Card>
-      ) : (
-        <div className="grid gap-4 lg:grid-cols-3">
-          {q.data?.map((p) => {
-            const pct = p.totalPurchased ? (p.capacityBalance / p.totalPurchased) * 100 : 0;
-            return (
-              <Card key={p.id} className="flex flex-col">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="text-lg font-semibold text-slate-900">{p.name}</p>
-                    <p className="text-xs text-slate-500">{p.type === 'MNO' ? 'Mobile network' : 'Aggregator'} · {p.routePrefixes.length ? p.routePrefixes.join(', ') : 'catch-all route'}</p>
-                  </div>
-                  <div className="flex flex-col items-end gap-1">
-                    <StatusBadge status={p.status} />
-                    <Badge color={p.effectiveMode === 'SIMULATION' ? 'amber' : 'green'}>{titleCase(p.effectiveMode)}</Badge>
-                  </div>
-                </div>
-                <div className="mt-5">
-                  <div className="flex items-end justify-between">
-                    <div>
-                      <p className="text-xs text-slate-500">Remaining capacity</p>
-                      <p className={cn('text-3xl font-semibold tabular-nums', p.capacityState === 'LOW' ? 'text-amber-600' : p.capacityState === 'EMPTY' ? 'text-red-600' : 'text-slate-900')}>{fmtNumber(p.capacityBalance)}</p>
-                    </div>
-                    <StatusBadge status={p.capacityState} />
-                  </div>
-                  <ProgressBar value={pct} className="mt-2" tone={p.capacityState === 'OK' ? 'emerald' : p.capacityState === 'LOW' ? 'amber' : 'red'} />
-                </div>
-                <dl className="mt-4 grid grid-cols-2 gap-3 text-sm">
-                  <div><dt className="text-xs text-slate-500">Purchased</dt><dd className="font-medium tabular-nums">{fmtNumber(p.totalPurchased)}</dd></div>
-                  <div><dt className="text-xs text-slate-500">Used</dt><dd className="font-medium tabular-nums">{fmtNumber(p.totalUsed)}</dd></div>
-                  <div><dt className="text-xs text-slate-500">Total cost</dt><dd className="font-medium tabular-nums">{fmtMoney(p.totalSpent, p.currency)}</dd></div>
-                  <div><dt className="text-xs text-slate-500">Price / avg cost</dt><dd className="font-medium tabular-nums">{p.costPerSms} / {p.averageCost}</dd></div>
-                  <div><dt className="text-xs text-slate-500">API configured</dt><dd>{p.apiConfigured ? <Badge color="green">yes</Badge> : <Badge color="red">no adapter</Badge>}</dd></div>
-                  <div><dt className="text-xs text-slate-500">Last transaction</dt><dd className="text-xs">{p.lastTransactionAt ? fmtRelative(p.lastTransactionAt) : '—'}</dd></div>
-                </dl>
-                <div className="mt-5 flex flex-wrap gap-2 border-t border-slate-100 pt-4">
-                  {canAdmin('provider_purchases.create') && <Button size="sm" icon={<ShoppingCart className="h-4 w-4" />} disabled={p.status !== 'ACTIVE'} onClick={() => setPurchase(p)}>Purchase SMS</Button>}
-                  <Button size="sm" variant="secondary" onClick={() => setDetail(p.id)}>Details</Button>
-                  {canAdmin('providers.manage') && <Button size="sm" variant="ghost" icon={<Pencil className="h-3.5 w-3.5" />} onClick={() => setConfig(p)}>Configure</Button>}
-                  {canAdmin('providers.manage') && (
-                    <Button size="sm" variant="ghost" icon={<SlidersHorizontal className="h-3.5 w-3.5" />} onClick={() => { setAdjAmount(''); setAdjReason(''); setAdjRef(''); setAdjust(p); }}>
-                      Adjust
-                    </Button>
-                  )}
-                </div>
-              </Card>
-            );
-          })}
-        </div>
-      )}
-      <PurchaseModal provider={purchase} onClose={() => setPurchase(null)} />
-      <ProviderConfigModal provider={config} onClose={() => setConfig(null)} />
-      <ProviderDrawer id={detail} onClose={() => setDetail(null)} />
-      <Modal
-        open={!!adjust}
-        onClose={() => setAdjust(null)}
-        title={`Adjust capacity · ${adjust?.name}`}
-        description="Manual reconciliation against the provider's statement. Recorded in the capacity ledger and audit log."
-        size="sm"
-        footer={
-          <>
-            <Button variant="secondary" onClick={() => setAdjust(null)}>Cancel</Button>
-            <Button loading={adjustM.isPending} disabled={!Number(adjAmount) || adjReason.trim().length < 5 || adjRef.trim().length < 3} onClick={() => adjustM.mutate(undefined)}>
-              Record adjustment
-            </Button>
-          </>
-        }
-      >
-        <div className="space-y-4">
-          <Field label="SMS (+ add / − remove)" required><Input type="number" value={adjAmount} onChange={(e) => setAdjAmount(e.target.value)} placeholder="-500" /></Field>
-          <Field label="Reason" required><Input value={adjReason} onChange={(e) => setAdjReason(e.target.value)} placeholder="Reconciled with provider statement" /></Field>
-          <Field label="Reference" required hint="Statement or ticket number; each can be used once."><Input value={adjRef} onChange={(e) => setAdjRef(e.target.value)} className="font-mono" placeholder="STMT-2026-09" /></Field>
-        </div>
-      </Modal>
-    </div>
-  );
-}
-
 export function ProviderPurchasesPage() {
   const [page, setPage] = useState(1);
   const [providerId, setProviderId] = useState('');
+  const [status, setStatus] = useState('');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
   const providers = useQuery({ queryKey: ['admin', 'providers'], queryFn: businessService.providers });
-  const q = useQuery({ queryKey: ['admin', 'provider-purchases', page, providerId], queryFn: () => businessService.purchases({ page, limit: 20, providerId: providerId || undefined }) });
+  const filters = {
+    providerId: providerId || undefined,
+    status: status || undefined,
+    from: from ? new Date(`${from}T00:00:00`).toISOString() : undefined,
+    to: to ? new Date(`${to}T23:59:59`).toISOString() : undefined,
+  };
+  const q = useQuery({ queryKey: ['admin', 'provider-purchases', page, filters], queryFn: () => businessService.purchases({ page, limit: 20, ...filters }) });
   return (
     <div className="space-y-6">
       <PageHeader title="Provider purchases" description="Every purchase of SMS capacity from upstream providers." />
       <Card padded={false}>
-        <div className="border-b border-slate-100 p-4">
-          <Select value={providerId} onChange={(e) => { setProviderId(e.target.value); setPage(1); }} className="w-auto">
+        <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 p-4">
+          <Select value={providerId} onChange={(e) => { setProviderId(e.target.value); setPage(1); }} className="w-auto" aria-label="Provider">
             <option value="">All providers</option>
             {providers.data?.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </Select>
+          <Select value={status} onChange={(e) => { setStatus(e.target.value); setPage(1); }} className="w-auto" aria-label="Status">
+            <option value="">All statuses</option>
+            <option value="SUCCESS">Completed</option>
+            <option value="PENDING">Pending</option>
+            <option value="FAILED">Failed</option>
+          </Select>
+          <Input type="date" value={from} onChange={(e) => { setFrom(e.target.value); setPage(1); }} className="w-auto" aria-label="From date" />
+          <span className="text-slate-400">–</span>
+          <Input type="date" value={to} onChange={(e) => { setTo(e.target.value); setPage(1); }} className="w-auto" aria-label="To date" />
         </div>
         <DataTable
           rows={q.data?.data}

@@ -7,6 +7,7 @@ import { actorFromRequest, metaFromRequest } from '../../types/actor';
 import { AppError } from '../../utils/errors';
 import { asyncHandler, parse } from '../../utils/http';
 import { authenticateApiKey } from '../api-keys/apiKey.service';
+import { MESSAGE_INPUT_HARD_LIMIT, analyzeMessage, serializeEstimate } from './segmentation.service';
 import * as sms from './sms.service';
 
 /**
@@ -86,7 +87,7 @@ const sendSchema = z
     to: z.union([phone, z.array(phone).min(1).max(1000)]).optional(),
     recipient: phone.optional(),
     recipients: z.array(phone).min(1).max(1000).optional(),
-    message: z.string().min(1).max(1600),
+    message: z.string().min(1).max(MESSAGE_INPUT_HARD_LIMIT),
     reference: z.string().trim().max(100).optional(),
     scheduledAt: z.coerce.date().optional(),
   })
@@ -106,6 +107,16 @@ function toPublic(r: { id: string; phone: string; status: string; credits: numbe
     failedAt: r.failedAt,
   };
 }
+
+/** Preview the encoding, segments and credits of a message without sending it. */
+publicRouter.post(
+  '/sms/estimate',
+  requireScope('sms.send'),
+  asyncHandler(async (req, res) => {
+    const { message } = parse(z.object({ message: z.string().max(MESSAGE_INPUT_HARD_LIMIT) }), req.body);
+    res.json({ success: true, data: serializeEstimate(await analyzeMessage(message)) });
+  }),
+);
 
 publicRouter.post(
   '/sms/send',

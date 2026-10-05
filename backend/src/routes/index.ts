@@ -16,6 +16,7 @@ import { adminOrganizationsRouter } from '../modules/organizations/admin.organiz
 import { invitationRouter, organizationRouter } from '../modules/organizations/organization.routes';
 import { adminBillingRouter } from '../modules/payments/admin.billing.routes';
 import { invoiceRouter, packageRouter, paymentRouter } from '../modules/payments/payment.routes';
+import { adminPricingRouter, pricingRouter } from '../modules/pricing/pricing.routes';
 import { adminReportsRouter } from '../modules/reports/admin.reports.routes';
 import { reportRouter } from '../modules/reports/report.routes';
 import { adminRolesRouter } from '../modules/roles/admin.roles.routes';
@@ -28,6 +29,7 @@ import { smsRouter } from '../modules/sms/sms.routes';
 import { adminUsersRouter } from '../modules/users/admin.users.routes';
 import { adminFinanceRouter } from '../modules/finance/admin.finance.routes';
 import { adminProvidersRouter } from '../modules/providers/admin.providers.routes';
+import { adminRoutingRouter } from '../modules/providers/admin.routing.routes';
 import { adminDeveloperRouter } from '../modules/api-keys/admin.developer.routes';
 import { adminInquiriesRouter, siteRouter } from '../modules/site/site.routes';
 import { adminVerificationRouter } from '../modules/verification/admin.verification.routes';
@@ -80,6 +82,7 @@ const tenantRoutes: [string, Router][] = [
 for (const [path, router] of tenantRoutes) apiRouter.use(path, authenticate, orgContext, router);
 apiRouter.use('/senders', authenticate, requireVerifiedEmail, orgContext, senderRouter);
 apiRouter.use('/packages', authenticate, packageRouter);
+apiRouter.use('/pricing', authenticate, pricingRouter);
 apiRouter.use('/notifications', authenticate, notificationRouter);
 
 // ── Platform admin API: staff only, permission-checked per route ────────
@@ -98,6 +101,8 @@ admin.use('/settings', adminSettingsRouter);
 admin.use('/api-keys', adminApiKeysRouter);
 admin.use('/finance', adminFinanceRouter);
 admin.use('/providers', adminProvidersRouter);
+admin.use('/routing', adminRoutingRouter);
+admin.use('/pricing', adminPricingRouter);
 admin.use('/developer', adminDeveloperRouter);
 admin.use('/inquiries', adminInquiriesRouter);
 apiRouter.use('/admin', admin);

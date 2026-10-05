@@ -186,3 +186,53 @@ export async function financialTables(from: Date, to: Date) {
     ].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()),
   };
 }
+
+/**
+ * Per-organization view for the period: credits bought and revenue (customer side) against the
+ * provider cost of the messages actually routed for them (supply side). Provider cost is the
+ * cost snapshotted on each recipient at routing time; released (rejected/cancelled) capacity is
+ * not counted.
+ */
+export async function customerReport(from: Date, to: Date) {
+  const inRange = { gte: from, lte: to };
+  const [sales, refunds, usage, routed, byProvider] = await Promise.all([
+    prisma.customerPurchase.groupBy({ by: ['organizationId'], where: { createdAt: inRange }, _sum: { credits: true, revenue: true } }),
+    prisma.refund.groupBy({ by: ['organizationId'], where: { createdAt: inRange }, _sum: { amount: true, creditsReversed: true } }),
+    prisma.walletTransaction.groupBy({
+      by: ['organizationId'],
+      where: { type: { in: ['SMS_DEBIT', 'REFUND'] }, createdAt: inRange, NOT: { reference: { startsWith: 'admin:' } } },
+      _sum: { amount: true },
+    }),
+    prisma.smsRecipient.groupBy({ by: ['organizationId'], where: { createdAt: inRange, capacityReleased: false, providerId: { not: null } }, _sum: { providerCost: true }, _count: true }),
+    prisma.smsRecipient.groupBy({ by: ['organizationId', 'providerId'], where: { createdAt: inRange, capacityReleased: false, providerId: { not: null } }, _count: true }),
+  ]);
+  const ids = [...new Set([...sales, ...refunds, ...usage, ...routed].map((r) => r.organizationId))];
+  const [orgs, wallets, providers] = await Promise.all([
+    prisma.organization.findMany({ where: { id: { in: ids } }, select: { id: true, name: true } }),
+    prisma.wallet.findMany({ where: { organizationId: { in: ids } }, select: { organizationId: true, balance: true } }),
+    prisma.smsProvider.findMany({ select: { id: true, name: true } }),
+  ]);
+  const rows = orgs.map((o) => {
+    const s = sales.find((x) => x.organizationId === o.id);
+    const r = refunds.find((x) => x.organizationId === o.id);
+    const u = usage.find((x) => x.organizationId === o.id);
+    const c = routed.find((x) => x.organizationId === o.id);
+    const revenue = dec(s?._sum.revenue);
+    const providerCost = dec(c?._sum.providerCost).toDecimalPlaces(2);
+    return {
+      organization: o,
+      smsPurchased: s?._sum.credits ?? 0,
+      revenue: money(revenue),
+      refunds: money(dec(r?._sum.amount)),
+      smsUsed: Math.max(0, -(u?._sum.amount ?? 0)),
+      currentBalance: wallets.find((w) => w.organizationId === o.id)?.balance ?? 0,
+      messagesRouted: c?._count ?? 0,
+      providerUsage: byProvider
+        .filter((p) => p.organizationId === o.id)
+        .map((p) => ({ providerId: p.providerId, provider: providers.find((x) => x.id === p.providerId)?.name ?? 'Unknown', messages: p._count })),
+      providerCost: money(providerCost),
+      grossMargin: money(revenue.minus(providerCost)),
+    };
+  });
+  return rows.sort((a, b) => Number(b.revenue) - Number(a.revenue) || b.smsUsed - a.smsUsed);
+}

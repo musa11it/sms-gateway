@@ -56,17 +56,3 @@ export const initials = (name: string) =>
     .slice(0, 2)
     .map((p) => p[0]!.toUpperCase())
     .join('');
-
-/** Client-side estimate for the composer UI only — the server recalculates authoritatively. */
-const GSM =
-  '@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ !"#¤%&\'()*+,-./0123456789:;<=>?¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà';
-const GSM_EXT = '\f^{}\\[~]|€';
-export function estimateSegments(text: string) {
-  const chars = Array.from(text);
-  const gsm = chars.every((c) => GSM.includes(c) || GSM_EXT.includes(c));
-  const units = chars.reduce((a, c) => a + (gsm ? (GSM_EXT.includes(c) ? 2 : 1) : c.length > 1 ? 2 : 1), 0);
-  const single = gsm ? 160 : 70;
-  const multi = gsm ? 153 : 67;
-  const segments = units === 0 ? 0 : units <= single ? 1 : Math.ceil(units / multi);
-  return { encoding: gsm ? 'GSM7' : 'UCS2', characters: chars.length, units, segments, perSegment: segments <= 1 ? single : multi };
-}

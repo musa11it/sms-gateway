@@ -19,6 +19,7 @@ import { fmtMoney, fmtNumber, fmtRelative, titleCase } from '@/utils/format';
 import { MessageDrawer, recipientColumns } from '../sms/SmsPages';
 import { RangePicker, useRange } from '../dashboard/ReportsPage';
 import { AdminBusinessSummary } from './BusinessPages';
+import { SegmentationSummaryCard } from './SmsConfigurationPage';
 
 export function AdminDashboardPage() {
   const { canAdmin } = usePermissions();
@@ -63,6 +64,7 @@ export function AdminDashboardPage() {
           <div className="p-4">{q.isLoading ? <Skeleton className="h-[240px]" /> : <GrowthChart data={d?.growth ?? []} height={240} />}</div>
         </Card>
       </div>
+      <SegmentationSummaryCard />
     </div>
   );
 }

@@ -19,6 +19,7 @@ import { useDebounce } from '@/hooks/useDebounce';
 import { adminService } from '@/services/adminService';
 import { businessService } from '@/services/businessService';
 import { fmtDateTime, fmtNumber, fmtRelative, titleCase } from '@/utils/format';
+import { SegmentationSummaryCard } from './SmsConfigurationPage';
 import { PermissionMatrix } from '../settings/SettingsPages';
 
 export function AdminApiKeysPage() {
@@ -203,6 +204,7 @@ export function SystemSettingsPage() {
   return (
     <div className="space-y-6">
       <PageHeader title="System settings" description="Provider configuration and platform-wide business settings." />
+      <SegmentationSummaryCard />
       {canAdmin('providers.view') && (
         <div className="grid gap-6 xl:grid-cols-2">
           <Card padded={false}>

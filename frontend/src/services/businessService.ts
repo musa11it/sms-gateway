@@ -1,5 +1,5 @@
 import { downloadFile, get, getPage, http, patch, post } from '@/api/client';
-import type { Paginated } from '@/api/types';
+import type { CustomerFinanceRow, Paginated } from '@/api/types';
 
 /** Supply side, finance and platform-owner business data (Super Admin console). */
 
@@ -31,9 +31,110 @@ export interface Provider {
   lastTransactionAt: string | null;
   lastPurchaseAt?: string | null;
   createdAt: string;
+  health: 'HEALTHY' | 'DEGRADED' | 'DOWN';
+  healthNote: string | null;
+  minimumCapacity: number;
+  supportsSenderId: boolean;
+  servesAllDestinations: boolean;
+  usagePercent: number;
+  remainingValue: string;
+  averageRemainingCost: string | null;
+  openLots: number;
+  networks: { id: string; code: string; name: string }[];
+  routable: boolean;
+}
+
+export interface ProviderEconomics {
+  messages: number;
+  segments: number;
+  creditsUsed: number;
+  revenuePerCredit: string | null;
+  revenue: string | null;
+  providerCost: string;
+  grossMargin: string | null;
+  marginPercent: number | null;
+}
+
+export interface ProviderOverview {
+  range: { from: string; to: string };
+  counts: { providers: number; active: number; routable: number };
+  capacity: { purchased: number; used: number; remaining: number; remainingValue: string; averageRemainingCost: string | null };
+  economics: ProviderEconomics;
+  formula: string;
+  providers: Provider[];
+}
+
+export interface ProviderLot {
+  id: string;
+  source: 'OPENING' | 'PURCHASE' | 'ADJUSTMENT' | 'RETURN';
+  reference: string;
+  providerReference: string | null;
+  status: string;
+  quantity: number;
+  used: number;
+  remaining: number;
+  unitCost: string;
+  totalCost: string;
+  remainingValue: string;
+  createdAt: string;
+}
+
+export interface SmsNetwork {
+  id: string;
+  code: string;
+  name: string;
+  countryCode: string;
+  countryName: string;
+  prefixes: string[];
+  isActive: boolean;
+  providerCount?: number;
+}
+
+export type RoutingStrategy = 'PRIORITY' | 'LOWEST_COST' | 'PRIORITY_THEN_COST';
+
+export interface RoutingRule {
+  id: string;
+  name: string;
+  priority: number;
+  countryCode: string | null;
+  networkId: string | null;
+  destination: string;
+  strategy: RoutingStrategy;
+  primaryProviderId: string | null;
+  primaryProvider: string | null;
+  backupProviderIds: string[];
+  backupProviders: string[];
+  allowedProviderIds: string[];
+  allowedProviders: string[];
+  minProviderCapacity: number;
+  maxCostPerSegment: string | null;
+  isActive: boolean;
+  description: string | null;
+  updatedAt: string;
+}
+
+export interface RoutingSimulation {
+  message: { encoding: 'GSM7' | 'UCS2'; characterCount: number; segmentsPerRecipient: number; totalSegments: number; creditsPerRecipient: number; totalCredits: number; tooLong: boolean };
+  sender: { name: string; known: boolean; approved: boolean } | null;
+  destination: { countryCode: string | null; network: { id: string; name: string; code: string } | null };
+  rule: { id: string; name: string; priority: number; strategy: RoutingStrategy } | null;
+  strategy: RoutingStrategy;
+  candidates: { providerId: string; name: string; code: string; role: 'primary' | 'backup' | 'candidate'; eligible: boolean; reasons: string[]; costPerSegment: string; capacity: number; reserve: number; available: number; priority: number; health: Provider['health'] }[];
+  selected: { providerId: string; name: string } | null;
+  backup: { providerId: string; name: string } | null;
+  reason: string;
+  allocations: { providerId: string; name: string; recipients: number; segments: number; estimatedCost: string }[];
+  unroutedRecipients: number;
+  estimate: { providerCost: string; revenue: string | null; revenuePerCredit: string | null; grossMargin: string | null };
 }
 
 export interface ProviderDetail extends Provider {
+  lots: ProviderLot[];
+  costHistory: { at: string; by: string | null; from: string | null; to: string | null; reason: string | null }[];
+  rules: { id: string; name: string; priority: number; isActive: boolean; strategy: RoutingStrategy; destination: string; role: string }[];
+  usage: { date: string; segments: number }[];
+  economics: ProviderEconomics;
+  recentActivity: CapacityEntry[];
   network: string | null;
   reportedBalance: { available: number | null; currency: string; checkedAt: string } | null;
   reportedBalanceError: string | null;
@@ -140,14 +241,26 @@ type P = { page: number; limit?: number } & Record<string, unknown>;
 
 export const businessService = {
   providers: () => get<Provider[]>('/admin/providers'),
-  provider: (id: string) => get<ProviderDetail>(`/admin/providers/${id}`),
-  updateProvider: (id: string, body: Partial<Omit<Provider, 'id'>>) => patch<Provider>(`/admin/providers/${id}`, body),
+  provider: (id: string, params?: Record<string, unknown>) => get<ProviderDetail>(`/admin/providers/${id}`, params),
+  providerOverview: (params: Record<string, unknown>) => get<ProviderOverview>('/admin/providers/overview', params),
+  updateProvider: (id: string, body: Record<string, unknown>) => patch<Provider>(`/admin/providers/${id}`, body),
+  createProvider: (body: Record<string, unknown>) => post<Provider>('/admin/providers', body),
   purchaseCapacity: (id: string, body: { quantity: number; unitCost?: string; notes?: string }) => post<ProviderPurchase>(`/admin/providers/${id}/purchase`, body),
-  adjustCapacity: (id: string, body: { amount: number; reason: string; reference: string }) => post(`/admin/providers/${id}/adjust`, body),
+  adjustCapacity: (id: string, body: { amount: number; reason: string; reference: string; unitCost?: string }) => post(`/admin/providers/${id}/adjust`, body),
+  networks: () => get<SmsNetwork[]>('/admin/routing/networks'),
+  createNetwork: (body: Record<string, unknown>) => post<SmsNetwork>('/admin/routing/networks', body),
+  updateNetwork: (id: string, body: Record<string, unknown>) => patch<SmsNetwork>(`/admin/routing/networks/${id}`, body),
+  routingRules: () => get<RoutingRule[]>('/admin/routing/rules'),
+  createRoutingRule: (body: Record<string, unknown>) => post<RoutingRule>('/admin/routing/rules', body),
+  updateRoutingRule: (id: string, body: Record<string, unknown>) => patch<RoutingRule>(`/admin/routing/rules/${id}`, body),
+  reorderRoutingRules: (ids: string[]) => post<RoutingRule[]>('/admin/routing/rules/reorder', { ids }),
+  simulateRouting: (body: Record<string, unknown>) => post<RoutingSimulation>('/admin/routing/simulate', body),
   purchases: (params: P) => getPage<ProviderPurchase>('/admin/providers/purchases', params),
   ledger: (params: P) => getPage<CapacityEntry>('/admin/providers/ledger', params),
 
   finance: (params: { range: string; from?: string; to?: string }) => get<FinanceOverview>('/admin/finance/overview', params),
+  customerReport: (params: Record<string, unknown>) =>
+    get<{ range: { from: string; to: string; range: string }; canViewProfit: boolean; customers: CustomerFinanceRow[] }>('/admin/finance/customers', params),
   sales: async (params: P) => {
     const r = await http.get('/admin/finance/sales', { params });
     return r.data as Paginated<CustomerSale> & { totals: { credits: number; revenue: string; estimatedProviderCost: string; paymentFees: string; contribution: string } };

@@ -2,36 +2,39 @@ import { describe, expect, it } from 'vitest';
 import { signPayload, verifySignature, encrypt, decrypt } from '../src/utils/crypto';
 import { normalizePhone } from '../src/utils/phone';
 import { calculateSegments } from '../src/utils/segmentation';
+
+/** The default (version 1) rules; the function itself has no built-in limits. */
+const RULES = { gsm7SingleSegment: 160, gsm7MultiSegment: 153, ucs2SingleSegment: 70, ucs2MultiSegment: 67 };
 import { parseCsv } from '../src/modules/contacts/contact.service';
 
 describe('SMS segmentation', () => {
   it('single GSM-7 message up to 160 chars', () => {
-    expect(calculateSegments('a'.repeat(160))).toMatchObject({ encoding: 'GSM7', segments: 1, characterCount: 160 });
+    expect(calculateSegments('a'.repeat(160), RULES)).toMatchObject({ encoding: 'GSM7', segments: 1, characterCount: 160 });
   });
   it('concatenated GSM-7 uses 153 chars per part', () => {
-    expect(calculateSegments('a'.repeat(161)).segments).toBe(2);
-    expect(calculateSegments('a'.repeat(306)).segments).toBe(2);
-    expect(calculateSegments('a'.repeat(307)).segments).toBe(3);
+    expect(calculateSegments('a'.repeat(161), RULES).segments).toBe(2);
+    expect(calculateSegments('a'.repeat(306), RULES).segments).toBe(2);
+    expect(calculateSegments('a'.repeat(307), RULES).segments).toBe(3);
   });
   it('extension characters cost two septets', () => {
-    const r = calculateSegments('€'.repeat(80));
+    const r = calculateSegments('€'.repeat(80), RULES);
     expect(r).toMatchObject({ encoding: 'GSM7', units: 160, segments: 1 });
-    expect(calculateSegments('€'.repeat(81)).segments).toBe(2);
+    expect(calculateSegments('€'.repeat(81), RULES).segments).toBe(2);
   });
   it('never splits an escape sequence across parts', () => {
     // 152 plain chars + "€" (2 septets) = 154 > 153 → the € moves to part 2
-    expect(calculateSegments('a'.repeat(152) + '€' + 'a'.repeat(10)).segments).toBe(2);
+    expect(calculateSegments('a'.repeat(152) + '€' + 'a'.repeat(10), RULES).segments).toBe(2);
   });
   it('switches to UCS-2 for non-GSM characters (70 / 67)', () => {
-    expect(calculateSegments('Muraho 👋')).toMatchObject({ encoding: 'UCS2', segments: 1 });
-    expect(calculateSegments('ñ'.repeat(70)).encoding).toBe('GSM7');
-    expect(calculateSegments('ą'.repeat(70)).segments).toBe(1);
-    expect(calculateSegments('ą'.repeat(71)).segments).toBe(2);
-    expect(calculateSegments('ą'.repeat(134)).segments).toBe(2);
-    expect(calculateSegments('ą'.repeat(135)).segments).toBe(3);
+    expect(calculateSegments('Muraho 👋', RULES)).toMatchObject({ encoding: 'UCS2', segments: 1 });
+    expect(calculateSegments('ñ'.repeat(70), RULES).encoding).toBe('GSM7');
+    expect(calculateSegments('ą'.repeat(70), RULES).segments).toBe(1);
+    expect(calculateSegments('ą'.repeat(71), RULES).segments).toBe(2);
+    expect(calculateSegments('ą'.repeat(134), RULES).segments).toBe(2);
+    expect(calculateSegments('ą'.repeat(135), RULES).segments).toBe(3);
   });
   it('empty message has zero segments', () => {
-    expect(calculateSegments('').segments).toBe(0);
+    expect(calculateSegments('', RULES).segments).toBe(0);
   });
 });
 

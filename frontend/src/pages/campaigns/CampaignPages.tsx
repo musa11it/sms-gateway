@@ -18,7 +18,8 @@ import { campaignService } from '@/services/campaignService';
 import { contactService } from '@/services/contactService';
 import { senderService } from '@/services/senderService';
 import { smsService } from '@/services/smsService';
-import { cn, estimateSegments, fmtDateTime, fmtNumber, fmtRelative } from '@/utils/format';
+import { cn, fmtDateTime, fmtNumber, fmtRelative } from '@/utils/format';
+import { MessageEstimateBar, useMessageEstimate } from '@/components/sms/MessageEstimate';
 import { recipientColumns, MessageDrawer } from '../sms/SmsPages';
 
 const STATUSES = ['DRAFT', 'SCHEDULED', 'QUEUED', 'PROCESSING', 'COMPLETED', 'PARTIALLY_COMPLETED', 'FAILED', 'CANCELLED'] as const;
@@ -119,9 +120,15 @@ export function CampaignFormPage() {
   }, [usable, senderId, editing]);
 
   const phones = useMemo(() => phonesText.split(/[\n,;]+/).map((p) => p.trim()).filter(Boolean), [phonesText]);
-  const quoteInput = useDebounce({ message: message || ' ', recipients: phones, groupIds }, 400);
-  const quote = useQuery({ queryKey: ['sms-quote', quoteInput], queryFn: () => smsService.quote(quoteInput), enabled: phones.length > 0 || groupIds.length > 0, placeholderData: (p) => p });
-  const seg = estimateSegments(message);
+  const quoteInput = useDebounce({ message, recipients: phones, groupIds }, 400);
+  const quote = useQuery({
+    queryKey: ['sms-quote', quoteInput],
+    queryFn: () => smsService.quote(quoteInput),
+    enabled: quoteInput.message.length > 0 && (quoteInput.recipients.length > 0 || quoteInput.groupIds.length > 0),
+    placeholderData: (p) => p,
+  });
+  const { estimate, pending: estimating } = useMessageEstimate(message);
+  const q = message ? quote.data : undefined;
 
   const save = useApiMutation(
     () => {
@@ -180,7 +187,7 @@ export function CampaignFormPage() {
           </div>
           <Field label="Message" required error={errors.message}>
             <Textarea rows={5} value={message} onChange={(e) => setMessage(e.target.value)} invalid={!!errors.message} placeholder="Hi! This weekend only: 20% off everything. Reply STOP to opt out." />
-            <p className="mt-2 text-right text-xs text-slate-500 tabular-nums">{seg.characters} chars · {seg.segments} segment(s) · {seg.encoding === 'GSM7' ? 'GSM-7' : 'Unicode'}</p>
+            <MessageEstimateBar estimate={estimate} pending={estimating} />
           </Field>
           <div className="flex justify-end gap-2 border-t border-slate-100 pt-5">
             <Button variant="secondary" onClick={() => navigate(-1)}>Cancel</Button>
@@ -189,13 +196,20 @@ export function CampaignFormPage() {
         </Card>
         <Card className="h-fit p-5 lg:sticky lg:top-24">
           <p className="text-sm font-semibold text-slate-900">Estimated audience & cost</p>
-          <p className="mt-1 text-xs text-slate-500">Final numbers are calculated when you launch (unsubscribed contacts are skipped).</p>
-          <dl className="mt-4 space-y-2 text-sm">
-            <div className="flex justify-between"><dt className="text-slate-500">Recipients</dt><dd className="font-medium tabular-nums">{fmtNumber(quote.data?.recipientCount)}</dd></div>
-            <div className="flex justify-between"><dt className="text-slate-500">Segments</dt><dd className="font-medium tabular-nums">{seg.segments}</dd></div>
-            <div className="flex justify-between border-t border-slate-100 pt-2"><dt className="font-medium">Credits</dt><dd className="text-lg font-semibold tabular-nums">{fmtNumber((quote.data?.recipientCount ?? 0) * seg.segments)}</dd></div>
-            <div className="flex justify-between text-xs"><dt className="text-slate-500">Your balance</dt><dd className="tabular-nums">{fmtNumber(quote.data?.balance)}</dd></div>
-          </dl>
+          <p className="mt-1 text-xs text-slate-500">Calculated by our servers. Final numbers are recalculated when you launch (unsubscribed contacts are skipped).</p>
+          {q ? (
+            <dl className="mt-4 space-y-2 text-sm">
+              <div className="flex justify-between"><dt className="text-slate-500">Recipients</dt><dd className="font-medium tabular-nums">{fmtNumber(q.recipientCount)}</dd></div>
+              <div className="flex justify-between"><dt className="text-slate-500">Characters</dt><dd className="font-medium tabular-nums">{fmtNumber(q.characterCount)}</dd></div>
+              <div className="flex justify-between"><dt className="text-slate-500">Encoding</dt><dd className="font-medium">{q.encoding === 'GSM7' ? 'GSM-7' : 'Unicode'}</dd></div>
+              <div className="flex justify-between"><dt className="text-slate-500">Segments per recipient</dt><dd className="font-medium tabular-nums">{q.segments}</dd></div>
+              <div className="flex justify-between border-t border-slate-100 pt-2"><dt className="font-medium">Total SMS credits required</dt><dd className="text-lg font-semibold tabular-nums">{fmtNumber(q.totalCredits)}</dd></div>
+              <div className="flex justify-between text-xs"><dt className="text-slate-500">Current balance</dt><dd className="tabular-nums">{fmtNumber(q.balance)}</dd></div>
+              <div className="flex justify-between text-xs"><dt className="text-slate-500">Remaining after send</dt><dd className={cn('tabular-nums', !q.sufficientBalance && 'font-semibold text-red-600')}>{fmtNumber(q.remainingAfterSend)}</dd></div>
+            </dl>
+          ) : (
+            <p className="mt-4 text-sm text-slate-500">Add a message and recipients to see the cost.</p>
+          )}
         </Card>
       </div>
     </div>

@@ -373,6 +373,7 @@ model Organization {
   notifications     Notification[]
   auditLogs         AuditLog[]
   walletTxns        WalletTransaction[]
+  senderAllocations SenderIdAllocation[]
 
   @@index([status])
   @@index([createdAt])
@@ -513,6 +514,7 @@ model SenderId {
   campaigns     Campaign[]
   reviews       SenderIdReview[]
   registrations SenderIdRegistration[]
+  allocation    SenderIdAllocation?
 
   @@unique([organizationId, name])
   @@index([status])
@@ -555,6 +557,32 @@ model SenderIdRegistration {
   @@map("sender_id_registrations")
 }
 
+// Part of the organization's wallet reserved for one sender ID. It is a reservation of real wallet
+// credits, never extra credits: the remaining amounts (allocated - used) of all active allocations
+// can never exceed the wallet balance at the time they are set.
+model SenderIdAllocation {
+  id                 String   @id @default(uuid()) @db.Char(36)
+  organizationId     String   @db.Char(36)
+  senderId           String   @unique @db.Char(36)
+  allocated          Int
+  used               Int      @default(0)
+  isActive           Boolean  @default(true)
+  // Remaining-percentage thresholds that trigger a reminder, e.g. [50, 25, 10].
+  alertThresholds    Json
+  // Lowest threshold already notified since the allocation was last topped up (null = none).
+  lastAlertThreshold Int?
+  createdById        String?  @db.Char(36)
+  updatedById        String?  @db.Char(36)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  sender       SenderId     @relation(fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@map("sender_id_allocations")
+}
+
 // ─────────────────────────────────────────────────────────────
 // Upstream SMS providers (our supply side)
 // ─────────────────────────────────────────────────────────────
@@ -581,6 +609,25 @@ enum ProviderPurchaseStatus {
   FAILED
 }
 
+enum ProviderHealth {
+  HEALTHY
+  DEGRADED
+  DOWN
+}
+
+enum ProviderLotSource {
+  OPENING
+  PURCHASE
+  ADJUSTMENT
+  RETURN
+}
+
+enum RoutingStrategy {
+  PRIORITY
+  LOWEST_COST
+  PRIORITY_THEN_COST
+}
+
 enum CapacityEntryType {
   PURCHASE
   USAGE
@@ -589,39 +636,157 @@ enum CapacityEntryType {
 }
 
 model SmsProvider {
-  id                   String         @id @default(uuid()) @db.Char(36)
+  id                    String         @id @default(uuid()) @db.Char(36)
   // Stable code used to resolve the adapter (e.g. MTN + SIMULATION -> "mtn:simulation").
-  code                 String         @unique
-  name                 String
-  type                 ProviderType
-  mode                 ProviderMode   @default(SIMULATION)
-  status               ProviderStatus @default(ACTIVE)
-  currency             String         @default("RWF")
+  code                  String         @unique
+  name                  String
+  type                  ProviderType
+  mode                  ProviderMode   @default(SIMULATION)
+  status                ProviderStatus @default(ACTIVE)
+  currency              String         @default("RWF")
   // Current price quoted by the provider per SMS (default unit cost for new purchases).
-  costPerSms           Decimal        @db.Decimal(14, 4)
-  // Destination prefixes this provider serves (E.164 strings, JSON array). Empty = catch-all route.
-  routePrefixes        Json
-  priority             Int            @default(100)
+  costPerSms            Decimal        @db.Decimal(14, 4)
+  // Legacy (pre-network routing) prefix list; kept for history, no longer used for routing.
+  routePrefixes         Json
+  priority              Int            @default(100)
+  // Destination capability: the networks in `networks`, or every destination when servesAllDestinations.
+  servesAllDestinations Boolean        @default(false)
+  supportsSenderId      Boolean        @default(true)
+  health                ProviderHealth @default(HEALTHY)
+  healthNote            String?        @db.Text
+  // Capacity kept in reserve: the provider is skipped once a send would leave less than this.
+  minimumCapacity       Int            @default(0)
   // Capacity inventory (always changed together with the append-only capacity ledger).
-  capacityBalance      Int            @default(0)
-  totalPurchased       Int            @default(0)
-  totalUsed            Int            @default(0)
-  totalSpent           Decimal        @default(0) @db.Decimal(14, 2)
-  allowOverdraft       Boolean        @default(false)
-  overdraftLimit       Int            @default(0)
-  lowCapacityThreshold Int            @default(10000)
-  notes                String?        @db.Text
-  lastTransactionAt    DateTime?
-  createdAt            DateTime       @default(now())
-  updatedAt            DateTime       @updatedAt
+  capacityBalance       Int            @default(0)
+  totalPurchased        Int            @default(0)
+  totalUsed             Int            @default(0)
+  totalSpent            Decimal        @default(0) @db.Decimal(14, 2)
+  allowOverdraft        Boolean        @default(false)
+  overdraftLimit        Int            @default(0)
+  lowCapacityThreshold  Int            @default(10000)
+  notes                 String?        @db.Text
+  lastTransactionAt     DateTime?
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
 
   purchases     ProviderPurchase[]
   ledger        ProviderCapacityLedger[]
   recipients    SmsRecipient[]
   registrations SenderIdRegistration[]
+  lots          ProviderCapacityLot[]
+  networks      SmsProviderNetwork[]
+  primaryRules  SmsRoutingRule[]         @relation("RulePrimaryProvider")
 
   @@index([status])
   @@map("sms_providers")
+}
+
+// Destination networks (country + mobile network, identified by E.164 prefixes). Database-driven.
+model SmsNetwork {
+  id          String   @id @default(uuid()) @db.Char(36)
+  code        String   @unique
+  name        String
+  countryCode String   @db.Char(2)
+  countryName String
+  // E.164 prefixes (JSON array of strings, e.g. ["+25078", "+25079"]).
+  prefixes    Json
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  providers  SmsProviderNetwork[]
+  rules      SmsRoutingRule[]
+  recipients SmsRecipient[]
+
+  @@index([countryCode])
+  @@map("sms_networks")
+}
+
+// Which destination networks a provider can deliver to (not limited to its own network).
+model SmsProviderNetwork {
+  providerId String   @db.Char(36)
+  networkId  String   @db.Char(36)
+  createdAt  DateTime @default(now())
+
+  provider SmsProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  network  SmsNetwork  @relation(fields: [networkId], references: [id], onDelete: Cascade)
+
+  @@id([providerId, networkId])
+  @@index([networkId])
+  @@map("sms_provider_networks")
+}
+
+// A block of provider capacity with its own unit cost. capacityBalance = Σ remaining; usage
+// consumes lots oldest-first and records which lots (and costs) were used.
+model ProviderCapacityLot {
+  id         String            @id @default(uuid()) @db.Char(36)
+  providerId String            @db.Char(36)
+  purchaseId String?           @unique @db.Char(36)
+  source     ProviderLotSource
+  quantity   Int
+  remaining  Int
+  unitCost   Decimal           @db.Decimal(14, 4)
+  reference  String
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+
+  provider     SmsProvider              @relation(fields: [providerId], references: [id], onDelete: Restrict)
+  purchase     ProviderPurchase?        @relation(fields: [purchaseId], references: [id], onDelete: Restrict)
+  consumptions ProviderLotConsumption[]
+
+  @@index([providerId, remaining, createdAt])
+  @@map("provider_capacity_lots")
+}
+
+// Capacity taken from a lot by one ledger movement (usage or negative adjustment).
+model ProviderLotConsumption {
+  id            String   @id @default(uuid()) @db.Char(36)
+  lotId         String   @db.Char(36)
+  ledgerEntryId String   @db.Char(36)
+  quantity      Int
+  // Capacity later given back to the lot (rejected or cancelled messages).
+  returned      Int      @default(0)
+  unitCost      Decimal  @db.Decimal(14, 4)
+  createdAt     DateTime @default(now())
+
+  lot         ProviderCapacityLot    @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  ledgerEntry ProviderCapacityLedger @relation(fields: [ledgerEntryId], references: [id], onDelete: Restrict)
+
+  @@index([ledgerEntryId])
+  @@index([lotId])
+  @@map("provider_lot_consumptions")
+}
+
+// Super Admin routing rules. The first active rule (lowest priority number) matching the
+// destination decides which providers may carry it and in which order.
+model SmsRoutingRule {
+  id                  String          @id @default(uuid()) @db.Char(36)
+  name                String
+  priority            Int
+  // null = any country / any network
+  countryCode         String?         @db.Char(2)
+  networkId           String?         @db.Char(36)
+  strategy            RoutingStrategy @default(PRIORITY)
+  // Explicit order: primary, then backups (JSON array of provider ids). Empty = order by strategy.
+  primaryProviderId   String?         @db.Char(36)
+  backupProviderIds   Json
+  // Restrict candidates (JSON array of provider ids). Empty = every provider serving the destination.
+  allowedProviderIds  Json
+  minProviderCapacity Int             @default(0)
+  maxCostPerSegment   Decimal?        @db.Decimal(14, 4)
+  isActive            Boolean         @default(true)
+  description         String?         @db.Text
+  createdById         String?         @db.Char(36)
+  updatedById         String?         @db.Char(36)
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+
+  network         SmsNetwork?    @relation(fields: [networkId], references: [id], onDelete: Restrict)
+  primaryProvider SmsProvider?   @relation("RulePrimaryProvider", fields: [primaryProviderId], references: [id], onDelete: Restrict)
+  recipients      SmsRecipient[]
+
+  @@index([isActive, priority])
+  @@map("sms_routing_rules")
 }
 
 model ProviderPurchase {
@@ -640,7 +805,8 @@ model ProviderPurchase {
   completedAt       DateTime?
   createdAt         DateTime               @default(now())
 
-  provider SmsProvider @relation(fields: [providerId], references: [id], onDelete: Restrict)
+  provider SmsProvider          @relation(fields: [providerId], references: [id], onDelete: Restrict)
+  lot      ProviderCapacityLot?
 
   @@index([providerId, createdAt])
   @@index([status, createdAt])
@@ -662,7 +828,8 @@ model ProviderCapacityLedger {
   createdById   String?           @db.Char(36)
   createdAt     DateTime          @default(now())
 
-  provider SmsProvider @relation(fields: [providerId], references: [id], onDelete: Restrict)
+  provider     SmsProvider              @relation(fields: [providerId], references: [id], onDelete: Restrict)
+  consumptions ProviderLotConsumption[]
 
   @@index([providerId, createdAt])
   @@map("provider_capacity_ledger")
@@ -683,6 +850,7 @@ model Wallet {
 
   organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   transactions WalletTransaction[]
+  creditLots   SmsCreditLot[]
 
   @@map("wallets")
 }
@@ -735,34 +903,89 @@ model SmsPackage {
   @@map("sms_packages")
 }
 
+// Volume pricing for any-quantity purchases. The tier containing the purchased quantity sets the
+// unit price for the whole purchase (simple tier price, not graduated). Active tiers never overlap.
+model SmsPricingTier {
+  id          String   @id @default(uuid()) @db.Char(36)
+  name        String?
+  minQuantity Int
+  // null = no upper bound
+  maxQuantity Int?
+  unitPrice   Decimal  @db.Decimal(14, 4)
+  currency    String   @default("RWF")
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdById String?  @db.Char(36)
+  updatedById String?  @db.Char(36)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  payments Payment[]
+
+  @@index([isActive, minQuantity])
+  @@map("sms_pricing_tiers")
+}
+
+// A batch of credits in a wallet with its own expiry. The wallet balance always equals the sum of
+// `remaining` over its lots; debits consume lots first-expiring-first-out (FEFO).
+model SmsCreditLot {
+  id                  String                @id @default(uuid()) @db.Char(36)
+  walletId            String                @db.Char(36)
+  organizationId      String                @db.Char(36)
+  // Ledger entry that created the lot (null for balances that predate credit lots).
+  sourceTransactionId String?               @unique @db.Char(36)
+  sourceType          WalletTransactionType
+  credits             Int
+  remaining           Int
+  // null = never expires
+  expiresAt           DateTime?
+  expiredAt           DateTime?
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
+
+  wallet Wallet @relation(fields: [walletId], references: [id], onDelete: Restrict)
+
+  @@index([walletId, remaining, expiresAt])
+  @@index([expiresAt, remaining])
+  @@map("sms_credit_lots")
+}
+
 model Payment {
-  id                String        @id @default(uuid()) @db.Char(36)
-  organizationId    String        @db.Char(36)
-  packageId         String?       @db.Char(36)
+  id                 String        @id @default(uuid()) @db.Char(36)
+  organizationId     String        @db.Char(36)
+  packageId          String?       @db.Char(36)
   // Our reference, sent to the provider. Unique.
-  reference         String        @unique
-  provider          String
-  providerReference String?       @unique
-  method            PaymentMethod
-  payerPhone        String?
+  reference          String        @unique
+  provider           String
+  providerReference  String?       @unique
+  method             PaymentMethod
+  payerPhone         String?
   // Snapshot of what was purchased (package may change later).
-  packageName       String
-  credits           Int
-  amount            Decimal       @db.Decimal(14, 2)
-  currency          String
-  status            PaymentStatus @default(PENDING)
+  packageName        String
+  credits            Int
+  amount             Decimal       @db.Decimal(14, 2)
+  currency           String
+  status             PaymentStatus @default(PENDING)
   // Processing fee charged by the payment provider (reported by provider, else configured rate).
-  feeAmount         Decimal       @default(0) @db.Decimal(14, 2)
-  failureReason     String?       @db.Text
-  createdById       String?       @db.Char(36)
-  verifiedAt        DateTime?
-  creditedAt        DateTime?
-  refundedAt        DateTime?
-  createdAt         DateTime      @default(now())
-  updatedAt         DateTime      @updatedAt
+  feeAmount          Decimal       @default(0) @db.Decimal(14, 2)
+  failureReason      String?       @db.Text
+  createdById        String?       @db.Char(36)
+  verifiedAt         DateTime?
+  creditedAt         DateTime?
+  refundedAt         DateTime?
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+  // Tier-priced (any-quantity) purchases: snapshot of the tier and unit price used at checkout.
+  pricingTierId      String?       @db.Char(36)
+  unitPrice          Decimal?      @db.Decimal(14, 4)
+  tierMinQuantity    Int?
+  tierMaxQuantity    Int?
+  // Validity of the purchased credits in days, fixed at checkout (null = never expire).
+  creditValidityDays Int?
 
   organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   package      SmsPackage?       @relation(fields: [packageId], references: [id], onDelete: SetNull)
+  pricingTier  SmsPricingTier?   @relation(fields: [pricingTierId], references: [id], onDelete: Restrict)
   invoice      Invoice?
   events       PaymentEvent[]
   purchase     CustomerPurchase?
@@ -1055,6 +1278,8 @@ model SmsMessage {
   characterCount      Int
   encoding            SmsEncoding
   segments            Int
+  // Segmentation configuration version the message was measured and billed with (never recalculated).
+  segmentationVersion Int?
   recipientCount      Int
   creditsPerRecipient Int
   totalCredits        Int
@@ -1069,16 +1294,37 @@ model SmsMessage {
   createdAt           DateTime       @default(now())
   updatedAt           DateTime       @updatedAt
 
-  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  sender       SenderId       @relation(fields: [senderId], references: [id], onDelete: Restrict)
-  campaign     Campaign?      @relation(fields: [campaignId], references: [id], onDelete: SetNull)
-  apiKey       ApiKey?        @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
+  organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  sender       SenderId               @relation(fields: [senderId], references: [id], onDelete: Restrict)
+  campaign     Campaign?              @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  apiKey       ApiKey?                @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
   recipients   SmsRecipient[]
+  segmentation SmsSegmentationConfig? @relation(fields: [segmentationVersion], references: [version], onDelete: Restrict)
 
   @@unique([organizationId, idempotencyKey])
   @@index([organizationId, createdAt])
   @@index([status, scheduledAt])
   @@map("sms_messages")
+}
+
+// SMS segmentation rules, versioned and append-only (enforced by DB triggers). The highest version
+// is active; each message records the version it was billed with. Limits are in encoding units
+// (GSM-7 septets / UCS-2 code units).
+model SmsSegmentationConfig {
+  version              Int      @id
+  gsm7SingleSegment    Int
+  gsm7MultiSegment     Int
+  ucs2SingleSegment    Int
+  ucs2MultiSegment     Int
+  // Longest message accepted, in characters.
+  maxMessageCharacters Int
+  reason               String?  @db.Text
+  createdById          String?  @db.Char(36)
+  createdAt            DateTime @default(now())
+
+  messages SmsMessage[]
+
+  @@map("sms_segmentation_configs")
 }
 
 // Per-recipient delivery unit. This is the "message id" exposed through the public API.
@@ -1094,8 +1340,11 @@ model SmsRecipient {
   // Adapter key (e.g. mtn:simulation) and the provider account the message was routed to.
   provider          String?
   providerId        String?            @db.Char(36)
-  // Provider cost of this recipient's segments (weighted-average cost at reservation time).
+  // Provider cost of this recipient's segments (cost of the capacity lots consumed at routing time).
   providerCost      Decimal?           @db.Decimal(14, 4)
+  // Routing decision: destination network and the rule that selected the provider (null = default routing).
+  networkId         String?            @db.Char(36)
+  routingRuleId     String?            @db.Char(36)
   capacityReleased  Boolean            @default(false)
   providerMessageId String?            @unique
   errorCode         String?
@@ -1112,6 +1361,8 @@ model SmsRecipient {
   message         SmsMessage          @relation(fields: [messageId], references: [id], onDelete: Cascade)
   organization    Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   smsProvider     SmsProvider?        @relation(fields: [providerId], references: [id], onDelete: SetNull)
+  routingRule     SmsRoutingRule?     @relation(fields: [routingRuleId], references: [id], onDelete: SetNull)
+  network         SmsNetwork?         @relation(fields: [networkId], references: [id], onDelete: SetNull)
   deliveryReports SmsDeliveryReport[]
 
   @@index([messageId, status])

@@ -7,6 +7,7 @@ import { normalizePhone } from '../../utils/phone';
 import { audit } from '../audit-logs/audit.service';
 import { resolveAudience } from '../contacts/contact.service';
 import { getSetting } from '../settings/settings.service';
+import { analyzeMessage, assertSendable } from '../sms/segmentation.service';
 import { cancelScheduledMessage, sendSms } from '../sms/sms.service';
 
 export interface CampaignInput {
@@ -51,6 +52,7 @@ async function buildAudienceRows(organizationId: string, input: Pick<CampaignInp
 
 export async function createCampaign(organizationId: string, input: CampaignInput, actor: Actor, meta?: RequestMeta) {
   await assertOwnedSender(organizationId, input.senderId);
+  await assertSendable(await analyzeMessage(input.message));
   const recipients = await buildAudienceRows(organizationId, input);
   const campaign = await prisma.$transaction(async (tx) => {
     const c = await tx.campaign.create({
@@ -83,6 +85,7 @@ export async function updateCampaign(organizationId: string, id: string, input: 
   const c = await getOwned(organizationId, id);
   if (c.status !== 'DRAFT') throw AppError.conflict('Only draft campaigns can be edited', 'CAMPAIGN_NOT_EDITABLE');
   if (input.senderId) await assertOwnedSender(organizationId, input.senderId);
+  if (input.message !== undefined) await assertSendable(await analyzeMessage(input.message));
   const audienceChanged = input.groupIds !== undefined || input.contactIds !== undefined || input.phones !== undefined;
   const recipients = audienceChanged ? await buildAudienceRows(organizationId, input) : null;
   return prisma.$transaction(async (tx) => {

@@ -1,5 +1,5 @@
 import { get, getPage, post } from '@/api/client';
-import type { Quote, SmsBatch, SmsRecipient } from '@/api/types';
+import type { MessageEstimate, Quote, SmsBatch, SmsRecipient } from '@/api/types';
 
 export interface SendPayload {
   senderId: string;
@@ -13,6 +13,8 @@ export interface SendPayload {
 }
 
 export const smsService = {
+  /** Server-side encoding/segment analysis of a message (preview only). */
+  estimate: (message: string) => post<MessageEstimate>('/sms/estimate', { message }),
   quote: (body: { message: string; recipients?: string[]; contactIds?: string[]; groupIds?: string[] }) => post<Quote>('/sms/quote', body),
   send: (body: SendPayload) =>
     post<{ id: string; status: string; recipientCount: number; segments: number; totalCredits: number; skipped: { invalid: number; duplicates: number; optedOut: number } }>(

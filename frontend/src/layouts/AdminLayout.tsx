@@ -4,10 +4,12 @@ import {
   Code2,
   Inbox,
   RadioTower,
+  Ruler,
   BarChart3,
   Building2,
   CreditCard,
   FileCheck2,
+  Layers,
   LayoutDashboard,
   Lock,
   MessagesSquare,
@@ -34,6 +36,8 @@ export function AdminLayout() {
       icon: RadioTower,
       children: [
         { label: 'Providers', to: '/admin/providers', visible: canAdmin('providers.view') },
+        { label: 'Routing rules', to: '/admin/routing', end: true, visible: canAdmin('providers.view') },
+        { label: 'Routing simulator', to: '/admin/routing/simulator', visible: canAdmin('providers.view') },
         { label: 'Provider purchases', to: '/admin/provider-purchases', visible: canAdmin('provider_purchases.view') },
         { label: 'Provider wallets', to: '/admin/provider-wallets', visible: canAdmin('providers.view') },
       ],
@@ -45,6 +49,7 @@ export function AdminLayout() {
       children: [
         { label: 'Business overview', to: '/admin/finance', visible: canAdmin('finance.view') },
         { label: 'Customer SMS sales', to: '/admin/sales', visible: canAdmin('finance.view') },
+        { label: 'Customer report', to: '/admin/customer-report', visible: canAdmin('finance.view') },
         { label: 'Expenses', to: '/admin/expenses', visible: canAdmin('expenses.view') },
       ],
     },
@@ -68,6 +73,7 @@ export function AdminLayout() {
     },
     { label: 'Wallet transactions', to: '/admin/wallets', icon: Wallet, visible: canAdmin('wallet.view') },
     { label: 'SMS packages', to: '/admin/packages', icon: Package, visible: canAdmin('packages.view') },
+    { label: 'SMS pricing', to: '/admin/pricing', icon: Layers, visible: canAdmin('packages.view') },
     {
       label: 'Developer',
       to: '/admin/developer',
@@ -83,6 +89,7 @@ export function AdminLayout() {
     { label: 'Users', to: '/admin/users', icon: Users, visible: canAdmin('users.view') },
     { label: 'Roles & permissions', to: '/admin/roles', icon: Lock, visible: canAdmin('roles.view') },
     { label: 'Audit logs', to: '/admin/audit-logs', icon: ScrollText, visible: canAdmin('audit_logs.view') },
+    { label: 'SMS configuration', to: '/admin/sms-configuration', icon: Ruler, visible: canAdmin('settings.view') },
     { label: 'Settings', to: '/admin/settings', icon: SlidersHorizontal, visible: canAdmin('settings.view') || canAdmin('providers.view') },
   ];
   return (

@@ -6,9 +6,9 @@ import type { Actor, RequestMeta } from '../../types/actor';
 import { actorUserId } from '../../types/actor';
 import { nextCounterValue } from '../../utils/counter';
 import { AppError } from '../../utils/errors';
-import { stringList } from '../../utils/json';
 import { audit } from '../audit-logs/audit.service';
 import { notifyStaff } from '../notifications/notification.service';
+import { loadRoutingContext, planRoute, resolveDestination } from './routing.service';
 
 /**
  * Supply side of the business: SMS capacity we buy from upstream providers.
@@ -54,17 +54,25 @@ interface CapacityEntry {
   description: string;
   unitCost?: Prisma.Decimal | null;
   createdById?: string | null;
+  /** PURCHASE: the purchase the new lot belongs to. */
+  purchaseId?: string;
+  /** RELEASE: reference of the USAGE entry being reversed; capacity goes back to the lots it consumed. */
+  restoreOf?: string;
 }
 
 /**
- * Apply one capacity movement inside the caller's transaction. Consumption uses a
- * conditional UPDATE so capacity can never go below zero (or below the configured overdraft);
- * the unique `reference` makes every movement idempotent.
+ * Apply one capacity movement inside the caller's transaction.
+ *
+ * - Consumption uses a conditional UPDATE so capacity can never go below zero.
+ * - Capacity lots move with the balance: additions open a lot at their unit cost (releases refill
+ *   the lots the original usage consumed), consumption takes lots oldest-first and records each
+ *   lot and its cost, so `cost` is the exact provider cost of what was consumed.
+ * - The unique `reference` makes every movement idempotent.
  */
 export async function applyCapacityEntry(tx: Tx, e: CapacityEntry) {
   if (!Number.isInteger(e.amount) || e.amount === 0) throw new Error('Capacity amount must be a non-zero integer');
   const existing = await tx.providerCapacityLedger.findUnique({ where: { reference: e.reference } });
-  if (existing) return { entry: existing, duplicate: true as const };
+  if (existing) return { entry: existing, duplicate: true as const, cost: D(0) };
 
   if (e.amount < 0) {
     const need = -e.amount;
@@ -74,8 +82,7 @@ export async function applyCapacityEntry(tx: Tx, e: CapacityEntry) {
       SET capacityBalance = capacityBalance - ${need},
           totalUsed = totalUsed + ${e.type === 'USAGE' ? need : 0},
           lastTransactionAt = ${now}, updatedAt = ${now}
-      WHERE id = ${e.providerId}
-        AND capacityBalance - ${need} >= CASE WHEN allowOverdraft THEN -overdraftLimit ELSE 0 END`;
+      WHERE id = ${e.providerId} AND capacityBalance >= ${need}`;
     if (rows === 0) {
       throw new AppError(503, 'PROVIDER_CAPACITY_UNAVAILABLE', 'SMS capacity is temporarily unavailable for this route. Please try again later or contact support.');
     }
@@ -102,7 +109,61 @@ export async function applyCapacityEntry(tx: Tx, e: CapacityEntry) {
       createdById: e.createdById ?? null,
     },
   });
-  return { entry, duplicate: false as const };
+
+  let cost = D(0);
+  if (e.amount < 0) {
+    cost = await consumeLots(tx, e.providerId, -e.amount, entry.id);
+  } else {
+    let leftover = e.amount;
+    if (e.restoreOf) leftover = await restoreLots(tx, e.restoreOf, e.amount);
+    if (leftover > 0) {
+      const unitCost = e.unitCost ?? (await tx.smsProvider.findUniqueOrThrow({ where: { id: e.providerId }, select: { costPerSms: true } })).costPerSms;
+      await tx.providerCapacityLot.create({
+        data: {
+          providerId: e.providerId,
+          purchaseId: e.purchaseId ?? null,
+          source: e.type === 'PURCHASE' ? 'PURCHASE' : e.type === 'RELEASE' ? 'RETURN' : 'ADJUSTMENT',
+          quantity: leftover,
+          remaining: leftover,
+          unitCost,
+          reference: e.reference,
+        },
+      });
+    }
+  }
+  return { entry, duplicate: false as const, cost };
+}
+
+/** Take `quantity` from the provider's lots, oldest first, recording each lot used. Returns the total cost. */
+async function consumeLots(tx: Tx, providerId: string, quantity: number, ledgerEntryId: string) {
+  const lots = await tx.providerCapacityLot.findMany({ where: { providerId, remaining: { gt: 0 } }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] });
+  let left = quantity;
+  let cost = D(0);
+  for (const lot of lots) {
+    if (left === 0) break;
+    const n = Math.min(left, lot.remaining);
+    await tx.providerCapacityLot.update({ where: { id: lot.id }, data: { remaining: { decrement: n } } });
+    await tx.providerLotConsumption.create({ data: { lotId: lot.id, ledgerEntryId, quantity: n, unitCost: lot.unitCost } });
+    cost = cost.plus(D(lot.unitCost).mul(n));
+    left -= n;
+  }
+  if (left > 0) throw new Error(`Capacity lots out of sync for provider ${providerId}: ${left} segments missing`);
+  return cost;
+}
+
+/** Give capacity back to the lots a usage entry consumed (most recently consumed first). Returns what could not be placed. */
+async function restoreLots(tx: Tx, usageReference: string, quantity: number) {
+  const usage = await tx.providerCapacityLedger.findUnique({ where: { reference: usageReference }, include: { consumptions: { orderBy: { createdAt: 'desc' } } } });
+  let left = quantity;
+  for (const c of [...(usage?.consumptions ?? [])].reverse()) {
+    if (left === 0) break;
+    const n = Math.min(left, c.quantity - c.returned);
+    if (n <= 0) continue;
+    await tx.providerLotConsumption.update({ where: { id: c.id }, data: { returned: { increment: n } } });
+    await tx.providerCapacityLot.update({ where: { id: c.lotId }, data: { remaining: { increment: n } } });
+    left -= n;
+  }
+  return left;
 }
 
 // ── Purchasing capacity from a provider ────────────────────────────────
@@ -165,6 +226,7 @@ export async function purchaseCapacity(
       providerId,
       type: 'PURCHASE',
       amount: input.quantity,
+      purchaseId: purchase.id,
       reference: `purchase:${purchase.id}`,
       description: `Purchase ${purchase.reference} (${result.providerReference})`,
       unitCost: confirmedUnit,
@@ -180,7 +242,12 @@ export async function purchaseCapacity(
 }
 
 /** Manual reconciliation (e.g. after comparing with the provider-reported balance). */
-export async function adjustCapacity(providerId: string, input: { amount: number; reason: string; reference: string }, actor: Actor, meta?: RequestMeta) {
+export async function adjustCapacity(
+  providerId: string,
+  input: { amount: number; reason: string; reference: string; unitCost?: string },
+  actor: Actor,
+  meta?: RequestMeta,
+) {
   return prisma.$transaction(async (tx) => {
     const r = await applyCapacityEntry(tx, {
       providerId,
@@ -188,6 +255,8 @@ export async function adjustCapacity(providerId: string, input: { amount: number
       amount: input.amount,
       reference: `adjust:${input.reference}`,
       description: input.reason,
+      // Added capacity is valued at the given cost (default: the provider's current cost per segment).
+      unitCost: input.unitCost ? D(input.unitCost) : undefined,
       createdById: actorUserId(actor),
     });
     if (r.duplicate) throw AppError.conflict('An adjustment with this reference already exists', 'DUPLICATE_REFERENCE');
@@ -201,59 +270,46 @@ export async function adjustCapacity(providerId: string, input: { amount: number
 export interface RouteAssignment {
   providerId: string;
   adapterKey: string;
-  /** Provider cost of ONE segment for this route (WAC). */
+  /** Provider cost of ONE segment for this route (cost of the capacity lots consumed). */
   unitCost: Prisma.Decimal;
-}
-
-function prefixScore(phone: string, prefixes: string[]) {
-  return prefixes.reduce((best, p) => (phone.startsWith(p) && p.length > best ? p.length : best), 0);
+  /** Destination network and the rule that chose the provider (null = default routing). */
+  networkId: string | null;
+  routingRuleId: string | null;
 }
 
 /**
- * Route every destination to a provider with enough capacity, then reserve (debit) the
- * capacity per provider inside the caller's transaction.
- *
- * Preference: providers whose route prefixes match the number (longest prefix, then priority),
- * then catch-all providers (no prefixes) by priority. Only ACTIVE providers with an installed
- * adapter are eligible. If no eligible provider has capacity the whole send is refused — the
- * platform never silently oversells capacity (unless a provider has an explicit overdraft).
+ * Route every destination through the routing engine (see routing.service.ts), then reserve
+ * the capacity per provider inside the caller's transaction. If any destination has no
+ * eligible provider the whole send is refused — capacity is never oversold.
  */
 export async function routeAndReserve(tx: Tx, input: { reservationRef: string; phones: string[]; segmentsPerRecipient: number; actor?: Actor }) {
-  const providers = (await tx.smsProvider.findMany({ where: { status: 'ACTIVE' }, orderBy: { priority: 'asc' } })).filter((p) => SmsProviderFactory.forProvider(p));
-  if (providers.length === 0) {
-    throw new AppError(503, 'PROVIDER_CAPACITY_UNAVAILABLE', 'SMS sending is temporarily unavailable. Please try again later or contact support.');
-  }
-  const remaining = new Map(providers.map((p) => [p.id, p.capacityBalance + (p.allowOverdraft ? p.overdraftLimit : 0)]));
-  const assignment = new Map<string, RouteAssignment>();
+  const ctx = await loadRoutingContext(tx);
+  const remaining = new Map(ctx.providers.map((p) => [p.id, p.capacityBalance]));
+  const decisions = new Map<string, { providerId: string; networkId: string | null; routingRuleId: string | null }>();
   const perProvider = new Map<string, number>();
   const need = input.segmentsPerRecipient;
 
   for (const phone of input.phones) {
-    const candidates = providers
-      .map((p) => {
-        const prefixes = stringList(p.routePrefixes);
-        return { p, prefixes, score: prefixes.length === 0 ? 0 : prefixScore(phone, prefixes) };
-      })
-      .filter((c) => c.prefixes.length === 0 || c.score > 0)
-      .sort((a, b) => b.score - a.score || a.p.priority - b.p.priority);
-    const chosen = candidates.find((c) => (remaining.get(c.p.id) ?? 0) >= need);
-    if (!chosen) {
+    const plan = planRoute(ctx, resolveDestination(ctx, phone), need, remaining);
+    if (!plan.selected) {
       void notifyStaff('providers.manage', {
         type: 'LOW_BALANCE',
-        title: 'Provider capacity exhausted',
-        body: `A customer send was refused: no provider has capacity for ${phone.slice(0, 6)}… Buy capacity under SMS Providers.`,
+        title: 'No provider available for a destination',
+        body: `A customer send was refused for ${phone.slice(0, 6)}…: ${plan.candidates[0]?.reasons[0] ?? 'no provider serves it'}. Review providers and routing rules.`,
         link: '/admin/providers',
       });
       throw new AppError(503, 'PROVIDER_CAPACITY_UNAVAILABLE', 'SMS capacity is temporarily unavailable for some destinations. Please try again later or contact support.');
     }
-    remaining.set(chosen.p.id, (remaining.get(chosen.p.id) ?? 0) - need);
-    perProvider.set(chosen.p.id, (perProvider.get(chosen.p.id) ?? 0) + need);
-    assignment.set(phone, { providerId: chosen.p.id, adapterKey: SmsProviderFactory.keyFor(chosen.p), unitCost: weightedAverageCost(chosen.p) });
+    const id = plan.selected.provider.id;
+    remaining.set(id, (remaining.get(id) ?? 0) - need);
+    perProvider.set(id, (perProvider.get(id) ?? 0) + need);
+    decisions.set(phone, { providerId: id, networkId: plan.destination.network?.id ?? null, routingRuleId: plan.rule?.id ?? null });
   }
 
+  const unitCosts = new Map<string, Prisma.Decimal>();
   for (const [providerId, segments] of perProvider) {
-    const p = providers.find((x) => x.id === providerId)!;
-    await applyCapacityEntry(tx, {
+    const p = ctx.providers.find((x) => x.id === providerId)!;
+    const { cost } = await applyCapacityEntry(tx, {
       providerId,
       type: 'USAGE',
       amount: -segments,
@@ -262,6 +318,7 @@ export async function routeAndReserve(tx: Tx, input: { reservationRef: string; p
       unitCost: weightedAverageCost(p),
       createdById: input.actor ? actorUserId(input.actor) : null,
     });
+    unitCosts.set(providerId, cost.div(segments).toDecimalPlaces(4));
     const after = p.capacityBalance - segments;
     if (p.capacityBalance >= p.lowCapacityThreshold && after < p.lowCapacityThreshold) {
       void notifyStaff('providers.manage', {
@@ -272,11 +329,26 @@ export async function routeAndReserve(tx: Tx, input: { reservationRef: string; p
       });
     }
   }
+
+  const assignment = new Map<string, RouteAssignment>();
+  for (const [phone, d] of decisions) {
+    const p = ctx.providers.find((x) => x.id === d.providerId)!;
+    assignment.set(phone, { ...d, adapterKey: SmsProviderFactory.keyFor(p), unitCost: unitCosts.get(d.providerId)! });
+  }
   return assignment;
 }
 
-/** Return unused capacity for one recipient (rejected at submission / cancelled). Idempotent. */
-export async function releaseRecipientCapacity(tx: Tx, r: { id: string; providerId: string | null; capacityReleased: boolean; attempts: number }, segments: number, reason: string) {
+/**
+ * Return unused capacity for one recipient (rejected at submission / cancelled). Idempotent.
+ * Capacity goes back to the lots the message consumed; otherwise (e.g. a staff retry that was
+ * re-routed) it returns as a lot valued at the recipient's recorded cost.
+ */
+export async function releaseRecipientCapacity(
+  tx: Tx,
+  r: { id: string; messageId?: string; providerId: string | null; providerCost?: Prisma.Decimal | null; capacityReleased: boolean; attempts: number },
+  segments: number,
+  reason: string,
+) {
   if (!r.providerId || r.capacityReleased) return;
   const claimed = await tx.smsRecipient.updateMany({ where: { id: r.id, capacityReleased: false }, data: { capacityReleased: true } });
   if (claimed.count === 0) return;
@@ -286,6 +358,8 @@ export async function releaseRecipientCapacity(tx: Tx, r: { id: string; provider
     amount: segments,
     reference: `release:${r.id}:${r.attempts}`,
     description: `Released: ${reason}`,
+    restoreOf: r.messageId ? `usage:${r.messageId}:${r.providerId}` : undefined,
+    unitCost: r.providerCost ? D(r.providerCost).div(segments).toDecimalPlaces(4) : undefined,
   });
 }
 
@@ -300,6 +374,7 @@ export async function releaseMessageCapacity(tx: Tx, messageId: string, segments
       amount: r._count * segments,
       reference: `release-batch:${messageId}:${r.providerId}`,
       description: `Released: scheduled send cancelled`,
+      restoreOf: `usage:${messageId}:${r.providerId}`,
     });
   }
 }

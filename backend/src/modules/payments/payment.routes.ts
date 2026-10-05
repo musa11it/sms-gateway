@@ -54,7 +54,15 @@ paymentRouter.post(
   requireOrgPermission('wallet.purchase', 'payments.create'),
   asyncHandler(async (req, res) => {
     const body = parse(
-      z.object({ packageId: z.string().uuid(), method: z.enum(['MOBILE_MONEY', 'CARD', 'BANK_TRANSFER']), payerPhone: z.string().trim().max(30).optional().nullable() }),
+      // Either a package or any quantity (priced by the active tier). Any client-sent price is ignored.
+      z
+        .object({
+          packageId: z.string().uuid().optional(),
+          quantity: z.unknown().optional(),
+          method: z.enum(['MOBILE_MONEY', 'CARD', 'BANK_TRANSFER']),
+          payerPhone: z.string().trim().max(30).optional().nullable(),
+        })
+        .refine((b) => (b.packageId === undefined) !== (b.quantity === undefined), { message: 'Choose a package or enter a quantity', path: ['quantity'] }),
       req.body,
     );
     const result = await svc.createPayment(req.org!.id, body, actorFromRequest(req), metaFromRequest(req));

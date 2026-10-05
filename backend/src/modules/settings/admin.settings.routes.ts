@@ -7,11 +7,30 @@ import { requirePlatformPermission } from '../../middlewares/rbac';
 import { actorFromRequest, metaFromRequest } from '../../types/actor';
 import { asyncHandler, ok, parse } from '../../utils/http';
 import { audit } from '../audit-logs/audit.service';
+import { segmentationConfigBody, segmentationOverview, serializeConfig, updateSegmentationConfig } from '../sms/segmentation.service';
 import { getAllSettings, updateSetting } from './settings.service';
 
 export const adminSettingsRouter = Router();
 
 adminSettingsRouter.get('/', requirePlatformPermission('settings.view'), asyncHandler(async (_req, res) => ok(res, await getAllSettings())));
+
+/** SMS segmentation rules: active version, history and safety limits. */
+adminSettingsRouter.get(
+  '/sms-segmentation',
+  requirePlatformPermission('settings.view'),
+  asyncHandler(async (_req, res) => ok(res, await segmentationOverview())),
+);
+
+/** Saves a new segmentation version (billing-relevant: audited, applies to new messages only). */
+adminSettingsRouter.put(
+  '/sms-segmentation',
+  requirePlatformPermission('settings.update'),
+  asyncHandler(async (req, res) => {
+    const body = parse(segmentationConfigBody, req.body);
+    const v = await updateSegmentationConfig(body, actorFromRequest(req), metaFromRequest(req));
+    return ok(res, serializeConfig(v), `Segmentation version ${v.version} is now active`);
+  }),
+);
 
 adminSettingsRouter.put(
   '/:key',

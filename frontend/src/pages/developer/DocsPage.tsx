@@ -260,7 +260,7 @@ export function DocsPage() {
                   {[
                     ['senderId', 'string', 'Your approved sender ID name, e.g. MYSHOP (alias: sender)'],
                     ['to', 'string | string[]', 'E.164 numbers, e.g. +250788123456 — up to 1,000 (aliases: recipient / recipients)'],
-                    ['message', 'string', 'Text. GSM-7: 160 chars/segment (153 when split); Unicode: 70 (67)'],
+                    ['message', 'string', 'Text. Segment limits are set by the platform (defaults GSM-7 160/153, Unicode 70/67) — use POST /sms/estimate to check a message'],
                     ['reference', 'string?', 'Your own reference, echoed back'],
                     ['scheduledAt', 'ISO date?', 'Send later (credits reserved now)'],
                   ].map(([f, t, d]) => (
@@ -316,7 +316,7 @@ export function DocsPage() {
             <p>Long messages are split into segments; you are charged <strong>1 credit per segment per recipient</strong>. The server calculates segments — send the text and it does the rest.</p>
             <div className="overflow-hidden rounded-xl ring-1 ring-slate-200">
               <table className="w-full text-left text-sm">
-                <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-4 py-2">Encoding</th><th className="px-4 py-2">Single SMS</th><th className="px-4 py-2">Per segment when split</th><th className="px-4 py-2">When</th></tr></thead>
+                <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-4 py-2">Encoding</th><th className="px-4 py-2">Single SMS (default)</th><th className="px-4 py-2">Per segment when split (default)</th><th className="px-4 py-2">When</th></tr></thead>
                 <tbody className="divide-y divide-slate-100">
                   <tr><td className="px-4 py-2 font-medium">GSM-7</td><td className="px-4 py-2">160 characters</td><td className="px-4 py-2">153 characters</td><td className="px-4 py-2">Standard Latin letters, digits and common symbols</td></tr>
                   <tr><td className="px-4 py-2 font-medium">Unicode (UCS-2)</td><td className="px-4 py-2">70 characters</td><td className="px-4 py-2">67 characters</td><td className="px-4 py-2">Any emoji or character outside GSM-7 (e.g. ą, ç, “smart quotes”)</td></tr>
@@ -326,6 +326,11 @@ export function DocsPage() {
             <p>
               Characters <code className="kbd">{'€ [ ] { } ~ ^ | \\'}</code> count as two in GSM-7. Example: 100 recipients × 2 segments = 200 credits. The response returns{' '}
               <code className="kbd">segments</code>, <code className="kbd">encoding</code> and <code className="kbd">totalCredits</code>.
+            </p>
+            <p>
+              The limits above are the platform defaults and may be adjusted. To check a message before sending, call{' '}
+              <code className="kbd">POST /public/sms/estimate</code> with <code className="kbd">{'{ "message": "…" }'}</code> — it returns <code className="kbd">encoding</code>,{' '}
+              <code className="kbd">characterCount</code>, <code className="kbd">segmentCount</code> and <code className="kbd">creditsPerRecipient</code>. Sending always recalculates on the server.
             </p>
           </Section>
 

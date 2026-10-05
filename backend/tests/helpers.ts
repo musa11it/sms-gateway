@@ -41,16 +41,26 @@ export async function resetDatabase() {
   await createProviders();
 }
 
-/** MTN (+25078/+25079), Airtel (+25072/+25073) and a catch-all aggregator, each funded through the real purchase flow. */
+/** Networks RW-MTN (+25078/+25079) and RW-AIRTEL (+25072/+25073). */
+export async function createNetworks() {
+  const mtn = await prisma.smsNetwork.create({ data: { code: 'RW-MTN', name: 'MTN Rwanda', countryCode: 'RW', countryName: 'Rwanda', prefixes: ['+25078', '+25079'] } });
+  const airtel = await prisma.smsNetwork.create({ data: { code: 'RW-AIRTEL', name: 'Airtel Rwanda', countryCode: 'RW', countryName: 'Rwanda', prefixes: ['+25072', '+25073'] } });
+  return { mtn: mtn.id, airtel: airtel.id };
+}
+
+/** MTN (serves MTN Rwanda), Airtel (serves Airtel Rwanda) and a catch-all aggregator, each funded through the real purchase flow. */
 export async function createProviders(capacity = 100_000) {
+  const networks = await createNetworks();
   const defs = [
-    { code: 'MTN', name: 'MTN Rwanda', type: 'MNO' as const, costPerSms: '8', routePrefixes: ['+25078', '+25079'], priority: 10 },
-    { code: 'AIRTEL', name: 'Airtel Rwanda', type: 'MNO' as const, costPerSms: '8.5', routePrefixes: ['+25072', '+25073'], priority: 10 },
-    { code: 'GENERIC', name: 'Aggregator', type: 'AGGREGATOR' as const, costPerSms: '11', routePrefixes: [], priority: 100 },
+    { code: 'MTN', name: 'MTN Rwanda', type: 'MNO' as const, costPerSms: '8', networkIds: [networks.mtn], servesAllDestinations: false, priority: 10 },
+    { code: 'AIRTEL', name: 'Airtel Rwanda', type: 'MNO' as const, costPerSms: '8.5', networkIds: [networks.airtel], servesAllDestinations: false, priority: 10 },
+    { code: 'GENERIC', name: 'Aggregator', type: 'AGGREGATOR' as const, costPerSms: '11', networkIds: [], servesAllDestinations: true, priority: 100 },
   ];
   const out: Record<string, string> = {};
-  for (const d of defs) {
-    const p = await prisma.smsProvider.create({ data: { ...d, costPerSms: new Prisma.Decimal(d.costPerSms), mode: 'SIMULATION', status: 'ACTIVE', currency: 'RWF' } });
+  for (const { networkIds, ...d } of defs) {
+    const p = await prisma.smsProvider.create({
+      data: { ...d, routePrefixes: [], costPerSms: new Prisma.Decimal(d.costPerSms), mode: 'SIMULATION', status: 'ACTIVE', currency: 'RWF', networks: { create: networkIds.map((networkId) => ({ networkId })) } },
+    });
     if (capacity > 0) await purchaseCapacity(p.id, { quantity: capacity }, SYSTEM_ACTOR);
     out[d.code] = p.id;
   }
