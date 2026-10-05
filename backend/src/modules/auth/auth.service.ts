@@ -60,6 +60,19 @@ async function sendVerificationEmail(user: { id: string; email: string; fullName
   });
 }
 
+const SETUP_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** For accounts a platform admin created: a link to replace the generated password with their own (valid 7 days). */
+export async function sendAccountSetupEmail(user: { id: string; email: string; fullName: string }, organizationName: string) {
+  const token = await issueUserToken(user.id, 'PASSWORD_RESET', SETUP_TOKEN_TTL_MS);
+  await sendEmail({
+    to: user.email,
+    subject: `You now have access to ${organizationName}`,
+    template: 'account-setup',
+    text: `Hi ${user.fullName},\n\nAn administrator created an account for you on SMS Gateway for ${organizationName}.\nYour administrator will give you a temporary password. You can sign in with it, or choose your own password now (link valid for 7 days):\n${env.FRONTEND_URL}/reset-password?token=${token}`,
+  });
+}
+
 export async function register(
   input: { fullName: string; email: string; phone?: string; password: string; organizationName: string },
   meta: RequestMeta,

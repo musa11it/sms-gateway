@@ -31,7 +31,15 @@ declare global {
       rateLimitPerMinute: number | null;
     }
 
+    interface IntegrationContext {
+      id: string;
+      name: string;
+      prefix: string;
+      scopes: string[];
+    }
+
     interface Request {
+      integration?: IntegrationContext;
       user?: AuthUser;
       org?: OrgContext;
       apiKey?: ApiKeyContext;

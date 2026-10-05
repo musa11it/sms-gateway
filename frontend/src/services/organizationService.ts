@@ -1,10 +1,38 @@
 import { del, get, http, patch, post } from '@/api/client';
 import type { Organization, PermissionDef, Role, VerificationStatus } from '@/api/types';
 
+export type RequirementKind = 'FILE' | 'URL' | 'TEXT' | 'DATE' | 'SELECT';
+export type FileFormat = 'PDF' | 'PNG' | 'JPEG';
+
+/** One item the super admin asks businesses to provide during verification. */
+export interface VerificationRequirement {
+  type: string;
+  label: string;
+  description?: string;
+  required: boolean;
+  kind: RequirementKind;
+  allowedFormats?: FileFormat[];
+  maxSizeMb?: number;
+  maxLength?: number;
+  options?: string[];
+}
+
+export interface VerificationItem {
+  id: string;
+  documentType: string;
+  originalName: string;
+  value: string | null;
+  mimeType: string | null;
+  sizeBytes: number | null;
+  status: string;
+  reviewNote: string | null;
+  createdAt: string;
+}
+
 export interface VerificationOverview {
   verification: { id: string; status: VerificationStatus; reviewNote: string | null; submittedAt: string | null; reviewedAt: string | null };
-  documents: { id: string; documentType: string; originalName: string; mimeType: string; sizeBytes: number; status: string; reviewNote: string | null; createdAt: string }[];
-  requirements: { type: string; label: string; description?: string; required: boolean }[];
+  documents: VerificationItem[];
+  requirements: VerificationRequirement[];
   businessTypes: string[];
   missingFields: { field: string; label: string }[];
   missingDocuments: { type: string; label: string }[];
@@ -42,6 +70,7 @@ export const organizationService = {
     const r = await http.post('/verification/documents', fd);
     return r.data.data;
   },
+  submitDocumentValue: (documentType: string, value: string) => post('/verification/documents/value', { documentType, value }),
   deleteDocument: (id: string) => del(`/verification/documents/${id}`),
   submitVerification: () => post<VerificationOverview>('/verification/submit'),
   members: () => get<Member[]>('/organization/members'),

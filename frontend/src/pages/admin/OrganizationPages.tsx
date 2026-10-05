@@ -18,6 +18,8 @@ import { adminService } from '@/services/adminService';
 import { businessService } from '@/services/businessService';
 import { cn, fmtDate, fmtDateTime, fmtMoney, fmtNumber, fmtRelative, titleCase } from '@/utils/format';
 import { TX_LABEL } from '../wallet/WalletPages';
+import { OrganizationApiAccess } from './IntegrationPages';
+import { CreateOrganizationModal, GiveAccessModal } from './ProvisioningModals';
 
 export function AdjustWalletModal({ organizationId, organizationName, open, onClose }: { organizationId: string; organizationName: string; open: boolean; onClose: () => void }) {
   const { canAdmin } = usePermissions();
@@ -61,6 +63,8 @@ export function AdjustWalletModal({ organizationId, organizationName, open, onCl
 
 export function OrganizationsPage() {
   const navigate = useNavigate();
+  const { canAdmin } = usePermissions();
+  const [adding, setAdding] = useState(false);
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
@@ -68,7 +72,12 @@ export function OrganizationsPage() {
   const q = useQuery({ queryKey: ['admin', 'orgs', { page, debounced, status }], queryFn: () => adminService.organizations({ page, limit: 20, search: debounced || undefined, status: status || undefined }), placeholderData: (p) => p });
   return (
     <div className="space-y-6">
-      <PageHeader title="Organizations" description="All customer accounts on the platform." />
+      <PageHeader
+        title="Organizations"
+        description="All customer accounts on the platform."
+        actions={canAdmin('organizations.create') && <Button icon={<Plus className="h-4 w-4" />} onClick={() => setAdding(true)}>Add organization</Button>}
+      />
+      <CreateOrganizationModal open={adding} onClose={() => setAdding(false)} />
       <Card padded={false}>
         <div className="flex flex-wrap gap-3 border-b border-slate-100 p-4">
           <Input placeholder="Search name or registration no…" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} className="max-w-xs" />
@@ -128,6 +137,7 @@ function OrgActivityTab({ organizationId, tab }: { organizationId: string; tab: 
       )}
       {tab === 'api' && (
         <>
+          <OrganizationApiAccess organizationId={organizationId} />
           <DataTable
             rows={api.data?.data}
             loading={api.isLoading}
@@ -188,6 +198,7 @@ export function OrganizationDetailPage() {
   const q = useQuery({ queryKey: ['admin', 'org', id], queryFn: () => adminService.organization(id!) });
   const [tab, setTab] = useState<'overview' | 'members' | 'senders' | 'ledger' | 'payments' | 'campaigns' | 'api' | 'invoices' | 'audit'>('overview');
   const [adjust, setAdjust] = useState(false);
+  const [giveAccess, setGiveAccess] = useState(false);
   const [statusAction, setStatusAction] = useState<'suspend' | 'reactivate' | null>(null);
   const [ledgerPage, setLedgerPage] = useState(1);
   const ledger = useQuery({ queryKey: ['admin', 'ledger', id, ledgerPage], queryFn: () => adminService.ledger({ page: ledgerPage, limit: 15, organizationId: id }), enabled: tab === 'ledger' });
@@ -261,6 +272,12 @@ export function OrganizationDetailPage() {
       )}
       {tab === 'members' && (
         <Card padded={false}>
+          {canAdmin('organizations.create') && (
+            <div className="flex justify-end border-b border-slate-100 p-3">
+              <Button size="sm" variant="secondary" icon={<Plus className="h-4 w-4" />} onClick={() => setGiveAccess(true)}>Give access</Button>
+            </div>
+          )}
+          <GiveAccessModal organizationId={o.id} open={giveAccess} onClose={() => setGiveAccess(false)} />
           <DataTable
             rows={o.members}
             columns={[

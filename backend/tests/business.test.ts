@@ -9,6 +9,7 @@ import { SmsProviderFactory } from '../src/integrations/sms/SmsProviderFactory';
 import { financialSummary } from '../src/modules/finance/finance.service';
 import { verifyAndApply } from '../src/modules/payments/payment.service';
 import { adjustCapacity, purchaseCapacity } from '../src/modules/providers/provider.service';
+import { invalidateSettingsCache } from '../src/modules/settings/settings.service';
 import { dispatchMessage, pollPendingDeliveryStatuses } from '../src/modules/sms/sms.service';
 import { deliverWebhook, emitWebhookEvent } from '../src/modules/webhooks/webhook.service';
 import { SYSTEM_ACTOR } from '../src/types/actor';
@@ -276,6 +277,41 @@ describe('business verification lifecycle', () => {
     expect(sub.status).toBe(200);
     return { token, verificationId: sub.body.data.verification.id as string };
   }
+
+  it('admin-configured requirements: link / text / select answers and per-item file rules', async () => {
+    const admin = await createStaff('ADMIN');
+    const requirements = [
+      { type: 'BUSINESS_REGISTRATION', label: 'Certificate', required: true, kind: 'FILE', allowedFormats: ['PNG'], maxSizeMb: 1 },
+      { type: 'WEBSITE', label: 'Website', required: true, kind: 'URL' },
+      { type: 'TIN', label: 'Tax number', required: false, kind: 'TEXT', maxLength: 9 },
+      { type: 'SECTOR', label: 'Sector', required: false, kind: 'SELECT', options: ['Retail', 'Bank'] },
+    ];
+    await request(app).put('/api/v1/admin/settings/verification.requiredDocuments').set(auth(admin.token)).send({ value: requirements }).expect(200);
+    invalidateSettingsCache();
+
+    const reg = await request(app).post('/api/v1/auth/register').send({ fullName: 'Owner', email: 'kinds@test.local', password: 'Secret123', organizationName: 'Kinds Co' });
+    const token = reg.body.data.accessToken;
+    const mail = await prisma.emailMessage.findFirstOrThrow({ where: { to: 'kinds@test.local' } });
+    await request(app).post('/api/v1/auth/verify-email').send({ token: /token=([\w-]+)/.exec(mail.text)![1] }).expect(200);
+
+    const value = (documentType: string, v: string) => request(app).post('/api/v1/verification/documents/value').set(auth(token)).send({ documentType, value: v });
+    expect((await value('WEBSITE', 'not a link')).status).toBe(422);
+    expect((await value('TIN', '0123456789')).status).toBe(422);
+    expect((await value('SECTOR', 'Mining')).status).toBe(422);
+    expect((await value('BUSINESS_REGISTRATION', 'x')).status).toBe(422);
+    expect((await value('WEBSITE', 'example.com')).body.data.value).toBe('https://example.com/');
+    await value('WEBSITE', 'https://example.org').then((r) => expect(r.status).toBe(201));
+    expect(await prisma.verificationDocument.count({ where: { documentType: 'WEBSITE' } })).toBe(1); // replaced, not duplicated
+
+    const pdf = await request(app).post('/api/v1/verification/documents').set(auth(token)).field('documentType', 'BUSINESS_REGISTRATION').attach('file', Buffer.from('%PDF-1.4 test'), { filename: 'doc.pdf', contentType: 'application/pdf' });
+    expect(pdf.status).toBe(422); // only PNG allowed for this item
+    expect((await request(app).post('/api/v1/verification/documents').set(auth(token)).field('documentType', 'WEBSITE').attach('file', Buffer.from('%PDF-1.4 test'), { filename: 'doc.pdf', contentType: 'application/pdf' })).status).toBe(422);
+    const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(16)]);
+    await request(app).post('/api/v1/verification/documents').set(auth(token)).field('documentType', 'BUSINESS_REGISTRATION').attach('file', png, { filename: 'c.png', contentType: 'image/png' }).expect(201);
+
+    const overview = await request(app).get('/api/v1/verification').set(auth(token)).expect(200);
+    expect(overview.body.data.missingDocuments).toEqual([]);
+  });
 
   it('submit → more information → resubmit → approve, with review history', async () => {
     const { token, verificationId } = await registerAndSubmit('lifecycle1@test.local');

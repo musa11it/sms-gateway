@@ -7,12 +7,27 @@ import { AppError } from '../../utils/errors';
  * Typed, DB-backed system settings with defaults. Values are validated on write
  * and cached briefly in memory.
  */
-const documentRequirement = z.object({
-  type: z.string().min(1).max(64).regex(/^[A-Z0-9_]+$/),
-  label: z.string().min(1).max(120),
-  description: z.string().max(500).optional(),
-  required: z.boolean(),
-});
+export const REQUIREMENT_KINDS = ['FILE', 'URL', 'TEXT', 'DATE', 'SELECT'] as const;
+export const REQUIREMENT_FILE_FORMATS = ['PDF', 'PNG', 'JPEG'] as const;
+
+/**
+ * One item collected during business verification. `kind` decides how the business provides it;
+ * entries saved before kinds existed have none and are treated as file uploads.
+ */
+const documentRequirement = z
+  .object({
+    type: z.string().min(1).max(64).regex(/^[A-Z0-9_]+$/),
+    label: z.string().min(1).max(120),
+    description: z.string().max(500).optional(),
+    required: z.boolean(),
+    kind: z.enum(REQUIREMENT_KINDS).default('FILE'),
+    allowedFormats: z.array(z.enum(REQUIREMENT_FILE_FORMATS)).min(1).optional(), // FILE
+    maxSizeMb: z.number().min(0.1).max(50).optional(), // FILE
+    maxLength: z.number().int().min(1).max(2000).optional(), // TEXT
+    options: z.array(z.string().trim().min(1).max(120)).min(1).max(30).optional(), // SELECT
+  })
+  .refine((r) => r.kind !== 'SELECT' || !!r.options?.length, { message: 'Add at least one option', path: ['options'] });
+export type DocumentRequirement = z.infer<typeof documentRequirement>;
 
 export const SETTING_SCHEMAS = {
   'billing.currency': z.string().length(3).toUpperCase(),
@@ -52,10 +67,10 @@ export const SETTING_DEFAULTS: { [K in SettingKey]: SettingValue<K> } = {
   'sms.maxMessageSegments': 10,
   'wallet.defaultLowBalanceThreshold': 500,
   'verification.requiredDocuments': [
-    { type: 'BUSINESS_REGISTRATION', label: 'Business registration certificate', required: true },
-    { type: 'IDENTIFICATION', label: 'ID of the authorised representative', required: true },
-    { type: 'AUTHORIZATION_LETTER', label: 'Authorization letter', required: false },
-    { type: 'OTHER', label: 'Other supporting document', required: false },
+    { type: 'BUSINESS_REGISTRATION', label: 'Business registration certificate', required: true, kind: 'FILE' },
+    { type: 'IDENTIFICATION', label: 'ID of the authorised representative', required: true, kind: 'FILE' },
+    { type: 'AUTHORIZATION_LETTER', label: 'Authorization letter', required: false, kind: 'FILE' },
+    { type: 'OTHER', label: 'Other supporting document', required: false, kind: 'FILE' },
   ],
   'billing.paymentFeePercent': 0,
   'rateLimits.publicApiPerMinute': 120,
@@ -89,7 +104,7 @@ export const SETTING_DESCRIPTIONS: Record<SettingKey, string> = {
   'sms.refundOnSubmissionFailure': 'Refund credits when the provider rejects a message at submission',
   'sms.maxMessageSegments': 'Maximum segments allowed for one message',
   'wallet.defaultLowBalanceThreshold': 'Default low balance alert threshold for new wallets',
-  'verification.requiredDocuments': 'Documents collected during business verification',
+  'verification.requiredDocuments': 'Items collected during business verification (file upload, link, text, date or choice)',
   'verification.businessTypes': 'Business types offered during onboarding',
   'billing.paymentFeePercent': 'Fallback payment-processing fee (%) when the payment provider does not report its fee',
   'rateLimits.publicApiPerMinute': 'Default public API requests per minute per API key (a key can override it)',
