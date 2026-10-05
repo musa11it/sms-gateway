@@ -72,36 +72,114 @@ export function resolveRange(q: z.infer<typeof rangeQuery>, tz = DEFAULT_TZ, all
   }
 }
 
-export const FMT: Record<Unit, string> = { hour: 'YYYY-MM-DD"T"HH24:00', day: 'YYYY-MM-DD', month: 'YYYY-MM' };
+// Bucket labels, e.g. 2026-10-05T14:00 / 2026-10-05 / 2026-10 (MySQL DATE_FORMAT patterns).
+export const FMT: Record<Unit, string> = { hour: '%Y-%m-%dT%H:00', day: '%Y-%m-%d', month: '%Y-%m' };
 
-export function bucketsCte(from: Date, to: Date, unit: Unit, tz: string) {
-  return Prisma.sql`buckets AS (
-    SELECT generate_series(
-      date_trunc(${unit}, ${from}::timestamptz AT TIME ZONE ${tz}),
-      date_trunc(${unit}, ${to}::timestamptz AT TIME ZONE ${tz}),
-      ${`1 ${unit}`}::interval
-    ) AS b
-  )`;
+const offsetFormatters = new Map<string, Intl.DateTimeFormat>();
+
+/** UTC offset of `tz` at instant `at`, in whole seconds. */
+function offsetSeconds(at: number, tz: string): number {
+  let fmt = offsetFormatters.get(tz);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    offsetFormatters.set(tz, fmt);
+  }
+  const p = Object.fromEntries(fmt.formatToParts(new Date(at)).map((x) => [x.type, x.value]));
+  const asUtc = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second);
+  return Math.round((asUtc - Math.floor(at / 1000) * 1000) / 1000);
 }
 
-export function localTrunc(column: Prisma.Sql, unit: Unit, tz: string) {
-  return Prisma.sql`date_trunc(${unit}, (${column} AT TIME ZONE 'UTC') AT TIME ZONE ${tz})`;
+/**
+ * The time zone's UTC offsets over [from, to]: each segment applies to instants before `until`
+ * (the last one has no end). Transitions are located to the minute.
+ */
+function offsetSegments(from: Date, to: Date, tz: string): { until: Date | null; offset: number }[] {
+  const DAY = 86_400_000;
+  const segments: { until: Date | null; offset: number }[] = [];
+  let current = offsetSeconds(from.getTime(), tz);
+  for (let t = from.getTime(); t < to.getTime(); t += DAY) {
+    const next = Math.min(t + DAY, to.getTime());
+    const o = offsetSeconds(next, tz);
+    if (o === current) continue;
+    let lo = t;
+    let hi = next;
+    while (hi - lo > 60_000) {
+      const mid = lo + Math.floor((hi - lo) / 2);
+      if (offsetSeconds(mid, tz) === current) lo = mid;
+      else hi = mid;
+    }
+    segments.push({ until: new Date(hi), offset: current });
+    current = o;
+  }
+  segments.push({ until: null, offset: current });
+  return segments;
+}
+
+/**
+ * SQL expression giving the local-time bucket label of a timestamp column. Timestamps are stored in UTC
+ * and MySQL may not have named time zones loaded, so the offsets are computed here (DST-aware).
+ */
+export function localBucket(column: Prisma.Sql, unit: Unit, tz: string, from: Date, to: Date) {
+  const segments = offsetSegments(from, to, tz);
+  const offset =
+    segments.length === 1
+      ? Prisma.sql`${segments[0].offset}`
+      : Prisma.sql`CASE ${Prisma.join(
+          segments.map((s) => (s.until ? Prisma.sql`WHEN ${column} < ${s.until} THEN ${s.offset}` : Prisma.sql`ELSE ${s.offset}`)),
+          ' ',
+        )} END`;
+  return Prisma.sql`DATE_FORMAT(DATE_ADD(${column}, INTERVAL ${offset} SECOND), ${FMT[unit]})`;
+}
+
+/** Every bucket label between `from` and `to` (inclusive) in local time. */
+export function bucketLabels(from: Date, to: Date, unit: Unit, tz: string): string[] {
+  const local = (d: Date) => {
+    const x = new Date(d.getTime() + offsetSeconds(d.getTime(), tz) * 1000);
+    return { y: x.getUTCFullYear(), m: x.getUTCMonth(), d: x.getUTCDate(), h: x.getUTCHours() };
+  };
+  const start = local(from);
+  const end = local(to);
+  const bucket = (y: number, m: number, d: number, h: number) =>
+    unit === 'hour' ? Date.UTC(y, m, d, h) : unit === 'day' ? Date.UTC(y, m, d) : Date.UTC(y, m, 1);
+  const last = bucket(end.y, end.m, end.d, end.h);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const labels: string[] = [];
+  for (let i = 0; ; i++) {
+    const b = new Date(
+      unit === 'hour' ? bucket(start.y, start.m, start.d, start.h + i) : unit === 'day' ? bucket(start.y, start.m, start.d + i, 0) : bucket(start.y, start.m + i, 1, 0),
+    );
+    if (b.getTime() > last) break;
+    const day = `${b.getUTCFullYear()}-${pad(b.getUTCMonth() + 1)}-${pad(b.getUTCDate())}`;
+    labels.push(unit === 'hour' ? `${day}T${pad(b.getUTCHours())}:00` : unit === 'day' ? day : day.slice(0, 7));
+  }
+  return labels;
+}
+
+/** Line grouped rows up with the full list of buckets, so empty buckets are still reported. */
+export function fillBuckets<T extends { label: string }>(labels: string[], rows: T[]): (T | undefined)[] {
+  const byLabel = new Map(rows.map((r) => [r.label, r]));
+  return labels.map((l) => byLabel.get(l));
 }
 
 export async function smsTimeseries(from: Date, to: Date, unit: Unit, organizationId?: string, tz = DEFAULT_TZ) {
-  const orgFilter = organizationId ? Prisma.sql`AND r."organizationId" = ${organizationId}::uuid` : Prisma.empty;
+  const orgFilter = organizationId ? Prisma.sql`AND r.organizationId = ${organizationId}` : Prisma.empty;
   const rows = await prisma.$queryRaw<{ label: string; total: bigint; delivered: bigint; failed: bigint; pending: bigint }[]>`
-    WITH ${bucketsCte(from, to, unit, tz)}
-    SELECT to_char(b, ${FMT[unit]}) AS label,
-      COUNT(r.id) FILTER (WHERE r.status <> 'CANCELLED') AS total,
-      COUNT(r.id) FILTER (WHERE r.status = 'DELIVERED') AS delivered,
-      COUNT(r.id) FILTER (WHERE r.status IN ('FAILED','EXPIRED')) AS failed,
-      COUNT(r.id) FILTER (WHERE r.status IN ('QUEUED','PROCESSING','SENT')) AS pending
-    FROM buckets
-    LEFT JOIN sms_recipients r ON ${localTrunc(Prisma.sql`r."createdAt"`, unit, tz)} = b
-      AND r."createdAt" >= ${from} AND r."createdAt" <= ${to} ${orgFilter}
-    GROUP BY b ORDER BY b`;
-  return rows.map((r) => ({ label: r.label, total: Number(r.total), delivered: Number(r.delivered), failed: Number(r.failed), pending: Number(r.pending) }));
+    SELECT ${localBucket(Prisma.sql`r.createdAt`, unit, tz, from, to)} AS label,
+      COUNT(CASE WHEN r.status <> 'CANCELLED' THEN 1 END) AS total,
+      COUNT(CASE WHEN r.status = 'DELIVERED' THEN 1 END) AS delivered,
+      COUNT(CASE WHEN r.status IN ('FAILED','EXPIRED') THEN 1 END) AS failed,
+      COUNT(CASE WHEN r.status IN ('QUEUED','PROCESSING','SENT') THEN 1 END) AS pending
+    FROM sms_recipients r
+    WHERE r.createdAt >= ${from} AND r.createdAt <= ${to} ${orgFilter}
+    GROUP BY label`;
+  const labels = bucketLabels(from, to, unit, tz);
+  return fillBuckets(labels, rows).map((r, i) => ({
+    label: labels[i],
+    total: Number(r?.total ?? 0),
+    delivered: Number(r?.delivered ?? 0),
+    failed: Number(r?.failed ?? 0),
+    pending: Number(r?.pending ?? 0),
+  }));
 }
 
 export async function smsTotals(from: Date, to: Date, organizationId?: string) {
@@ -137,34 +215,42 @@ export async function creditsConsumed(from: Date, to: Date, organizationId?: str
 }
 
 export async function revenueTimeseries(from: Date, to: Date, unit: Unit, tz = DEFAULT_TZ) {
-  const rows = await prisma.$queryRaw<{ label: string; revenue: Prisma.Decimal | null; credits: bigint | null; payments: bigint }[]>`
-    WITH ${bucketsCte(from, to, unit, tz)}
-    SELECT to_char(b, ${FMT[unit]}) AS label, SUM(p.amount) AS revenue, SUM(p.credits) AS credits, COUNT(p.id) AS payments
-    FROM buckets
-    LEFT JOIN payments p ON ${localTrunc(Prisma.sql`p."verifiedAt"`, unit, tz)} = b
-      AND p.status = 'SUCCESS' AND p."verifiedAt" >= ${from} AND p."verifiedAt" <= ${to}
-    GROUP BY b ORDER BY b`;
-  return rows.map((r) => ({ label: r.label, revenue: (r.revenue ?? new Prisma.Decimal(0)).toFixed(2), credits: Number(r.credits ?? 0), payments: Number(r.payments) }));
+  const rows = await prisma.$queryRaw<{ label: string; revenue: Prisma.Decimal | null; credits: Prisma.Decimal | null; payments: bigint }[]>`
+    SELECT ${localBucket(Prisma.sql`p.verifiedAt`, unit, tz, from, to)} AS label, SUM(p.amount) AS revenue, SUM(p.credits) AS credits, COUNT(p.id) AS payments
+    FROM payments p
+    WHERE p.status = 'SUCCESS' AND p.verifiedAt >= ${from} AND p.verifiedAt <= ${to}
+    GROUP BY label`;
+  const labels = bucketLabels(from, to, unit, tz);
+  return fillBuckets(labels, rows).map((r, i) => ({
+    label: labels[i],
+    revenue: (r?.revenue ?? new Prisma.Decimal(0)).toFixed(2),
+    credits: Number(r?.credits ?? 0),
+    payments: Number(r?.payments ?? 0),
+  }));
 }
 
 export async function customerGrowth(from: Date, to: Date, unit: Unit, tz = DEFAULT_TZ) {
-  const rows = await prisma.$queryRaw<{ label: string; signups: bigint; approved: bigint }[]>`
-    WITH ${bucketsCte(from, to, unit, tz)}
-    SELECT to_char(b, ${FMT[unit]}) AS label,
-      (SELECT COUNT(*) FROM organizations o WHERE ${localTrunc(Prisma.sql`o."createdAt"`, unit, tz)} = b AND o."createdAt" >= ${from}) AS signups,
-      (SELECT COUNT(*) FROM organizations o WHERE ${localTrunc(Prisma.sql`o."approvedAt"`, unit, tz)} = b AND o."approvedAt" >= ${from}) AS approved
-    FROM buckets ORDER BY b`;
-  return rows.map((r) => ({ label: r.label, signups: Number(r.signups), approved: Number(r.approved) }));
+  const [signups, approved] = await Promise.all([
+    prisma.$queryRaw<{ label: string; n: bigint }[]>`
+      SELECT ${localBucket(Prisma.sql`o.createdAt`, unit, tz, from, to)} AS label, COUNT(*) AS n
+      FROM organizations o WHERE o.createdAt >= ${from} GROUP BY label`,
+    prisma.$queryRaw<{ label: string; n: bigint }[]>`
+      SELECT ${localBucket(Prisma.sql`o.approvedAt`, unit, tz, from, to)} AS label, COUNT(*) AS n
+      FROM organizations o WHERE o.approvedAt >= ${from} GROUP BY label`,
+  ]);
+  const labels = bucketLabels(from, to, unit, tz);
+  const approvedByBucket = fillBuckets(labels, approved);
+  return fillBuckets(labels, signups).map((r, i) => ({ label: labels[i], signups: Number(r?.n ?? 0), approved: Number(approvedByBucket[i]?.n ?? 0) }));
 }
 
 export async function providerPerformance(from: Date, to: Date) {
-  const rows = await prisma.$queryRaw<{ provider: string; total: bigint; delivered: bigint; failed: bigint; avg_latency_ms: number | null }[]>`
+  const rows = await prisma.$queryRaw<{ provider: string; total: bigint; delivered: bigint; failed: bigint; avg_latency_ms: Prisma.Decimal | number | null }[]>`
     SELECT COALESCE(provider, 'unassigned') AS provider,
       COUNT(*) AS total,
-      COUNT(*) FILTER (WHERE status = 'DELIVERED') AS delivered,
-      COUNT(*) FILTER (WHERE status IN ('FAILED','EXPIRED')) AS failed,
-      AVG(EXTRACT(EPOCH FROM ("deliveredAt" - "sentAt")) * 1000) FILTER (WHERE status = 'DELIVERED') AS avg_latency_ms
-    FROM sms_recipients WHERE "createdAt" >= ${from} AND "createdAt" <= ${to} AND status <> 'CANCELLED'
+      COUNT(CASE WHEN status = 'DELIVERED' THEN 1 END) AS delivered,
+      COUNT(CASE WHEN status IN ('FAILED','EXPIRED') THEN 1 END) AS failed,
+      AVG(CASE WHEN status = 'DELIVERED' THEN TIMESTAMPDIFF(MICROSECOND, sentAt, deliveredAt) / 1000 END) AS avg_latency_ms
+    FROM sms_recipients WHERE createdAt >= ${from} AND createdAt <= ${to} AND status <> 'CANCELLED'
     GROUP BY 1 ORDER BY 2 DESC`;
   return rows.map((r) => {
     const final = Number(r.delivered) + Number(r.failed);

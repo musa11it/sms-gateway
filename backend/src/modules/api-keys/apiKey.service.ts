@@ -1,11 +1,13 @@
 import crypto from 'crypto';
 import net from 'net';
+import type { Prisma } from '@prisma/client';
 import { env } from '../../config/env';
 import { prisma } from '../../config/prisma';
 import type { Actor, RequestMeta } from '../../types/actor';
 import { actorUserId } from '../../types/actor';
 import { hmacSha256, safeEqual } from '../../utils/crypto';
 import { AppError } from '../../utils/errors';
+import { stringList } from '../../utils/json';
 import { audit } from '../audit-logs/audit.service';
 import { notifyOrganization } from '../notifications/notification.service';
 
@@ -32,7 +34,7 @@ function hashSecret(secret: string) {
 }
 
 export function serializeApiKey(k: {
-  id: string; name: string; prefix: string; lastFour: string; scopes: string[]; allowedIps: string[]; lastUsedAt: Date | null; lastUsedIp: string | null;
+  id: string; name: string; prefix: string; lastFour: string; scopes: Prisma.JsonValue; allowedIps: Prisma.JsonValue; lastUsedAt: Date | null; lastUsedIp: string | null;
   usageCount: number; expiresAt: Date | null; revokedAt: Date | null; createdAt: Date; createdBy?: { fullName: string } | null;
   environment: string; isEnabled: boolean; rateLimitPerMinute: number | null;
 }) {
@@ -41,8 +43,8 @@ export function serializeApiKey(k: {
     name: k.name,
     maskedKey: `sgw_live_${k.prefix}_••••••••${k.lastFour}`,
     prefix: k.prefix,
-    scopes: k.scopes,
-    allowedIps: k.allowedIps,
+    scopes: stringList(k.scopes),
+    allowedIps: stringList(k.allowedIps),
     lastUsedAt: k.lastUsedAt,
     lastUsedIp: k.lastUsedIp,
     usageCount: k.usageCount,
@@ -106,7 +108,7 @@ export async function regenerateApiKey(organizationId: string, id: string, actor
   if (!key.revokedAt) await revokeApiKey(organizationId, id, actor, meta);
   return createApiKey(
     organizationId,
-    { name: key.name, scopes: key.scopes, allowedIps: key.allowedIps, expiresAt: key.expiresAt, environment: key.environment, rateLimitPerMinute: key.rateLimitPerMinute },
+    { name: key.name, scopes: stringList(key.scopes), allowedIps: stringList(key.allowedIps), expiresAt: key.expiresAt, environment: key.environment, rateLimitPerMinute: key.rateLimitPerMinute },
     actor,
     meta,
   );
@@ -134,9 +136,10 @@ export async function authenticateApiKey(raw: string | undefined, ip: string | u
   if (key.revokedAt) throw AppError.unauthorized('This API key has been revoked', 'API_KEY_REVOKED');
   if (key.expiresAt && key.expiresAt < new Date()) throw AppError.unauthorized('This API key has expired', 'API_KEY_EXPIRED');
   if (!key.isEnabled) throw AppError.forbidden('This API key is disabled', 'API_KEY_DISABLED');
-  if (key.allowedIps.length && (!ip || !key.allowedIps.includes(ip.replace(/^::ffff:/, '')))) {
+  const allowedIps = stringList(key.allowedIps);
+  if (allowedIps.length && (!ip || !allowedIps.includes(ip.replace(/^::ffff:/, '')))) {
     throw AppError.forbidden('Requests from this IP address are not allowed for this key', 'IP_NOT_ALLOWED');
   }
   await prisma.apiKey.update({ where: { id: key.id }, data: { lastUsedAt: new Date(), lastUsedIp: ip, usageCount: { increment: 1 } } });
-  return { id: key.id, organizationId: key.organizationId, prefix: key.prefix, scopes: key.scopes, rateLimitPerMinute: key.rateLimitPerMinute };
+  return { id: key.id, organizationId: key.organizationId, prefix: key.prefix, scopes: stringList(key.scopes), rateLimitPerMinute: key.rateLimitPerMinute };
 }

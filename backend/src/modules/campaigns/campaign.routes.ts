@@ -36,7 +36,7 @@ campaignRouter.get(
     const where: Prisma.CampaignWhereInput = {
       organizationId: req.org!.id,
       ...(q.status ? { status: q.status } : {}),
-      ...(q.search ? { name: { contains: q.search, mode: 'insensitive' } } : {}),
+      ...(q.search ? { name: { contains: q.search } } : {}),
     };
     const [items, total] = await Promise.all([
       prisma.campaign.findMany({ where, orderBy: { createdAt: 'desc' }, ...toSkipTake(q), include: { sender: { select: { id: true, name: true, status: true } } } }),

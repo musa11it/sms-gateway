@@ -56,7 +56,7 @@ export async function assertSafeWebhookUrl(raw: string) {
  */
 export async function emitWebhookEvent(organizationId: string, event: WebhookEvent, data: Record<string, unknown>, eventId?: string) {
   try {
-    const hooks = await prisma.webhook.findMany({ where: { organizationId, isActive: true, events: { has: event } }, select: { id: true } });
+    const hooks = await prisma.webhook.findMany({ where: { organizationId, isActive: true, events: { path: '$', array_contains: [event] } }, select: { id: true } });
     if (hooks.length === 0) return;
     const id = eventId ?? `evt_${crypto.randomUUID().replace(/-/g, '')}`;
     const payload = { id, type: event, created: new Date().toISOString(), data } as Prisma.InputJsonValue;

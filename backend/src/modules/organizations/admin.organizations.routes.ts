@@ -22,7 +22,7 @@ adminOrganizationsRouter.get(
     );
     const where: Prisma.OrganizationWhereInput = {
       ...(q.status ? { status: q.status } : {}),
-      ...(q.search ? { OR: [{ name: { contains: q.search, mode: 'insensitive' } }, { registrationNumber: { contains: q.search, mode: 'insensitive' } }] } : {}),
+      ...(q.search ? { OR: [{ name: { contains: q.search } }, { registrationNumber: { contains: q.search } }] } : {}),
     };
     const [items, total] = await Promise.all([
       prisma.organization.findMany({

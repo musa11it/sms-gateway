@@ -1,11 +1,13 @@
 import crypto from 'crypto';
 import { Router } from 'express';
+import type { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from '../../config/prisma';
 import { requireOrgPermission } from '../../middlewares/rbac';
 import { actorFromRequest, metaFromRequest } from '../../types/actor';
 import { encrypt } from '../../utils/crypto';
 import { AppError } from '../../utils/errors';
+import { stringList } from '../../utils/json';
 import { asyncHandler, created, ok, paginated, paginationSchema, parse, toSkipTake, uuidParam } from '../../utils/http';
 import { queue } from '../../workers/queue';
 import { audit } from '../audit-logs/audit.service';
@@ -22,11 +24,11 @@ const body = z.object({
 
 const newSecret = () => `whsec_${crypto.randomBytes(24).toString('base64url')}`;
 
-const serialize = (w: { id: string; url: string; description: string | null; events: string[]; isActive: boolean; createdAt: Date; updatedAt: Date }) => ({
+const serialize = (w: { id: string; url: string; description: string | null; events: Prisma.JsonValue; isActive: boolean; createdAt: Date; updatedAt: Date }) => ({
   id: w.id,
   url: w.url,
   description: w.description,
-  events: w.events,
+  events: stringList(w.events),
   isActive: w.isActive,
   createdAt: w.createdAt,
   updatedAt: w.updatedAt,

@@ -23,12 +23,12 @@ reportRouter.get(
       prisma.wallet.findUnique({ where: { organizationId: orgId } }),
       prisma.campaign.findMany({ where: { organizationId: orgId, launchedAt: { gte: from, lte: to } }, orderBy: { launchedAt: 'desc' }, take: 8, select: { id: true, name: true, status: true } }),
       prisma.$queryRaw<{ label: string; amount: string | null }[]>`
-        WITH ${r.bucketsCte(from, to, unit, tz)}
-        SELECT to_char(b, ${r.FMT[unit]}) AS label, SUM(p.amount)::text AS amount
-        FROM buckets LEFT JOIN payments p ON ${r.localTrunc(Prisma.sql`p."verifiedAt"`, unit, tz)} = b
-          AND p."organizationId" = ${orgId}::uuid AND p.status IN ('SUCCESS','REFUNDED') AND p."verifiedAt" >= ${from} AND p."verifiedAt" <= ${to}
-        GROUP BY b ORDER BY b`,
+        SELECT ${r.localBucket(Prisma.sql`p.verifiedAt`, unit, tz, from, to)} AS label, CAST(SUM(p.amount) AS CHAR) AS amount
+        FROM payments p
+        WHERE p.organizationId = ${orgId} AND p.status IN ('SUCCESS','REFUNDED') AND p.verifiedAt >= ${from} AND p.verifiedAt <= ${to}
+        GROUP BY label`,
     ]);
+    const labels = r.bucketLabels(from, to, unit, tz);
     const campaignStats = await r.campaignPerformance(topCampaigns.map((c) => c.id));
     const [totals, series, credits, campaigns, bySource] = await Promise.all([
       r.smsTotals(from, to, orgId),
@@ -47,7 +47,7 @@ reportRouter.get(
         totalSpending: (spending._sum.amount ?? new Prisma.Decimal(0)).toFixed(2),
         currency: wallet ? await getSetting('billing.currency') : 'RWF',
       },
-      spendingSeries: spendSeries.map((s) => ({ label: s.label, amount: s.amount ?? '0' })),
+      spendingSeries: r.fillBuckets(labels, spendSeries).map((s, i) => ({ label: labels[i], amount: s?.amount ?? '0' })),
       campaignPerformance: topCampaigns.map((c) => ({ ...c, ...(campaignStats.get(c.id) ?? { recipients: 0, delivered: 0, failed: 0, pending: 0 }) })),
       bySource: bySource.map((s) => ({ source: s.source, messages: s._sum.recipientCount ?? 0 })),
       series,

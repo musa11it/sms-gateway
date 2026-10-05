@@ -15,8 +15,17 @@ export const PASSWORD = 'Password123!';
 /** Wipe every table (TRUNCATE bypasses the append-only row triggers) and re-create RBAC + packages. */
 export async function resetDatabase() {
   const tables = await prisma.$queryRaw<{ tablename: string }[]>`
-    SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename <> '_prisma_migrations'`;
-  await prisma.$executeRawUnsafe(`TRUNCATE ${tables.map((t) => `"${t.tablename}"`).join(', ')} CASCADE`);
+    SELECT TABLE_NAME AS tablename FROM information_schema.TABLES
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE' AND TABLE_NAME <> '_prisma_migrations'`;
+  // FOREIGN_KEY_CHECKS is per connection, so pin every statement to one connection.
+  await prisma.$transaction(
+    async (tx) => {
+      await tx.$executeRawUnsafe('SET FOREIGN_KEY_CHECKS = 0');
+      for (const t of tables) await tx.$executeRawUnsafe(`TRUNCATE TABLE \`${t.tablename}\``);
+      await tx.$executeRawUnsafe('SET FOREIGN_KEY_CHECKS = 1');
+    },
+    { timeout: 120_000 },
+  );
   invalidateSettingsCache();
 
   for (const p of PERMISSIONS) {

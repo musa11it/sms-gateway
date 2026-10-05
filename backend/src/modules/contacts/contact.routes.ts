@@ -8,6 +8,7 @@ import { uploadLimiter } from '../../middlewares/rateLimit';
 import { actorFromRequest, metaFromRequest } from '../../types/actor';
 import { AppError } from '../../utils/errors';
 import { asyncHandler, created, ok, paginated, paginationSchema, parse, toSkipTake, uuidParam } from '../../utils/http';
+import { stringList } from '../../utils/json';
 import { normalizePhone } from '../../utils/phone';
 import { audit } from '../audit-logs/audit.service';
 import { getSetting } from '../settings/settings.service';
@@ -47,10 +48,10 @@ function contactWhere(orgId: string, q: z.infer<typeof listQuery>): Prisma.Conta
   return {
     organizationId: orgId,
     ...(q.status ? { status: q.status } : {}),
-    ...(q.tag ? { tags: { has: q.tag } } : {}),
+    ...(q.tag ? { tags: { path: '$', array_contains: [q.tag] } } : {}),
     ...(q.groupId ? { groups: { some: { groupId: q.groupId } } } : {}),
     ...(q.search
-      ? { OR: [{ name: { contains: q.search, mode: 'insensitive' } }, { phone: { contains: q.search.replace(/\s/g, '') } }, { email: { contains: q.search, mode: 'insensitive' } }] }
+      ? { OR: [{ name: { contains: q.search } }, { phone: { contains: q.search.replace(/\s/g, '') } }, { email: { contains: q.search } }] }
       : {}),
   };
 }
@@ -86,7 +87,7 @@ contactRouter.get(
       const safe = /^[=+\-@]/.test(s) ? `'${s}` : s;
       return /[",\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
     };
-    const csv = ['name,phone,email,tags,status', ...items.map((c) => [esc(c.name), esc(c.phone), esc(c.email), esc(c.tags.join(';')), c.status].join(','))].join('\n');
+    const csv = ['name,phone,email,tags,status', ...items.map((c) => [esc(c.name), esc(c.phone), esc(c.email), esc(stringList(c.tags).join(';')), c.status].join(','))].join('\n');
     await audit({ actor: actorFromRequest(req), action: 'CONTACTS_EXPORTED', resource: 'contact', organizationId: req.org!.id, metadata: { count: items.length }, meta: metaFromRequest(req) });
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="contacts-${new Date().toISOString().slice(0, 10)}.csv"`);

@@ -32,7 +32,7 @@ adminBillingRouter.get(
     const where: Prisma.PaymentWhereInput = {
       ...(q.status ? { status: q.status } : {}),
       ...(q.organizationId ? { organizationId: q.organizationId } : {}),
-      ...(q.search ? { OR: [{ reference: { contains: q.search, mode: 'insensitive' } }, { providerReference: { contains: q.search, mode: 'insensitive' } }] } : {}),
+      ...(q.search ? { OR: [{ reference: { contains: q.search } }, { providerReference: { contains: q.search } }] } : {}),
     };
     const [items, total, summary] = await Promise.all([
       prisma.payment.findMany({ where, orderBy: { createdAt: 'desc' }, ...toSkipTake(q), include: { invoice: { select: { id: true, number: true } }, organization: { select: { id: true, name: true } } } }),
@@ -172,7 +172,7 @@ adminBillingRouter.get(
   requirePlatformPermission('wallet.view'),
   asyncHandler(async (req, res) => {
     const q = parse(paginationSchema.extend({ search: z.string().trim().max(100).optional() }), req.query);
-    const where: Prisma.WalletWhereInput = q.search ? { organization: { name: { contains: q.search, mode: 'insensitive' } } } : {};
+    const where: Prisma.WalletWhereInput = q.search ? { organization: { name: { contains: q.search } } } : {};
     const [items, total] = await Promise.all([
       prisma.wallet.findMany({ where, orderBy: { balance: 'desc' }, ...toSkipTake(q), include: { organization: { select: { id: true, name: true, status: true } } } }),
       prisma.wallet.count({ where }),

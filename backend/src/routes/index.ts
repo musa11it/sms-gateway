@@ -110,7 +110,7 @@ if (!isProduction) {
       const q = parse(paginationSchema, req.query);
       const to = typeof req.query.to === 'string' ? req.query.to : undefined;
       const items = await prisma.emailMessage.findMany({
-        where: to ? { to: { contains: to, mode: 'insensitive' } } : {},
+        where: to ? { to: { contains: to } } : {},
         orderBy: { createdAt: 'desc' },
         take: q.limit,
         skip: (q.page - 1) * q.limit,

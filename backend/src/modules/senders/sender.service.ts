@@ -20,11 +20,11 @@ export const senderNameSchema = z
 
 async function assertNameAvailable(organizationId: string, name: string, excludeId?: string) {
   const taken = await prisma.senderId.findFirst({
-    where: { name: { equals: name, mode: 'insensitive' }, status: { in: ['APPROVED', 'SUSPENDED'] }, organizationId: { not: organizationId } },
+    where: { name: { equals: name }, status: { in: ['APPROVED', 'SUSPENDED'] }, organizationId: { not: organizationId } },
   });
   if (taken) throw AppError.conflict(`"${name}" is already registered to another organization`, 'SENDER_TAKEN');
   const own = await prisma.senderId.findFirst({
-    where: { organizationId, name: { equals: name, mode: 'insensitive' }, ...(excludeId ? { id: { not: excludeId } } : {}) },
+    where: { organizationId, name: { equals: name }, ...(excludeId ? { id: { not: excludeId } } : {}) },
   });
   if (own) throw AppError.conflict(`You already have a sender ID named "${own.name}"`, 'SENDER_EXISTS');
 }
@@ -107,7 +107,7 @@ export async function reviewSender(id: string, action: SenderReviewAction, note:
   }
   if (t.to === 'APPROVED') {
     const conflict = await prisma.senderId.findFirst({
-      where: { id: { not: id }, organizationId: { not: s.organizationId }, name: { equals: s.name, mode: 'insensitive' }, status: { in: ['APPROVED', 'SUSPENDED'] } },
+      where: { id: { not: id }, organizationId: { not: s.organizationId }, name: { equals: s.name }, status: { in: ['APPROVED', 'SUSPENDED'] } },
     });
     if (conflict) throw AppError.conflict('This sender name is already approved for another organization', 'SENDER_TAKEN');
   }

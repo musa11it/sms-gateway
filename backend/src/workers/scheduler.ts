@@ -36,11 +36,15 @@ const OWNER = `${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
 const LEASE_MS = 5 * 60_000;
 
 async function acquireLease(name: string): Promise<boolean> {
-  const until = new Date(Date.now() + LEASE_MS);
+  const now = new Date();
+  const until = new Date(now.getTime() + LEASE_MS);
+  // First claim of a task creates the lease row; afterwards it can only be taken over once expired (or renewed by its owner).
+  const inserted = await prisma.$executeRaw`
+    INSERT IGNORE INTO job_leases (name, owner, lockedUntil) VALUES (${name}, ${OWNER}, ${until})`;
+  if (inserted === 1) return true;
   const rows = await prisma.$executeRaw`
-    INSERT INTO job_leases (name, owner, "lockedUntil") VALUES (${name}, ${OWNER}, ${until})
-    ON CONFLICT (name) DO UPDATE SET owner = EXCLUDED.owner, "lockedUntil" = EXCLUDED."lockedUntil"
-    WHERE job_leases."lockedUntil" < now() OR job_leases.owner = ${OWNER}`;
+    UPDATE job_leases SET owner = ${OWNER}, lockedUntil = ${until}
+    WHERE name = ${name} AND (lockedUntil < ${now} OR owner = ${OWNER})`;
   return rows === 1;
 }
 

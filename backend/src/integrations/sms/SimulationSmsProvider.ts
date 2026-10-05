@@ -93,8 +93,8 @@ export class SimulationSmsProvider implements SmsProviderAdapter {
     await prisma.simulatorRecord.createMany({ data: [{ id, kind: 'sms-balance', payload: { balance: 0 } }], skipDuplicates: true });
     const rows = await prisma.$executeRaw`
       UPDATE simulator_records
-      SET payload = jsonb_build_object('balance', (payload->>'balance')::int + ${delta}), "updatedAt" = now()
-      WHERE id = ${id} AND (payload->>'balance')::int + ${delta} >= 0`;
+      SET payload = JSON_OBJECT('balance', CAST(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.balance')) AS SIGNED) + ${delta}), updatedAt = ${new Date()}
+      WHERE id = ${id} AND CAST(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.balance')) AS SIGNED) + ${delta} >= 0`;
     return rows === 1;
   }
 

@@ -42,7 +42,7 @@ adminUsersRouter.get(
     const where: Prisma.UserWhereInput = {
       ...(q.status ? { status: q.status } : {}),
       ...(q.type === 'staff' ? { roles: { some: {} } } : q.type === 'customer' ? { roles: { none: {} } } : {}),
-      ...(q.search ? { OR: [{ email: { contains: q.search, mode: 'insensitive' } }, { fullName: { contains: q.search, mode: 'insensitive' } }] } : {}),
+      ...(q.search ? { OR: [{ email: { contains: q.search } }, { fullName: { contains: q.search } }] } : {}),
     };
     const [items, total] = await Promise.all([
       prisma.user.findMany({ where, orderBy: { createdAt: 'desc' }, ...toSkipTake(q), select: userSelect }),

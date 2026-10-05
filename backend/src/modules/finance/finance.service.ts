@@ -1,7 +1,7 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../config/prisma';
 import { getSetting } from '../settings/settings.service';
-import { DEFAULT_TZ, FMT, bucketsCte, creditsConsumed, localTrunc, topOrganizations, type Unit } from '../reports/report.service';
+import { DEFAULT_TZ, bucketLabels, creditsConsumed, fillBuckets, localBucket, topOrganizations, type Unit } from '../reports/report.service';
 
 /**
  * Financial model (all figures come from ledgers — never from the frontend):
@@ -87,21 +87,41 @@ export async function financialSummary(from: Date, to: Date) {
 }
 
 export async function financialSeries(from: Date, to: Date, unit: Unit, tz = DEFAULT_TZ) {
-  const t = (col: string) => localTrunc(Prisma.raw(col), unit, tz);
-  const rows = await prisma.$queryRaw<
-    { label: string; revenue: Prisma.Decimal | null; spend: Prisma.Decimal | null; fees: Prisma.Decimal | null; refunds: Prisma.Decimal | null; expenses: Prisma.Decimal | null; sold: bigint | null; purchased: bigint | null; used: bigint | null }[]
-  >`
-    WITH ${bucketsCte(from, to, unit, tz)}
-    SELECT to_char(b, ${FMT[unit]}) AS label,
-      (SELECT SUM(amount) FROM payments p WHERE ${t('p."verifiedAt"')} = b AND p.status IN ('SUCCESS','REFUNDED') AND p."verifiedAt" BETWEEN ${from} AND ${to}) AS revenue,
-      (SELECT SUM("feeAmount") FROM payments p WHERE ${t('p."verifiedAt"')} = b AND p.status IN ('SUCCESS','REFUNDED') AND p."verifiedAt" BETWEEN ${from} AND ${to}) AS fees,
-      (SELECT SUM("totalCost") FROM provider_purchases pp WHERE ${t('pp."completedAt"')} = b AND pp.status = 'SUCCESS' AND pp."completedAt" BETWEEN ${from} AND ${to}) AS spend,
-      (SELECT SUM(quantity) FROM provider_purchases pp WHERE ${t('pp."completedAt"')} = b AND pp.status = 'SUCCESS' AND pp."completedAt" BETWEEN ${from} AND ${to}) AS purchased,
-      (SELECT SUM(amount) FROM refunds r WHERE ${t('r."createdAt"')} = b AND r."createdAt" BETWEEN ${from} AND ${to}) AS refunds,
-      (SELECT SUM(amount) FROM expenses e WHERE ${t('e."incurredAt"')} = b AND e."deletedAt" IS NULL AND e."incurredAt" BETWEEN ${from} AND ${to}) AS expenses,
-      (SELECT SUM(credits) FROM customer_purchases c WHERE ${t('c."createdAt"')} = b AND c."createdAt" BETWEEN ${from} AND ${to}) AS sold,
-      (SELECT -SUM(amount) FROM provider_capacity_ledger l WHERE ${t('l."createdAt"')} = b AND l.type IN ('USAGE','RELEASE') AND l."createdAt" BETWEEN ${from} AND ${to}) AS used
-    FROM buckets ORDER BY b`;
+  type Sums = { label: string; a: Prisma.Decimal | null; b: Prisma.Decimal | null };
+  const t = (col: string) => localBucket(Prisma.raw(col), unit, tz, from, to);
+  const [payments, purchases, refunds, expenses, sales, usage] = await Promise.all([
+    prisma.$queryRaw<Sums[]>`
+      SELECT ${t('p.verifiedAt')} AS label, SUM(p.amount) AS a, SUM(p.feeAmount) AS b FROM payments p
+      WHERE p.status IN ('SUCCESS','REFUNDED') AND p.verifiedAt BETWEEN ${from} AND ${to} GROUP BY label`,
+    prisma.$queryRaw<Sums[]>`
+      SELECT ${t('pp.completedAt')} AS label, SUM(pp.totalCost) AS a, SUM(pp.quantity) AS b FROM provider_purchases pp
+      WHERE pp.status = 'SUCCESS' AND pp.completedAt BETWEEN ${from} AND ${to} GROUP BY label`,
+    prisma.$queryRaw<Sums[]>`
+      SELECT ${t('r.createdAt')} AS label, SUM(r.amount) AS a, NULL AS b FROM refunds r
+      WHERE r.createdAt BETWEEN ${from} AND ${to} GROUP BY label`,
+    prisma.$queryRaw<Sums[]>`
+      SELECT ${t('e.incurredAt')} AS label, SUM(e.amount) AS a, NULL AS b FROM expenses e
+      WHERE e.deletedAt IS NULL AND e.incurredAt BETWEEN ${from} AND ${to} GROUP BY label`,
+    prisma.$queryRaw<Sums[]>`
+      SELECT ${t('c.createdAt')} AS label, SUM(c.credits) AS a, NULL AS b FROM customer_purchases c
+      WHERE c.createdAt BETWEEN ${from} AND ${to} GROUP BY label`,
+    prisma.$queryRaw<Sums[]>`
+      SELECT ${t('l.createdAt')} AS label, -SUM(l.amount) AS a, NULL AS b FROM provider_capacity_ledger l
+      WHERE l.type IN ('USAGE','RELEASE') AND l.createdAt BETWEEN ${from} AND ${to} GROUP BY label`,
+  ]);
+  const labels = bucketLabels(from, to, unit, tz);
+  const [pay, pur, ref, exp, sold, used] = [payments, purchases, refunds, expenses, sales, usage].map((rows) => fillBuckets(labels, rows));
+  const rows = labels.map((label, i) => ({
+    label,
+    revenue: pay[i]?.a ?? null,
+    fees: pay[i]?.b ?? null,
+    spend: pur[i]?.a ?? null,
+    purchased: pur[i]?.b ?? null,
+    refunds: ref[i]?.a ?? null,
+    expenses: exp[i]?.a ?? null,
+    sold: sold[i]?.a ?? null,
+    used: used[i]?.a ?? null,
+  }));
   return rows.map((r) => {
     const revenue = dec(r.revenue);
     const spend = dec(r.spend);

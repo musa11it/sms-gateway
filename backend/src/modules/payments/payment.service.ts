@@ -7,6 +7,7 @@ import { PaymentProviderFactory } from '../../integrations/payments/PaymentProvi
 import { SimulationPaymentProvider } from '../../integrations/payments/SimulationPaymentProvider';
 import type { Actor, RequestMeta } from '../../types/actor';
 import { SYSTEM_ACTOR, actorUserId } from '../../types/actor';
+import { nextCounterValue } from '../../utils/counter';
 import { AppError } from '../../utils/errors';
 import { normalizePhone } from '../../utils/phone';
 import { audit } from '../audit-logs/audit.service';
@@ -25,11 +26,7 @@ function newReference() {
 
 async function nextInvoiceNumber(tx: Tx) {
   const year = new Date().getFullYear();
-  const rows = await tx.$queryRaw<{ value: number }[]>`
-    INSERT INTO counters (key, value) VALUES (${`invoice:${year}`}, 1)
-    ON CONFLICT (key) DO UPDATE SET value = counters.value + 1
-    RETURNING value`;
-  return `INV-${year}-${String(rows[0].value).padStart(6, '0')}`;
+  return `INV-${year}-${String(await nextCounterValue(tx, `invoice:${year}`)).padStart(6, '0')}`;
 }
 
 export function serializePayment(p: Payment & { invoice?: { id: string; number: string } | null }) {

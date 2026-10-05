@@ -25,7 +25,7 @@ adminSendersRouter.get(
     const where: Prisma.SenderIdWhereInput = {
       ...(q.status ? { status: q.status } : {}),
       ...(q.organizationId ? { organizationId: q.organizationId } : {}),
-      ...(q.search ? { OR: [{ name: { contains: q.search, mode: 'insensitive' } }, { organization: { name: { contains: q.search, mode: 'insensitive' } } }] } : {}),
+      ...(q.search ? { OR: [{ name: { contains: q.search } }, { organization: { name: { contains: q.search } } }] } : {}),
     };
     const [items, total] = await Promise.all([
       prisma.senderId.findMany({ where, orderBy: { createdAt: 'desc' }, ...toSkipTake(q), include: { organization: { select: { id: true, name: true, status: true } } } }),

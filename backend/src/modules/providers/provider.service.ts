@@ -4,7 +4,9 @@ import { prisma, type Tx } from '../../config/prisma';
 import { SmsProviderFactory } from '../../integrations/sms/SmsProviderFactory';
 import type { Actor, RequestMeta } from '../../types/actor';
 import { actorUserId } from '../../types/actor';
+import { nextCounterValue } from '../../utils/counter';
 import { AppError } from '../../utils/errors';
+import { stringList } from '../../utils/json';
 import { audit } from '../audit-logs/audit.service';
 import { notifyStaff } from '../notifications/notification.service';
 
@@ -66,23 +68,25 @@ export async function applyCapacityEntry(tx: Tx, e: CapacityEntry) {
 
   if (e.amount < 0) {
     const need = -e.amount;
+    const now = new Date();
     const rows = await tx.$executeRaw`
       UPDATE sms_providers
-      SET "capacityBalance" = "capacityBalance" - ${need},
-          "totalUsed" = "totalUsed" + ${e.type === 'USAGE' ? need : 0},
-          "lastTransactionAt" = now(), "updatedAt" = now()
-      WHERE id = ${e.providerId}::uuid
-        AND "capacityBalance" - ${need} >= CASE WHEN "allowOverdraft" THEN -"overdraftLimit" ELSE 0 END`;
+      SET capacityBalance = capacityBalance - ${need},
+          totalUsed = totalUsed + ${e.type === 'USAGE' ? need : 0},
+          lastTransactionAt = ${now}, updatedAt = ${now}
+      WHERE id = ${e.providerId}
+        AND capacityBalance - ${need} >= CASE WHEN allowOverdraft THEN -overdraftLimit ELSE 0 END`;
     if (rows === 0) {
       throw new AppError(503, 'PROVIDER_CAPACITY_UNAVAILABLE', 'SMS capacity is temporarily unavailable for this route. Please try again later or contact support.');
     }
   } else {
+    const now = new Date();
     await tx.$executeRaw`
       UPDATE sms_providers
-      SET "capacityBalance" = "capacityBalance" + ${e.amount},
-          "totalUsed" = GREATEST(0, "totalUsed" - ${e.type === 'RELEASE' ? e.amount : 0}),
-          "lastTransactionAt" = now(), "updatedAt" = now()
-      WHERE id = ${e.providerId}::uuid`;
+      SET capacityBalance = capacityBalance + ${e.amount},
+          totalUsed = GREATEST(0, totalUsed - ${e.type === 'RELEASE' ? e.amount : 0}),
+          lastTransactionAt = ${now}, updatedAt = ${now}
+      WHERE id = ${e.providerId}`;
   }
   const after = await tx.smsProvider.findUniqueOrThrow({ where: { id: e.providerId }, select: { capacityBalance: true } });
   const entry = await tx.providerCapacityLedger.create({
@@ -104,11 +108,7 @@ export async function applyCapacityEntry(tx: Tx, e: CapacityEntry) {
 // ── Purchasing capacity from a provider ────────────────────────────────
 
 async function nextPurchaseReference(tx: Tx) {
-  const rows = await tx.$queryRaw<{ value: number }[]>`
-    INSERT INTO counters (key, value) VALUES ('provider-purchase', 1)
-    ON CONFLICT (key) DO UPDATE SET value = counters.value + 1
-    RETURNING value`;
-  return `PUR-${String(rows[0].value).padStart(5, '0')}`;
+  return `PUR-${String(await nextCounterValue(tx, 'provider-purchase')).padStart(5, '0')}`;
 }
 
 export async function purchaseCapacity(
@@ -230,8 +230,11 @@ export async function routeAndReserve(tx: Tx, input: { reservationRef: string; p
 
   for (const phone of input.phones) {
     const candidates = providers
-      .map((p) => ({ p, score: p.routePrefixes.length === 0 ? 0 : prefixScore(phone, p.routePrefixes) }))
-      .filter((c) => c.p.routePrefixes.length === 0 || c.score > 0)
+      .map((p) => {
+        const prefixes = stringList(p.routePrefixes);
+        return { p, prefixes, score: prefixes.length === 0 ? 0 : prefixScore(phone, prefixes) };
+      })
+      .filter((c) => c.prefixes.length === 0 || c.score > 0)
       .sort((a, b) => b.score - a.score || a.p.priority - b.p.priority);
     const chosen = candidates.find((c) => (remaining.get(c.p.id) ?? 0) >= need);
     if (!chosen) {

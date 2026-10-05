@@ -114,9 +114,9 @@ apiLogRouter.get(
     const since = new Date(Date.now() - 14 * 86_400_000);
     since.setHours(0, 0, 0, 0);
     const rows = await prisma.$queryRaw<{ day: Date; total: bigint; errors: bigint }[]>`
-      SELECT date_trunc('day', "createdAt") AS day, COUNT(*) AS total, COUNT(*) FILTER (WHERE "statusCode" >= 400) AS errors
-      FROM api_request_logs WHERE "organizationId" = ${req.org!.id}::uuid AND "createdAt" >= ${since}
-      GROUP BY 1 ORDER BY 1`;
+      SELECT DATE(createdAt) AS day, COUNT(*) AS total, COUNT(CASE WHEN statusCode >= 400 THEN 1 END) AS errors
+      FROM api_request_logs WHERE organizationId = ${req.org!.id} AND createdAt >= ${since}
+      GROUP BY day ORDER BY day`;
     const [total24h, errors24h, smsViaApi] = await Promise.all([
       prisma.apiRequestLog.count({ where: { organizationId: req.org!.id, createdAt: { gte: new Date(Date.now() - 86_400_000) } } }),
       prisma.apiRequestLog.count({ where: { organizationId: req.org!.id, createdAt: { gte: new Date(Date.now() - 86_400_000) }, statusCode: { gte: 400 } } }),
