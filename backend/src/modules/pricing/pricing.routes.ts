@@ -63,6 +63,18 @@ adminPricingRouter.delete(
   }),
 );
 
+/** Profit planning: cost per credit, fees and margin for every range, plus what each range has sold. */
+adminPricingRouter.get(
+  '/economics',
+  requirePlatformPermission('packages.view'),
+  asyncHandler(async (req, res) => {
+    const data = await svc.pricingEconomics();
+    // Costs and margins follow the same rule as the finance pages.
+    if (!req.user!.platformPermissions.has('profit.view')) return ok(res, { restricted: true, tiers: [], inputs: null, formulas: data.formulas });
+    return ok(res, { restricted: false, ...data });
+  }),
+);
+
 /** Quote preview for staff (same engine as customers). */
 adminPricingRouter.get(
   '/quote',

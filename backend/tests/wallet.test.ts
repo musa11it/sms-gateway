@@ -13,18 +13,16 @@ beforeAll(resetDatabase);
 const auth = (t: string) => ({ Authorization: `Bearer ${t}` });
 
 async function startPurchase(token: string) {
-  const pkg = await prisma.smsPackage.findFirstOrThrow();
-  const res = await request(app).post('/api/v1/payments').set(auth(token)).send({ packageId: pkg.id, method: 'MOBILE_MONEY', payerPhone: '0788123456' });
+  const res = await request(app).post('/api/v1/payments').set(auth(token)).send({ quantity: 1000, method: 'MOBILE_MONEY', payerPhone: '0788123456' });
   expect(res.status).toBe(201);
   return res.body.data.payment as { id: string; providerReference: string; amount: string; credits: number };
 }
 
 describe('purchase & payment verification', () => {
-  it('uses server-side package pricing and never trusts client amounts', async () => {
+  it('uses server-side pricing and never trusts client amounts', async () => {
     const { token } = await createActiveOrg();
-    const pkg = await prisma.smsPackage.findFirstOrThrow();
-    const res = await request(app).post('/api/v1/payments').set(auth(token)).send({ packageId: pkg.id, method: 'MOBILE_MONEY', payerPhone: '0788123456', amount: '1', credits: 999999 });
-    expect(res.body.data.payment.amount).toBe('15000.00');
+    const res = await request(app).post('/api/v1/payments').set(auth(token)).send({ quantity: 1000, method: 'MOBILE_MONEY', payerPhone: '0788123456', amount: '1', credits: 999999 });
+    expect(res.body.data.payment.amount).toBe('13000.00');
     expect(res.body.data.payment.credits).toBe(1000);
   });
 
@@ -42,7 +40,7 @@ describe('purchase & payment verification', () => {
     expect(await balanceOf(org.id)).toBe(1000);
     expect(await prisma.walletTransaction.count({ where: { organizationId: org.id, type: 'PURCHASE' } })).toBe(1);
     const invoice = await prisma.invoice.findUniqueOrThrow({ where: { paymentId: payment.id } });
-    expect(invoice.total.toFixed(2)).toBe('15000.00');
+    expect(invoice.total.toFixed(2)).toBe('13000.00');
     expect(invoice.number).toMatch(/^INV-\d{4}-\d{6}$/);
   });
 

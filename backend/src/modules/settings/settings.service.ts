@@ -98,7 +98,7 @@ export const SETTING_DEFAULTS: { [K in SettingKey]: SettingValue<K> } = {
 };
 
 export const SETTING_DESCRIPTIONS: Record<SettingKey, string> = {
-  'billing.currency': 'Default currency for packages and invoices',
+  'billing.currency': 'Default currency for pricing and invoices',
   'billing.taxRate': 'Tax rate (%) applied to invoices; prices are tax-inclusive when 0',
   'billing.companyName': 'Issuer name printed on invoices',
   'billing.companyAddress': 'Issuer address printed on invoices',

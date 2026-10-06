@@ -13,7 +13,6 @@ import {
   LayoutDashboard,
   Lock,
   MessagesSquare,
-  Package,
   ScrollText,
   ShieldCheck,
   SlidersHorizontal,
@@ -72,7 +71,6 @@ export function AdminLayout() {
       ],
     },
     { label: 'Wallet transactions', to: '/admin/wallets', icon: Wallet, visible: canAdmin('wallet.view') },
-    { label: 'SMS packages', to: '/admin/packages', icon: Package, visible: canAdmin('packages.view') },
     { label: 'SMS pricing', to: '/admin/pricing', icon: Layers, visible: canAdmin('packages.view') },
     {
       label: 'Developer',

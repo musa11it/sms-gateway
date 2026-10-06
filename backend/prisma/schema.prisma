@@ -629,10 +629,11 @@ enum ProviderLotSource {
   RETURN
 }
 
+// LOWEST_COST / PRIORITY order the rule's provider pool; PRIMARY_BACKUP tries an explicit ordered list.
 enum RoutingStrategy {
   PRIORITY
   LOWEST_COST
-  PRIORITY_THEN_COST
+  PRIMARY_BACKUP
 }
 
 enum CapacityEntryType {
@@ -774,10 +775,10 @@ model SmsRoutingRule {
   countryCode         String?         @db.Char(2)
   networkId           String?         @db.Char(36)
   strategy            RoutingStrategy @default(PRIORITY)
-  // Explicit order: primary, then backups (JSON array of provider ids). Empty = order by strategy.
+  // PRIMARY_BACKUP only: the provider tried first, then backups in order (JSON array of provider ids).
   primaryProviderId   String?         @db.Char(36)
   backupProviderIds   Json
-  // Restrict candidates (JSON array of provider ids). Empty = every provider serving the destination.
+  // LOWEST_COST / PRIORITY only: the provider pool (JSON array of ids). Empty = every provider serving the destination.
   allowedProviderIds  Json
   minProviderCapacity Int             @default(0)
   maxCostPerSegment   Decimal?        @db.Decimal(14, 4)

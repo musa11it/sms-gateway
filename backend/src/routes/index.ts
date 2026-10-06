@@ -17,7 +17,7 @@ import { notificationRouter } from '../modules/notifications/notification.routes
 import { adminOrganizationsRouter } from '../modules/organizations/admin.organizations.routes';
 import { invitationRouter, organizationRouter } from '../modules/organizations/organization.routes';
 import { adminBillingRouter } from '../modules/payments/admin.billing.routes';
-import { invoiceRouter, packageRouter, paymentRouter } from '../modules/payments/payment.routes';
+import { invoiceRouter, paymentRouter } from '../modules/payments/payment.routes';
 import { adminPricingRouter, pricingRouter } from '../modules/pricing/pricing.routes';
 import { adminReportsRouter } from '../modules/reports/admin.reports.routes';
 import { reportRouter } from '../modules/reports/report.routes';
@@ -89,7 +89,6 @@ const tenantRoutes: [string, Router][] = [
 ];
 for (const [path, router] of tenantRoutes) apiRouter.use(path, authenticate, orgContext, router);
 apiRouter.use('/senders', authenticate, requireVerifiedEmail, orgContext, senderRouter);
-apiRouter.use('/packages', authenticate, packageRouter);
 apiRouter.use('/pricing', authenticate, pricingRouter);
 apiRouter.use('/notifications', authenticate, notificationRouter);
 

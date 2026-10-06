@@ -40,6 +40,9 @@ adminRoutingRouter.patch(
 
 adminRoutingRouter.get('/rules', requirePlatformPermission('providers.view'), asyncHandler(async (_req, res) => ok(res, await svc.listRules())));
 
+/** Which provider each destination uses right now, why, and what happens if it is unavailable. */
+adminRoutingRouter.get('/overview', requirePlatformPermission('providers.view'), asyncHandler(async (_req, res) => ok(res, await svc.routingOverview())));
+
 adminRoutingRouter.post(
   '/rules',
   requirePlatformPermission('providers.manage'),

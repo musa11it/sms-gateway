@@ -145,6 +145,41 @@ async function routedEconomics(from: Date, to: Date, providerId?: string) {
   };
 }
 
+/**
+ * Customer credits delivered through each provider in the period: how much of what was sold each
+ * provider carried, what it earned (credits × average net price per credit) and what it cost.
+ */
+async function creditsByProvider(from: Date, to: Date, providers: { id: string; name: string; code: string }[]) {
+  const where: Prisma.SmsRecipientWhereInput = { createdAt: { gte: from, lte: to }, capacityReleased: false, providerId: { not: null } };
+  const [rows, billed, perCredit] = await Promise.all([
+    prisma.smsRecipient.groupBy({ by: ['providerId'], where, _sum: { providerCost: true }, _count: true }),
+    prisma.smsRecipient.groupBy({ by: ['providerId'], where: { ...where, refunded: false }, _sum: { credits: true } }),
+    revenuePerCredit(),
+  ]);
+  const totalCredits = billed.reduce((s, r) => s + (r._sum.credits ?? 0), 0);
+  return providers
+    .map((p) => {
+      const r = rows.find((x) => x.providerId === p.id);
+      const credits = billed.find((x) => x.providerId === p.id)?._sum.credits ?? 0;
+      const cost = D(r?._sum.providerCost ?? 0).toDecimalPlaces(2);
+      const revenue = perCredit ? perCredit.mul(credits).toDecimalPlaces(2) : null;
+      return {
+        providerId: p.id,
+        name: p.name,
+        code: p.code,
+        messages: r?._count ?? 0,
+        credits,
+        sharePercent: totalCredits ? Math.round((credits / totalCredits) * 1000) / 10 : 0,
+        revenue: revenue ? money(revenue) : null,
+        providerCost: money(cost),
+        costPerCredit: credits ? cost.div(credits).toFixed(4) : null,
+        grossMargin: revenue ? money(revenue.minus(cost)) : null,
+        marginPercent: revenue && revenue.gt(0) ? revenue.minus(cost).div(revenue).mul(100).toDecimalPlaces(1).toNumber() : null,
+      };
+    })
+    .sort((a, b) => b.credits - a.credits);
+}
+
 export async function providersOverview(from: Date, to: Date) {
   const providers = await listProviders();
   const remaining = providers.reduce((s, p) => s + p.capacityBalance, 0);
@@ -160,6 +195,7 @@ export async function providersOverview(from: Date, to: Date) {
       averageRemainingCost: remaining > 0 ? remainingValue.div(remaining).toFixed(4) : null,
     },
     economics: await routedEconomics(from, to),
+    byProvider: await creditsByProvider(from, to, providers),
     formula: 'Revenue of SMS sent (credits used × average net sale price per credit) − provider cost of the capacity lots consumed = gross SMS margin',
     providers,
   };
@@ -385,8 +421,9 @@ export async function simulateRouting(input: z.infer<typeof simulateBody>) {
       priority: c.provider.priority,
       health: c.provider.health,
     })),
-    selected: first.selected ? { providerId: first.selected.provider.id, name: first.selected.provider.name } : null,
-    backup: first.backup ? { providerId: first.backup.provider.id, name: first.backup.provider.name } : null,
+    selected: first.selected ? { providerId: first.selected.provider.id, name: first.selected.provider.name, costPerSegment: first.selected.cost.toFixed(2), available: first.selected.available } : null,
+    backup: first.backup ? { providerId: first.backup.provider.id, name: first.backup.provider.name, costPerSegment: first.backup.cost.toFixed(2), available: first.backup.available } : null,
+    rejected: first.candidates.filter((c) => !c.eligible).map((c) => ({ providerId: c.provider.id, name: c.provider.name, reason: c.reasons[0] })),
     reason: first.reason,
     allocations: allocations.map((a, i) => ({ providerId: a.provider.id, name: a.provider.name, recipients: a.recipients, segments: a.segments, estimatedCost: money(costs[i]) })),
     unroutedRecipients: left,

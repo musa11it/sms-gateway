@@ -8,13 +8,18 @@ import { stringList } from '../../utils/json';
  * a snapshot of configuration (providers, networks, rules); the caller reserves capacity.
  *
  *  1. Destination: the active network with the longest matching E.164 prefix (or none).
- *  2. Rule: the first active rule (lowest priority number) whose country/network match.
- *  3. Candidates: the rule's primary + backups in that order, or else every provider allowed by
- *     the rule (all providers without a rule), ordered by the rule's strategy.
+ *  2. Rule: the first active rule in order (lowest priority number) whose country/network match.
+ *     No match = default routing: every provider serving the destination, by priority.
+ *  3. Candidates, by strategy:
+ *       LOWEST_COST    the rule's provider pool (empty = all serving the destination), cheapest first
+ *       PRIORITY       the same pool, highest priority (lowest number) first
+ *       PRIMARY_BACKUP the primary, then the backups in their configured order
+ *     Ties fall back to the other key (cost/priority), then healthy before degraded.
  *  4. Eligibility: ACTIVE, adapter installed, health not DOWN, serves the destination, supports
  *     sender IDs, cost ≤ rule maximum, and enough capacity above the reserve (the larger of the
  *     provider's minimum capacity and the rule's minimum).
- *  5. The first eligible candidate is used; later eligible candidates are the backups.
+ *  5. The first eligible candidate is used; the next eligible one is the backup. No eligible
+ *     candidate = the send is refused before anything is charged or reserved.
  */
 
 export type RoutingProvider = SmsProvider & { networkIds: string[] };
@@ -60,7 +65,7 @@ export async function loadRoutingContext(db: Db): Promise<RoutingContext> {
   const [providers, links, networks, rules] = await Promise.all([
     db.smsProvider.findMany({ orderBy: [{ priority: 'asc' }, { code: 'asc' }] }),
     db.smsProviderNetwork.findMany(),
-    db.smsNetwork.findMany({ where: { isActive: true } }),
+    db.smsNetwork.findMany({ where: { isActive: true }, orderBy: [{ countryCode: 'asc' }, { name: 'asc' }] }),
     db.smsRoutingRule.findMany({ where: { isActive: true }, orderBy: [{ priority: 'asc' }, { createdAt: 'asc' }] }),
   ]);
   return {
@@ -94,12 +99,9 @@ export function matchRule(ctx: RoutingContext, dest: Destination): SmsRoutingRul
 
 function strategyOrder(strategy: SmsRoutingRule['strategy']) {
   return (a: RoutingProvider, b: RoutingProvider) => {
-    const health = HEALTH_RANK[a.health] - HEALTH_RANK[b.health];
-    if (health) return health;
     const cost = D(a.costPerSms).comparedTo(D(b.costPerSms));
-    if (strategy === 'LOWEST_COST') return cost || a.priority - b.priority;
-    if (strategy === 'PRIORITY_THEN_COST') return a.priority - b.priority || cost;
-    return a.priority - b.priority;
+    const primary = strategy === 'LOWEST_COST' ? cost || a.priority - b.priority : a.priority - b.priority || cost;
+    return primary || HEALTH_RANK[a.health] - HEALTH_RANK[b.health] || a.code.localeCompare(b.code);
   };
 }
 
@@ -107,19 +109,18 @@ function strategyOrder(strategy: SmsRoutingRule['strategy']) {
  * Evaluate and order every candidate for one destination. `remaining` holds live capacity per
  * provider (callers decrement it as recipients are assigned); `need` is segments per recipient.
  */
-export function planRoute(ctx: RoutingContext, dest: Destination, need: number, remaining: Map<string, number>): RoutePlan {
-  const rule = matchRule(ctx, dest);
+export function planRoute(ctx: RoutingContext, dest: Destination, need: number, remaining: Map<string, number>, opts: { rule?: SmsRoutingRule | null } = {}): RoutePlan {
+  // `opts.rule` previews a specific rule for the destination instead of the first matching one.
+  const rule = opts.rule !== undefined ? opts.rule : matchRule(ctx, dest);
   const strategy = rule?.strategy ?? 'PRIORITY';
   const byId = new Map(ctx.providers.map((p) => [p.id, p]));
-  const allowed = rule ? stringList(rule.allowedProviderIds) : [];
-  const backups = rule ? stringList(rule.backupProviderIds) : [];
-  const explicit = rule && (rule.primaryProviderId || backups.length) ? [rule.primaryProviderId, ...backups].filter((x): x is string => !!x) : null;
+  const allowed = rule && strategy !== 'PRIMARY_BACKUP' ? stringList(rule.allowedProviderIds) : [];
 
   let ordered: { provider: RoutingProvider; role: CandidateEvaluation['role'] }[];
-  if (explicit) {
-    ordered = explicit
-      .map((id, i) => ({ provider: byId.get(id)!, role: (i === 0 && rule!.primaryProviderId ? 'primary' : 'backup') as CandidateEvaluation['role'] }))
-      .filter((c) => c.provider);
+  if (rule && strategy === 'PRIMARY_BACKUP') {
+    ordered = [rule.primaryProviderId, ...stringList(rule.backupProviderIds)]
+      .filter((id): id is string => !!id && byId.has(id))
+      .map((id, i) => ({ provider: byId.get(id)!, role: (i === 0 ? 'primary' : 'backup') as CandidateEvaluation['role'] }));
   } else {
     const pool = allowed.length ? ctx.providers.filter((p) => allowed.includes(p.id)) : ctx.providers;
     ordered = [...pool].sort(strategyOrder(strategy)).map((provider) => ({ provider, role: 'candidate' as const }));
@@ -155,14 +156,10 @@ export function planRoute(ctx: RoutingContext, dest: Destination, need: number, 
 }
 
 function explain(rule: SmsRoutingRule | null, strategy: SmsRoutingRule['strategy'], candidates: CandidateEvaluation[], selected: CandidateEvaluation | null): string {
-  if (!selected) return candidates.length ? 'No eligible provider: every candidate was excluded (see reasons).' : 'No provider is configured for this destination.';
-  const skipped = candidates.slice(0, candidates.indexOf(selected)).map((c) => `${c.provider.name}: ${c.reasons[0]}`);
-  const via = rule ? `rule "${rule.name}"` : 'default routing (no rule matched)';
-  let why: string;
-  if (selected.role === 'primary') why = `Primary provider of ${via}`;
-  else if (selected.role === 'backup') why = `Backup provider of ${via}`;
-  else if (strategy === 'LOWEST_COST') why = `Lowest-cost eligible provider under ${via}`;
-  else if (strategy === 'PRIORITY_THEN_COST') why = `Highest-priority eligible provider (cost as tie-breaker) under ${via}`;
-  else why = `Highest-priority eligible provider with sufficient capacity under ${via}`;
-  return skipped.length ? `${why}; skipped ${skipped.join('; ')}.` : `${why}.`;
+  if (!selected) return candidates.length ? 'No eligible provider — the send would be refused and nothing charged.' : 'No provider serves this destination — the send would be refused and nothing charged.';
+  const skipped = candidates.slice(0, candidates.indexOf(selected));
+  const blocked = skipped.length ? ` (${skipped.map((c) => `${c.provider.name}: ${c.reasons[0].charAt(0).toLowerCase()}${c.reasons[0].slice(1)}`).join('; ')})` : '';
+  if (strategy === 'PRIMARY_BACKUP') return selected.role === 'primary' ? 'Primary provider' : `Backup provider — the primary is unavailable${blocked}`;
+  const base = strategy === 'LOWEST_COST' ? 'Lowest eligible cost' : 'Highest-priority eligible provider';
+  return `${base}${rule ? '' : ' (default routing: no rule matches this destination)'}${blocked ? `; skipped${blocked}` : ''}`;
 }

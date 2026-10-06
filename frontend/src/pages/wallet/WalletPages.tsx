@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowDownLeft, ArrowUpRight, Bell, Download, Check, CheckCircle2, CreditCard, FileText, FlaskConical, Hourglass, Loader2, Printer, Receipt, Smartphone, Sparkles, Wallet, XCircle } from 'lucide-react';
-import type { Payment, SmsPackage, TxType } from '@/api/types';
+import { ArrowDownLeft, ArrowUpRight, Bell, Download, Check, CheckCircle2, CreditCard, FileText, FlaskConical, Hourglass, Loader2, Printer, Receipt, Smartphone, Wallet, XCircle } from 'lucide-react';
+import type { Payment, TxType } from '@/api/types';
 import { Badge, StatusBadge } from '@/components/ui/Badge';
 import { Button, LinkButton } from '@/components/ui/Button';
 import { Card, StatCard } from '@/components/ui/Card';
@@ -10,7 +10,7 @@ import { Alert, EmptyState, ErrorState, PageLoader, Skeleton } from '@/component
 import { Field, Input, Select } from '@/components/ui/Form';
 import { Modal } from '@/components/ui/Overlay';
 import { DataTable, Pagination } from '@/components/ui/Table';
-import { PageHeader, SegmentedControl } from '@/components/ui/Misc';
+import { PageHeader } from '@/components/ui/Misc';
 import { errorMessage } from '@/api/client';
 import { useApiMutation } from '@/hooks/useApiMutation';
 import { useDebounce } from '@/hooks/useDebounce';
@@ -119,12 +119,9 @@ const tierRange = (t: { minQuantity: number; maxQuantity: number | null }) =>
   t.maxQuantity === null ? `${fmtNumber(t.minQuantity)}+` : `${fmtNumber(t.minQuantity)} – ${fmtNumber(t.maxQuantity)}`;
 
 export function BuySmsPage() {
-  const packages = useQuery({ queryKey: ['packages'], queryFn: walletService.packages });
   const tiers = useQuery({ queryKey: ['pricing', 'tiers'], queryFn: walletService.tiers });
   const wallet = useQuery({ queryKey: ['wallet'], queryFn: walletService.wallet });
-  const [mode, setMode] = useState<'amount' | 'package'>('amount');
   const [quantityText, setQuantityText] = useState('1000');
-  const [selected, setSelected] = useState<SmsPackage | null>(null);
   const [method, setMethod] = useState<'MOBILE_MONEY' | 'CARD'>('MOBILE_MONEY');
   const [phone, setPhone] = useState('');
   const [checkout, setCheckout] = useState<{ payment: Payment; nextAction: NextAction; simulation: boolean } | null>(null);
@@ -136,38 +133,28 @@ export function BuySmsPage() {
   const quote = useQuery({
     queryKey: ['pricing', 'quote', debounced],
     queryFn: () => walletService.quote(debounced!),
-    enabled: mode === 'amount' && debounced !== null,
+    enabled: debounced !== null,
     placeholderData: (p) => p,
     retry: false,
   });
   const quoteCurrent = quote.data && quantityValid && quote.data.quantity === quantity && !quote.isError;
   const hasTiers = !!tiers.data?.length;
-  const effectiveMode = hasTiers ? mode : 'package';
-
-  useEffect(() => {
-    if (!selected && packages.data?.length) setSelected(packages.data.find((p) => p.isPopular) ?? packages.data[0]);
-  }, [packages.data, selected]);
 
   const create = useApiMutation(
     () =>
       paymentService.create({
-        ...(effectiveMode === 'amount' ? { quantity } : { packageId: selected!.id }),
+        quantity,
         method,
         payerPhone: method === 'MOBILE_MONEY' ? phone : undefined,
       }),
     { onSuccess: (d) => setCheckout(d), invalidate: [['payments']] },
   );
 
-  const summary =
-    effectiveMode === 'amount'
-      ? quoteCurrent
-        ? { credits: quote.data!.quantity, total: quote.data!.total, currency: quote.data!.currency, unit: quote.data!.unitPrice, label: `Tier ${quote.data!.tier.label}` }
-        : null
-      : selected
-        ? { credits: selected.credits, total: selected.price, currency: selected.currency, unit: selected.pricePerSms, label: `${selected.name} package` }
-        : null;
+  const summary = quoteCurrent
+    ? { credits: quote.data!.quantity, total: quote.data!.total, currency: quote.data!.currency, unit: quote.data!.unitPrice, label: `Range ${quote.data!.tier.label}` }
+    : null;
   const canPay = !!summary && !(method === 'MOBILE_MONEY' && phone.trim().length < 9);
-  const loading = tiers.isLoading || packages.isLoading;
+  const loading = tiers.isLoading;
 
   return (
     <div className="space-y-6">
@@ -196,25 +183,13 @@ export function BuySmsPage() {
 
       {loading ? (
         <Skeleton className="h-72 rounded-xl" />
-      ) : tiers.error && packages.error ? (
+      ) : tiers.error ? (
         <Card><ErrorState error={tiers.error} /></Card>
-      ) : !hasTiers && !packages.data?.length ? (
+      ) : !hasTiers ? (
         <Card><EmptyState icon={<Receipt />} title="SMS credits are not on sale yet" description="Please check back soon or contact support." /></Card>
       ) : (
         <>
-          {hasTiers && !!packages.data?.length && (
-            <SegmentedControl
-              value={effectiveMode}
-              onChange={setMode}
-              options={[
-                { value: 'amount', label: 'Any amount' },
-                { value: 'package', label: 'Packages' },
-              ]}
-            />
-          )}
-
-          {effectiveMode === 'amount' ? (
-            <Card className="grid gap-6 p-6 lg:grid-cols-[1fr_340px]">
+          <Card className="grid gap-6 p-6 lg:grid-cols-[1fr_340px]">
               <div className="space-y-5">
                 <div>
                   <h2 className="text-base font-semibold text-slate-900">Buy SMS credits</h2>
@@ -286,31 +261,7 @@ export function BuySmsPage() {
                   </dl>
                 )}
               </div>
-            </Card>
-          ) : (
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-              {packages.data?.map((p) => {
-                const active = selected?.id === p.id;
-                return (
-                  <button
-                    key={p.id}
-                    onClick={() => setSelected(p)}
-                    className={cn('card relative flex flex-col p-5 text-left transition hover:-translate-y-0.5 hover:shadow-pop', active && 'ring-2 ring-brand-600')}
-                  >
-                    {p.isPopular && <span className="absolute -top-2.5 left-4 flex items-center gap-1 rounded-full bg-gradient-to-r from-brand-600 to-violet-600 px-2.5 py-0.5 text-[11px] font-semibold text-white shadow"><Sparkles className="h-3 w-3" /> Best value</span>}
-                    <span className="flex w-full items-center justify-between gap-2">
-                      <span className="text-sm font-medium text-slate-500">{p.name}</span>
-                      <span className={cn('flex h-5 w-5 items-center justify-center rounded-full ring-1', active ? 'bg-brand-600 text-white ring-brand-600' : 'ring-slate-300')}>{active && <Check className="h-3 w-3" />}</span>
-                    </span>
-                    <span className="mt-3 text-3xl font-bold tracking-tight text-slate-900 tabular-nums">{fmtNumber(p.credits)}</span>
-                    <span className="text-xs font-medium uppercase tracking-wide text-slate-400">SMS credits</span>
-                    <span className="mt-4 text-lg font-semibold text-slate-900">{fmtMoney(p.price, p.currency)}</span>
-                    <span className="text-xs text-slate-500">{fmtMoney(p.pricePerSms, p.currency)} per SMS{p.validityDays ? ` · valid ${p.validityDays} days` : ''}</span>
-                  </button>
-                );
-              })}
-            </div>
-          )}
+          </Card>
 
           <Card className="grid gap-6 p-6 lg:grid-cols-[1fr_340px]">
             <div className="space-y-4">
@@ -342,7 +293,7 @@ export function BuySmsPage() {
                   <div className="flex justify-between border-t border-slate-200 pt-2 font-semibold"><dt>Total</dt><dd className="tabular-nums">{fmtMoney(summary.total, summary.currency)}</dd></div>
                 </dl>
               ) : (
-                <p className="mt-3 text-sm text-slate-500">{effectiveMode === 'amount' ? 'Enter a quantity to see your price.' : 'Choose a package.'}</p>
+                <p className="mt-3 text-sm text-slate-500">Enter a quantity to see your price.</p>
               )}
               <Button className="mt-4 w-full" size="lg" loading={create.isPending} disabled={!canPay} onClick={() => create.mutate(undefined)}>
                 {summary ? `Continue to payment · ${fmtMoney(summary.total, summary.currency)}` : 'Continue to payment'}

@@ -44,6 +44,52 @@ export interface Provider {
   routable: boolean;
 }
 
+export interface PricingEconomics {
+  restricted: boolean;
+  inputs: {
+    creditsPerSegment: number;
+    paymentFeePercent: number;
+    paymentFeeSource: string;
+    expectedCostPerCredit: string | null;
+    worstCaseCostPerCredit: string | null;
+    realizedCostPerCredit: string | null;
+    routableProviders: { id: string; name: string; costPerSegment: string }[];
+    breakEvenPrice: string | null;
+  } | null;
+  tiers: {
+    tierId: string;
+    name: string | null;
+    minQuantity: number;
+    maxQuantity: number | null;
+    isActive: boolean;
+    unitPrice: string;
+    feePerCredit: string;
+    expectedCostPerCredit: string | null;
+    marginPerCredit: string | null;
+    marginPercent: number | null;
+    worstCaseMarginPerCredit: string | null;
+    worstCaseMarginPercent: number | null;
+    breakEvenPrice: string | null;
+    sales: { purchases: number; credits: number; revenue: string; paymentFees: string; projectedProviderCost: string | null; projectedMargin: string | null };
+    warnings: string[];
+  }[];
+  formulas: { costPerCredit: string; marginPerCredit: string; breakEven: string; targetPrice: string };
+}
+
+export interface ProviderCreditShare {
+  providerId: string;
+  name: string;
+  code: string;
+  messages: number;
+  credits: number;
+  sharePercent: number;
+  revenue: string | null;
+  providerCost: string;
+  costPerCredit: string | null;
+  grossMargin: string | null;
+  marginPercent: number | null;
+}
+
 export interface ProviderEconomics {
   messages: number;
   segments: number;
@@ -60,6 +106,7 @@ export interface ProviderOverview {
   counts: { providers: number; active: number; routable: number };
   capacity: { purchased: number; used: number; remaining: number; remainingValue: string; averageRemainingCost: string | null };
   economics: ProviderEconomics;
+  byProvider: ProviderCreditShare[];
   formula: string;
   providers: Provider[];
 }
@@ -90,7 +137,22 @@ export interface SmsNetwork {
   providerCount?: number;
 }
 
-export type RoutingStrategy = 'PRIORITY' | 'LOWEST_COST' | 'PRIORITY_THEN_COST';
+export type RoutingStrategy = 'LOWEST_COST' | 'PRIORITY' | 'PRIMARY_BACKUP';
+
+/** Who a route uses right now, at what cost, why, who is next and who was ruled out. */
+export interface RouteSummary {
+  selected: { providerId: string; name: string; costPerSegment: string; available: number } | null;
+  backup: { providerId: string; name: string; costPerSegment: string; available: number } | null;
+  reason: string;
+  rejected: { providerId: string; name: string; reason: string }[];
+}
+
+export interface RoutingOverviewRow extends RouteSummary {
+  destination: string;
+  networkId: string | null;
+  rule: { id: string; name: string; strategy: RoutingStrategy } | null;
+  strategy: RoutingStrategy;
+}
 
 export interface RoutingRule {
   id: string;
@@ -111,6 +173,8 @@ export interface RoutingRule {
   isActive: boolean;
   description: string | null;
   updatedAt: string;
+  preview: RouteSummary & { destination: string };
+  shadowedBy: { id: string; name: string } | null;
 }
 
 export interface RoutingSimulation {
@@ -120,8 +184,9 @@ export interface RoutingSimulation {
   rule: { id: string; name: string; priority: number; strategy: RoutingStrategy } | null;
   strategy: RoutingStrategy;
   candidates: { providerId: string; name: string; code: string; role: 'primary' | 'backup' | 'candidate'; eligible: boolean; reasons: string[]; costPerSegment: string; capacity: number; reserve: number; available: number; priority: number; health: Provider['health'] }[];
-  selected: { providerId: string; name: string } | null;
-  backup: { providerId: string; name: string } | null;
+  selected: { providerId: string; name: string; costPerSegment: string; available: number } | null;
+  backup: { providerId: string; name: string; costPerSegment: string; available: number } | null;
+  rejected: { providerId: string; name: string; reason: string }[];
   reason: string;
   allocations: { providerId: string; name: string; recipients: number; segments: number; estimatedCost: string }[];
   unroutedRecipients: number;
@@ -243,6 +308,7 @@ export const businessService = {
   providers: () => get<Provider[]>('/admin/providers'),
   provider: (id: string, params?: Record<string, unknown>) => get<ProviderDetail>(`/admin/providers/${id}`, params),
   providerOverview: (params: Record<string, unknown>) => get<ProviderOverview>('/admin/providers/overview', params),
+  pricingEconomics: () => get<PricingEconomics>('/admin/pricing/economics'),
   updateProvider: (id: string, body: Record<string, unknown>) => patch<Provider>(`/admin/providers/${id}`, body),
   createProvider: (body: Record<string, unknown>) => post<Provider>('/admin/providers', body),
   purchaseCapacity: (id: string, body: { quantity: number; unitCost?: string; notes?: string }) => post<ProviderPurchase>(`/admin/providers/${id}/purchase`, body),
@@ -251,6 +317,7 @@ export const businessService = {
   createNetwork: (body: Record<string, unknown>) => post<SmsNetwork>('/admin/routing/networks', body),
   updateNetwork: (id: string, body: Record<string, unknown>) => patch<SmsNetwork>(`/admin/routing/networks/${id}`, body),
   routingRules: () => get<RoutingRule[]>('/admin/routing/rules'),
+  routingOverview: () => get<RoutingOverviewRow[]>('/admin/routing/overview'),
   createRoutingRule: (body: Record<string, unknown>) => post<RoutingRule>('/admin/routing/rules', body),
   updateRoutingRule: (id: string, body: Record<string, unknown>) => patch<RoutingRule>(`/admin/routing/rules/${id}`, body),
   reorderRoutingRules: (ids: string[]) => post<RoutingRule[]>('/admin/routing/rules/reorder', { ids }),
@@ -292,7 +359,6 @@ export const businessService = {
 };
 
 export const siteService = {
-  packages: () =>
-    get<{ id: string; name: string; description: string | null; credits: number; price: string; currency: string; pricePerSms: string; validityDays: number | null; isPopular: boolean }[]>('/site/packages'),
+  pricing: () => get<{ id: string; name: string | null; minQuantity: number; maxQuantity: number | null; unitPrice: string; currency: string }[]>('/site/pricing'),
   contact: (body: { name: string; email: string; phone?: string; company?: string; message: string; website?: string }) => post<{ id: string }>('/site/contact', body),
 };

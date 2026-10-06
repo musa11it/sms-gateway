@@ -185,29 +185,31 @@ const FAQS = [
   ['How quickly can I start sending?', 'Create an account, verify your email and submit your business details. Once our team approves your business and your sender ID, you can buy credits and send immediately.'],
   ['Why do you verify businesses?', 'Verification protects recipients from scams and spam and keeps sender names trustworthy. Every sender ID is reviewed before it can be used.'],
   ['How is SMS cost calculated?', 'One credit covers one SMS segment to one recipient. By default, standard messages fit 160 characters per segment (153 when split) and messages with emoji or special characters fit 70 (67). The platform shows the exact cost before you send.'],
-  ['Do credits expire?', 'Each package lists its validity. Your wallet history shows every purchase and deduction.'],
+  ['Do credits expire?', 'Credits are valid for the period shown when you buy them. Your wallet history shows every purchase and deduction.'],
   ['Can I integrate SMS into my own software?', 'Yes. Create an API key in the Developer section, send messages with a single HTTP request and receive delivery reports through signed webhooks.'],
   ['Can my team use the same account?', 'Yes. Invite team members and give each person a role — owner, manager, finance, marketing, developer or staff — with exactly the access they need.'],
 ];
 
 function Pricing() {
-  const q = useQuery({ queryKey: ['site', 'packages'], queryFn: siteService.packages, staleTime: 60_000 });
-  if (q.isLoading) return <div className="grid gap-5 md:grid-cols-3 lg:grid-cols-5">{[0, 1, 2, 3, 4].map((i) => <div key={i} className="h-72 animate-pulse rounded-2xl bg-slate-100" />)}</div>;
+  const q = useQuery({ queryKey: ['site', 'pricing'], queryFn: siteService.pricing, staleTime: 60_000 });
+  if (q.isLoading) return <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-4">{[0, 1, 2, 3].map((i) => <div key={i} className="h-56 animate-pulse rounded-2xl bg-slate-100" />)}</div>;
   if (q.error || !q.data?.length) return <p className="text-center text-sm text-slate-500">Pricing is currently unavailable. <a href="#contact" className="link">Contact us</a> for a quote.</p>;
+  const best = q.data[q.data.length - 1];
   return (
-    <div className="grid gap-5 md:grid-cols-3 lg:grid-cols-5">
-      {q.data.map((p) => (
-        <div key={p.id} className={cn('relative flex flex-col rounded-2xl bg-white p-6 ring-1', p.isPopular ? 'shadow-pop ring-2 ring-brand-500' : 'ring-slate-200')}>
-          {p.isPopular && <span className="absolute -top-3 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-full bg-gradient-to-r from-brand-600 to-violet-600 px-3 py-1 text-xs font-semibold text-white"><Sparkles className="h-3 w-3" /> Best value</span>}
-          <p className="text-sm font-semibold text-slate-500">{p.name}</p>
-          <p className="mt-3 text-3xl font-bold tracking-tight text-slate-900">{fmtNumber(p.credits)}</p>
-          <p className="text-xs font-medium uppercase tracking-wide text-slate-400">SMS credits</p>
-          <p className="mt-5 text-xl font-semibold text-slate-900">{fmtMoney(p.price, p.currency)}</p>
-          <p className="text-xs text-slate-500">{fmtMoney(p.pricePerSms, p.currency)} per SMS</p>
-          {p.description && <p className="mt-4 flex-1 text-sm text-slate-600">{p.description}</p>}
-          <LinkButton to="/register" variant={p.isPopular ? 'primary' : 'secondary'} className="mt-6 w-full">Get started</LinkButton>
-        </div>
-      ))}
+    <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-4">
+      {q.data.map((t) => {
+        const top = t.id === best.id && q.data.length > 1;
+        return (
+          <div key={t.id} className={cn('relative flex flex-col rounded-2xl bg-white p-6 ring-1', top ? 'shadow-pop ring-2 ring-brand-500' : 'ring-slate-200')}>
+            {top && <span className="absolute -top-3 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-full bg-gradient-to-r from-brand-600 to-violet-600 px-3 py-1 text-xs font-semibold text-white"><Sparkles className="h-3 w-3" /> Lowest rate</span>}
+            <p className="text-sm font-semibold text-slate-500">{t.name ?? 'SMS credits'}</p>
+            <p className="mt-3 text-2xl font-bold tracking-tight text-slate-900 tabular-nums">{t.maxQuantity === null ? `${fmtNumber(t.minQuantity)}+` : `${fmtNumber(t.minQuantity)} – ${fmtNumber(t.maxQuantity)}`}</p>
+            <p className="text-xs font-medium uppercase tracking-wide text-slate-400">SMS credits per purchase</p>
+            <p className="mt-5 flex-1 text-xl font-semibold text-slate-900">{fmtMoney(t.unitPrice, t.currency)} <span className="text-sm font-normal text-slate-500">per SMS</span></p>
+            <LinkButton to="/register" variant={top ? 'primary' : 'secondary'} className="mt-6 w-full">Get started</LinkButton>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -297,7 +299,7 @@ export function LandingPage() {
           {[
             ['Create your business account', 'Register with your email and organization name.'],
             ['Verify your business', 'Submit your details and documents. Our team reviews them to keep the network trustworthy.'],
-            ['Buy SMS credits', 'Choose a package and pay by mobile money or card. Credits arrive as soon as payment is confirmed.'],
+            ['Buy SMS credits', 'Enter any number of SMS, see your rate and pay by mobile money or card. Credits arrive as soon as payment is confirmed.'],
             ['Request a Sender ID', 'Choose the name recipients see. We review and register it with the networks.'],
             ['Send SMS', 'Send to numbers or contact groups, schedule campaigns or use the API.'],
             ['Track delivery', 'See every message move from queued to delivered, with reports for any period.'],
@@ -381,7 +383,7 @@ export function LandingPage() {
         </div>
       </Section>
 
-      <Section id="pricing" eyebrow="Pricing" title="Simple, prepaid SMS packages" subtitle="Buy credits once and use them for any message. 1 credit = 1 SMS segment to one recipient." className="bg-slate-50">
+      <Section id="pricing" eyebrow="Pricing" title="Buy any amount — the more you buy, the less each SMS costs" subtitle="Your quantity sets the rate for the whole purchase. 1 credit = 1 SMS segment to one recipient." className="bg-slate-50">
         <Pricing />
         <p className="mt-8 text-center text-sm text-slate-500">Need a larger volume? <a href="#contact" className="link">Talk to us</a>.</p>
       </Section>
@@ -451,7 +453,7 @@ export function TermsPage() {
       <h2>Verification and sender IDs</h2>
       <p>Businesses must provide accurate information. Sender IDs must represent your organization and are subject to review and network rules.</p>
       <h2>Credits and payments</h2>
-      <p>Credits are prepaid and consumed per SMS segment per recipient. Package validity is shown at purchase. Refunds are handled case by case.</p>
+      <p>Credits are prepaid and consumed per SMS segment per recipient. Credit validity is shown at purchase. Refunds are handled case by case.</p>
       <h2>Service</h2>
       <p>Message delivery depends on telecommunication networks and recipient devices; we report the delivery status we receive but cannot guarantee delivery.</p>
       <h2>Liability</h2>

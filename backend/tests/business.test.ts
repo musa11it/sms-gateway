@@ -141,16 +141,15 @@ describe('finance', () => {
   it('records the sale, fee and contribution and computes profit from the ledgers', async () => {
     const from = new Date(Date.now() - 1000);
     const { org, token } = await createActiveOrg();
-    const pkg = await prisma.smsPackage.findFirstOrThrow();
-    const created = await request(app).post('/api/v1/payments').set(auth(token)).send({ packageId: pkg.id, method: 'MOBILE_MONEY', payerPhone: '0788123456' });
+    const created = await request(app).post('/api/v1/payments').set(auth(token)).send({ quantity: 1000, method: 'MOBILE_MONEY', payerPhone: '0788123456' });
     const payment = created.body.data.payment;
     await (PaymentProviderFactory.getActive() as SimulationPaymentProvider).simulatePayerAction(payment.providerReference, 'APPROVE');
     await verifyAndApply(payment.id);
     await verifyAndApply(payment.id); // idempotent
 
     const sale = await prisma.customerPurchase.findUniqueOrThrow({ where: { paymentId: payment.id } });
-    expect(sale.revenue.toFixed(2)).toBe('15000.00');
-    expect(sale.paymentFee.toFixed(2)).toBe('225.00'); // 1.5% mobile money (reported by the simulated gateway)
+    expect(sale.revenue.toFixed(2)).toBe('13000.00'); // 1,000 × RWF 13
+    expect(sale.paymentFee.toFixed(2)).toBe('195.00'); // 1.5% mobile money (reported by the simulated gateway)
     expect(Number(sale.estimatedProviderCost)).toBeGreaterThan(0);
     expect(sale.contribution.toFixed(2)).toBe(sale.revenue.minus(sale.estimatedProviderCost).minus(sale.paymentFee).toFixed(2));
     expect(await prisma.customerPurchase.count({ where: { organizationId: org.id } })).toBe(1);
@@ -164,12 +163,12 @@ describe('finance', () => {
       .expect(201);
 
     const s = await financialSummary(from, new Date());
-    expect(s.money.revenue).toBe('15000.00');
+    expect(s.money.revenue).toBe('13000.00');
     expect(s.money.providerSpend).toBe('11000.00');
-    expect(s.money.grossMargin).toBe('4000.00');
-    expect(s.money.paymentFees).toBe('225.00');
+    expect(s.money.grossMargin).toBe('2000.00');
+    expect(s.money.paymentFees).toBe('195.00');
     expect(s.money.otherExpenses).toBe('2000.00');
-    expect(s.money.netProfit).toBe('1775.00'); // 15000 − 11000 − 0 − 225 − 2000
+    expect(s.money.netProfit).toBe('-195.00'); // 13000 − 11000 − 0 − 195 − 2000
     expect(s.sms.soldToCustomers).toBe(1000);
     expect(s.sms.purchasedFromProviders).toBe(1000);
 
@@ -179,8 +178,8 @@ describe('finance', () => {
     const refund = await prisma.refund.findUniqueOrThrow({ where: { paymentId: payment.id } });
     expect(refund).toMatchObject({ creditsReversed: 1000 });
     const after = await financialSummary(from, new Date());
-    expect(after.money.refunds).toBe('15000.00');
-    expect(after.money.netProfit).toBe('-13225.00');
+    expect(after.money.refunds).toBe('13000.00');
+    expect(after.money.netProfit).toBe('-13195.00');
   });
 
   it('profit figures require profit.view; support cannot see finance at all', async () => {
@@ -361,10 +360,9 @@ describe('customer roles & developer API', () => {
     const { org } = await createActiveOrg({ credits: 10 });
     const dev = await addMember(org.id, 'CUSTOMER_DEVELOPER');
     const fin = await addMember(org.id, 'CUSTOMER_FINANCE');
-    const pkg = await prisma.smsPackage.findFirstOrThrow();
     expect((await request(app).post('/api/v1/developer/api-keys').set(auth(dev.token)).send({ name: 'CI key' })).status).toBe(201);
-    expect((await request(app).post('/api/v1/payments').set(auth(dev.token)).send({ packageId: pkg.id, method: 'CARD' })).status).toBe(403);
-    expect((await request(app).post('/api/v1/payments').set(auth(fin.token)).send({ packageId: pkg.id, method: 'CARD' })).status).toBe(201);
+    expect((await request(app).post('/api/v1/payments').set(auth(dev.token)).send({ quantity: 1000, method: 'CARD' })).status).toBe(403);
+    expect((await request(app).post('/api/v1/payments').set(auth(fin.token)).send({ quantity: 1000, method: 'CARD' })).status).toBe(201);
     expect((await request(app).post('/api/v1/developer/api-keys').set(auth(fin.token)).send({ name: 'x key' })).status).toBe(403);
   });
 
@@ -406,10 +404,10 @@ describe('customer roles & developer API', () => {
 });
 
 describe('public website', () => {
-  it('lists active packages without authentication and stores contact inquiries', async () => {
-    const pk = await request(app).get('/api/v1/site/packages');
+  it('lists active price ranges without authentication and stores contact inquiries', async () => {
+    const pk = await request(app).get('/api/v1/site/pricing');
     expect(pk.status).toBe(200);
-    expect(pk.body.data[0]).toMatchObject({ credits: 1000, price: '15000.00' });
+    expect(pk.body.data[0]).toMatchObject({ minQuantity: 1, maxQuantity: 1000, unitPrice: '13.00' });
     const c = await request(app).post('/api/v1/site/contact').send({ name: 'Jane', email: 'jane@school.rw', message: 'We would like a quote for 50k SMS.' });
     expect(c.status).toBe(201);
     const support = await createStaff('SUPPORT');

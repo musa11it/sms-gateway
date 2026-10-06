@@ -22,24 +22,14 @@ const contactLimiter = rateLimit({
   handler: (_req, res) => res.status(429).json({ success: false, message: 'Too many messages. Please try again later.', code: 'RATE_LIMITED' }),
 });
 
-/** Active packages for the pricing section — prices come from admin configuration. */
+/** Active pricing ranges for the public pricing section — prices come from admin configuration. */
 siteRouter.get(
-  '/packages',
+  '/pricing',
   asyncHandler(async (_req, res) => {
-    const packages = await prisma.smsPackage.findMany({ where: { isActive: true }, orderBy: [{ sortOrder: 'asc' }, { credits: 'asc' }] });
+    const tiers = await prisma.smsPricingTier.findMany({ where: { isActive: true }, orderBy: { minQuantity: 'asc' } });
     return ok(
       res,
-      packages.map((p) => ({
-        id: p.id,
-        name: p.name,
-        description: p.description,
-        credits: p.credits,
-        price: p.price.toFixed(2),
-        currency: p.currency,
-        pricePerSms: p.price.div(p.credits).toDecimalPlaces(2).toFixed(2),
-        validityDays: p.validityDays,
-        isPopular: p.isPopular,
-      })),
+      tiers.map((t) => ({ id: t.id, name: t.name, minQuantity: t.minQuantity, maxQuantity: t.maxQuantity, unitPrice: t.unitPrice.toFixed(2), currency: t.currency })),
     );
   }),
 );

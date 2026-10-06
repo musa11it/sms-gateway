@@ -10,29 +10,6 @@ import { getSetting } from '../settings/settings.service';
 import { streamInvoicePdf } from '../invoices/invoicePdf';
 import * as svc from './payment.service';
 
-export const packageRouter = Router();
-
-packageRouter.get(
-  '/',
-  asyncHandler(async (_req, res) => {
-    const packages = await prisma.smsPackage.findMany({ where: { isActive: true }, orderBy: [{ sortOrder: 'asc' }, { credits: 'asc' }] });
-    return ok(
-      res,
-      packages.map((p) => ({
-        id: p.id,
-        name: p.name,
-        description: p.description,
-        credits: p.credits,
-        price: p.price.toFixed(2),
-        currency: p.currency,
-        pricePerSms: p.price.div(p.credits).toDecimalPlaces(2).toFixed(2),
-        validityDays: p.validityDays,
-        isPopular: p.isPopular,
-      })),
-    );
-  }),
-);
-
 export const paymentRouter = Router();
 
 paymentRouter.get(
@@ -54,18 +31,19 @@ paymentRouter.post(
   requireOrgPermission('wallet.purchase', 'payments.create'),
   asyncHandler(async (req, res) => {
     const body = parse(
-      // Either a package or any quantity (priced by the active tier). Any client-sent price is ignored.
+      // Any quantity, priced by the active pricing tier. Client-sent prices are ignored; fixed packages are retired.
       z
         .object({
-          packageId: z.string().uuid().optional(),
-          quantity: z.unknown().optional(),
+          packageId: z.unknown().optional(),
+          quantity: z.unknown(),
           method: z.enum(['MOBILE_MONEY', 'CARD', 'BANK_TRANSFER']),
           payerPhone: z.string().trim().max(30).optional().nullable(),
         })
-        .refine((b) => (b.packageId === undefined) !== (b.quantity === undefined), { message: 'Choose a package or enter a quantity', path: ['quantity'] }),
+        .refine((b) => b.packageId === undefined, { message: 'SMS packages are no longer sold. Enter the quantity of SMS credits to buy.', path: ['packageId'] })
+        .refine((b) => b.quantity !== undefined, { message: 'Enter the quantity of SMS credits to buy', path: ['quantity'] }),
       req.body,
     );
-    const result = await svc.createPayment(req.org!.id, body, actorFromRequest(req), metaFromRequest(req));
+    const result = await svc.createPayment(req.org!.id, { quantity: body.quantity, method: body.method, payerPhone: body.payerPhone }, actorFromRequest(req), metaFromRequest(req));
     return created(res, result, 'Payment initiated');
   }),
 );

@@ -91,7 +91,6 @@ const adminRoutes: RouteObject[] = [
   { path: 'payments/invoices', element: guard('invoices.view', page(adminBilling, 'AdminInvoicesPage'), true) },
   { path: 'payments/invoices/:id', element: guard('invoices.view', page(adminBilling, 'AdminInvoicePage'), true) },
   { path: 'wallets', element: guard('wallet.view', page(adminBilling, 'WalletsPage'), true) },
-  { path: 'packages', element: guard('packages.view', page(adminBilling, 'PackagesPage'), true) },
   { path: 'pricing', element: guard('packages.view', page(smsCommerce, 'PricingTiersPage'), true) },
   { path: 'customer-report', element: guard('finance.view', page(smsCommerce, 'CustomerFinanceReportPage'), true) },
   { path: 'reports', element: guard('reports.view', page(admin, 'AdminReportsPage'), true) },
