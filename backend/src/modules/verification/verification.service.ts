@@ -11,6 +11,13 @@ import { env } from '../../config/env';
 
 const EDITABLE = ['DRAFT', 'MORE_INFORMATION_REQUIRED', 'REJECTED'] as const;
 
+/**
+ * Staff can record that the platform already holds a document for an organization (for example it was
+ * checked in person) instead of uploading a file. The record has no file and is approved immediately.
+ */
+export const ON_FILE_NAME = 'On file (verified by staff)';
+const isOnFile = (d: { originalName: string; mimeType: string | null }) => d.mimeType === null && d.originalName === ON_FILE_NAME;
+
 export const REQUIRED_PROFILE_FIELDS = [
   ['name', 'Organization name'],
   ['businessType', 'Business type'],
@@ -40,13 +47,14 @@ export async function getVerificationOverview(organizationId: string) {
     orderBy: { createdAt: 'desc' },
     select: { id: true, documentType: true, originalName: true, value: true, mimeType: true, sizeBytes: true, status: true, reviewNote: true, createdAt: true, reviewedAt: true },
   });
+  const items = documents.map((d) => ({ ...d, onFile: isOnFile(d) }));
   const missingFields = REQUIRED_PROFILE_FIELDS.filter(([k]) => !org[k]).map(([k, label]) => ({ field: k, label }));
   const missingDocuments = requirements
     .filter((r) => r.required && !documents.some((d) => d.documentType === r.type && ['PENDING', 'APPROVED'].includes(d.status)))
     .map((r) => ({ type: r.type, label: r.label }));
   return {
     verification: v,
-    documents,
+    documents: items,
     requirements,
     businessTypes,
     missingFields,
@@ -158,10 +166,41 @@ export async function submitDocumentValue(organizationId: string, documentType: 
   return doc;
 }
 
-export async function deleteDocument(organizationId: string, id: string, actor: Actor, meta?: RequestMeta) {
+/** Records that this required file is already held by the platform. Replaces any earlier, unapproved entry. */
+export async function markDocumentOnFile(organizationId: string, documentType: string, note: string | undefined, actor: Actor, meta?: RequestMeta) {
+  const requirement = await requirementFor(documentType);
+  if (requirement.kind !== 'FILE') throw AppError.unprocessable(`${requirement.label} is not a file item — enter its value instead`, 'INVALID_DOCUMENT_KIND', [{ field: 'documentType', message: 'Only file items can be marked as on file' }]);
+  const v = await editableVerification(organizationId);
+  const adminId = actorUserId(actor)!;
+  const cleaned = note?.trim().slice(0, 300);
+  const doc = await prisma.$transaction(async (tx) => {
+    await tx.verificationDocument.deleteMany({ where: { verificationId: v.id, documentType, status: { not: 'APPROVED' } } });
+    // A previous on-file marker is replaced too (this is how its note is edited); a real approved file is kept.
+    await tx.verificationDocument.deleteMany({ where: { verificationId: v.id, documentType, originalName: ON_FILE_NAME, mimeType: null } });
+    return tx.verificationDocument.create({
+      data: {
+        organizationId,
+        verificationId: v.id,
+        documentType,
+        originalName: ON_FILE_NAME,
+        value: cleaned ? `On file — ${cleaned}` : 'On file',
+        status: 'APPROVED',
+        reviewedById: adminId,
+        reviewedAt: new Date(),
+        uploadedById: adminId,
+      },
+      select: DOCUMENT_SELECT,
+    });
+  });
+  await audit({ actor, action: 'DOCUMENT_MARKED_ON_FILE', resource: 'verification_document', resourceId: doc.id, organizationId, metadata: { documentType, note: cleaned }, meta });
+  return doc;
+}
+
+export async function deleteDocument(organizationId: string, id: string, actor: Actor, meta?: RequestMeta, opts: { allowOnFile?: boolean } = {}) {
   const doc = await prisma.verificationDocument.findFirst({ where: { id, organizationId }, include: { verification: true } });
   if (!doc) throw AppError.notFound('Document');
-  if (!(EDITABLE as readonly string[]).includes(doc.verification.status) || doc.status === 'APPROVED') {
+  const removableMarker = !!opts.allowOnFile && isOnFile(doc);
+  if (!(EDITABLE as readonly string[]).includes(doc.verification.status) || (doc.status === 'APPROVED' && !removableMarker)) {
     throw AppError.conflict('This document can no longer be removed', 'VERIFICATION_LOCKED');
   }
   await prisma.verificationDocument.delete({ where: { id } });

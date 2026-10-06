@@ -19,7 +19,9 @@ import { businessService } from '@/services/businessService';
 import { cn, fmtDate, fmtDateTime, fmtMoney, fmtNumber, fmtRelative, titleCase } from '@/utils/format';
 import { TX_LABEL } from '../wallet/WalletPages';
 import { OrganizationApiAccess } from './IntegrationPages';
-import { CreateOrganizationModal, GiveAccessModal } from './ProvisioningModals';
+import { OrganizationWizard } from './OrganizationWizard';
+import { AddSenderModal, MemberRowActions, SenderRowActions } from './OrganizationOperations';
+import { GiveAccessModal } from './ProvisioningModals';
 
 export function AdjustWalletModal({ organizationId, organizationName, open, onClose }: { organizationId: string; organizationName: string; open: boolean; onClose: () => void }) {
   const { canAdmin } = usePermissions();
@@ -77,7 +79,7 @@ export function OrganizationsPage() {
         description="All customer accounts on the platform."
         actions={canAdmin('organizations.create') && <Button icon={<Plus className="h-4 w-4" />} onClick={() => setAdding(true)}>Add organization</Button>}
       />
-      <CreateOrganizationModal open={adding} onClose={() => setAdding(false)} />
+      <OrganizationWizard open={adding} onClose={() => setAdding(false)} />
       <Card padded={false}>
         <div className="flex flex-wrap gap-3 border-b border-slate-100 p-4">
           <Input placeholder="Search name or registration no…" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} className="max-w-xs" />
@@ -199,6 +201,8 @@ export function OrganizationDetailPage() {
   const [tab, setTab] = useState<'overview' | 'members' | 'senders' | 'ledger' | 'payments' | 'campaigns' | 'api' | 'invoices' | 'audit'>('overview');
   const [adjust, setAdjust] = useState(false);
   const [giveAccess, setGiveAccess] = useState(false);
+  const [setup, setSetup] = useState(false);
+  const [addSender, setAddSender] = useState(false);
   const [statusAction, setStatusAction] = useState<'suspend' | 'reactivate' | null>(null);
   const [ledgerPage, setLedgerPage] = useState(1);
   const ledger = useQuery({ queryKey: ['admin', 'ledger', id, ledgerPage], queryFn: () => adminService.ledger({ page: ledgerPage, limit: 15, organizationId: id }), enabled: tab === 'ledger' });
@@ -220,6 +224,7 @@ export function OrganizationDetailPage() {
         description={<>Joined {fmtDate(o.createdAt)}{o.approvedAt && <> · approved {fmtDate(o.approvedAt)}</>}</>}
         actions={
           <>
+            {['DRAFT', 'REJECTED'].includes(o.status) && canAdmin('organizations.create') && <Button icon={<FileCheck2 className="h-4 w-4" />} onClick={() => setSetup(true)}>Complete setup</Button>}
             {verification && canAdmin('verification.view') && <LinkButton to={`/admin/verification/${verification.id}`} variant="secondary" icon={<FileCheck2 className="h-4 w-4" />}>Verification</LinkButton>}
             {(canAdmin('wallet.adjust') || canAdmin('wallet.refund')) && <Button variant="secondary" icon={<Coins className="h-4 w-4" />} onClick={() => setAdjust(true)}>Adjust wallet</Button>}
             {canAdmin('organizations.suspend') && (o.status === 'SUSPENDED'
@@ -228,6 +233,7 @@ export function OrganizationDetailPage() {
           </>
         }
       />
+      <OrganizationWizard open={setup} onClose={() => setSetup(false)} organizationId={o.id} />
       {o.status === 'SUSPENDED' && <Alert tone="danger" title="Suspended">{o.statusReason} — sending, campaigns and API access are blocked; billing history remains visible to the customer.</Alert>}
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard label="Wallet balance" icon={<Coins />} value={fmtNumber(o.wallet?.balance)} />
@@ -282,15 +288,22 @@ export function OrganizationDetailPage() {
             rows={o.members}
             columns={[
               { key: 'u', header: 'User', cell: (m) => <span className="flex items-center gap-3"><Avatar name={m.user.fullName} size="sm" /><span><span className="block font-medium">{m.user.fullName}</span><span className="text-xs text-slate-500">{m.user.email}</span></span></span> },
-              { key: 'r', header: 'Role', cell: (m) => (m.isOwner ? <Badge color="violet">Owner</Badge> : <Badge>{m.role.name}</Badge>) },
+              { key: 'r', header: 'Role', cell: (m) => (m.isOwner ? <Badge color="violet">Owner</Badge> : <span className="flex items-center gap-2"><Badge>{m.role.name}</Badge>{m.status === 'DISABLED' && <Badge color="red">Access disabled</Badge>}</span>) },
               { key: 's', header: 'Account', cell: (m) => <StatusBadge status={m.user.status} /> },
               { key: 'l', header: 'Last sign-in', cell: (m) => (m.user.lastLoginAt ? fmtRelative(m.user.lastLoginAt) : 'Never') },
+              { key: 'a', header: '', className: 'text-right', cell: (m) => <MemberRowActions organizationId={o.id} member={m} disabled={m.status === 'DISABLED'} /> },
             ]}
           />
         </Card>
       )}
       {tab === 'senders' && (
         <Card padded={false}>
+          {canAdmin('senders.review') && (
+            <div className="flex justify-end border-b border-slate-100 p-3">
+              <Button size="sm" variant="secondary" icon={<Plus className="h-4 w-4" />} onClick={() => setAddSender(true)}>Add sender ID</Button>
+            </div>
+          )}
+          <AddSenderModal organizationId={o.id} open={addSender} onClose={() => setAddSender(false)} />
           <DataTable
             rows={o.senders}
             columns={[
@@ -298,6 +311,7 @@ export function OrganizationDetailPage() {
               { key: 's', header: 'Status', cell: (s) => <StatusBadge status={s.status} /> },
               { key: 'p', header: 'Purpose', cell: (s) => <span className="block max-w-md truncate text-slate-600">{s.purpose}</span> },
               { key: 'd', header: 'Requested', cell: (s) => fmtDate(s.createdAt) },
+              { key: 'a', header: '', className: 'text-right', cell: (s) => <SenderRowActions organizationId={o.id} sender={s} /> },
             ]}
             empty={<EmptyState icon={<ShieldCheck />} title="No sender IDs" className="py-8" />}
           />
@@ -306,6 +320,11 @@ export function OrganizationDetailPage() {
       )}
       {tab === 'ledger' && (
         <Card padded={false}>
+          {(canAdmin('wallet.adjust') || canAdmin('wallet.refund')) && (
+            <div className="flex justify-end border-b border-slate-100 p-3">
+              <Button size="sm" variant="secondary" icon={<Coins className="h-4 w-4" />} onClick={() => setAdjust(true)}>Adjust wallet</Button>
+            </div>
+          )}
           <DataTable
             rows={ledger.data?.data}
             loading={ledger.isLoading}

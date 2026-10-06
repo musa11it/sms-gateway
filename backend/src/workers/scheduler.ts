@@ -28,6 +28,15 @@ const tasks: Task[] = [
   { name: 'reconcile-payments', everyMs: 30_000, run: reconcilePendingPayments },
   { name: 'expire-credit-lots', everyMs: 3_600_000, run: expireCreditLots },
   {
+    // Idempotency keys only need to outlive a client's retry window; request logs are kept for 90 days.
+    name: 'purge-credential-records',
+    everyMs: 3_600_000,
+    run: async () => {
+      await prisma.idempotencyRecord.deleteMany({ where: { createdAt: { lt: new Date(Date.now() - 48 * 3_600_000) } } });
+      await prisma.integrationRequestLog.deleteMany({ where: { createdAt: { lt: new Date(Date.now() - 90 * 86_400_000) } } });
+    },
+  },
+  {
     name: 'expire-invitations',
     everyMs: 3_600_000,
     run: () => prisma.organizationInvitation.updateMany({ where: { status: 'PENDING', expiresAt: { lt: new Date() } }, data: { status: 'EXPIRED' } }),

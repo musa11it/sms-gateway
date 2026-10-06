@@ -20,7 +20,7 @@ import type {
   VerificationStatus,
   WalletTransaction,
 } from '@/api/types';
-import type { VerificationItem, VerificationRequirement } from '@/services/organizationService';
+import type { VerificationItem, VerificationOverview, VerificationRequirement } from '@/services/organizationService';
 
 export interface AdminUser {
   id: string;
@@ -36,13 +36,23 @@ export interface AdminUser {
   memberships: { isOwner: boolean; organization: { id: string; name: string; status: string }; role: { name: string } }[];
 }
 
-export interface CreateOrganizationBody {
-  name: string;
+export interface OrganizationProfile {
   businessType?: string;
   country?: string;
   city?: string;
   address?: string;
   registrationNumber?: string;
+  taxId?: string;
+  website?: string;
+  contactPersonName?: string;
+  contactPersonPhone?: string;
+  contactPersonEmail?: string;
+  smsPurpose?: string;
+  expectedMonthlyVolume?: number;
+}
+
+export interface CreateOrganizationBody extends OrganizationProfile {
+  name: string;
   owner: { fullName: string; email: string; phone?: string };
   activate: boolean;
   apiAccess?: { enabled: boolean; allowedScopes: string[] | null };
@@ -74,6 +84,8 @@ export interface IntegrationClient {
   lastUsedAt: string | null;
   lastUsedIp: string | null;
   usageCount: number;
+  rotatedAt?: string | null;
+  previousKeyValidUntil?: string | null;
   status: 'ACTIVE' | 'DISABLED' | 'EXPIRED' | 'REVOKED';
   createdAt: string;
 }
@@ -92,7 +104,7 @@ export interface AdminOrgDetail extends Organization {
   apiAccessEnabled: boolean;
   apiAllowedScopes: string[] | null;
   wallet: { id: string; balance: number; lowBalanceThreshold: number } | null;
-  members: { id: string; isOwner: boolean; user: { id: string; fullName: string; email: string; status: string; lastLoginAt: string | null }; role: { name: string } }[];
+  members: { id: string; isOwner: boolean; status: 'ACTIVE' | 'DISABLED'; user: { id: string; fullName: string; email: string; status: string; lastLoginAt: string | null }; role: { name: string } }[];
   senders: SenderId[];
   verifications: { id: string; status: VerificationStatus; documents: { id: string; documentType: string; originalName: string; status: string; createdAt: string }[] }[];
   _count: { contacts: number; campaigns: number; apiKeys: number; webhooks: number };
@@ -178,6 +190,22 @@ export const adminService = {
   organizations: (params: P) => getPage<AdminOrgRow>('/admin/organizations', params),
   organization: (id: string) => get<AdminOrgDetail>(`/admin/organizations/${id}`),
   createOrganization: (body: CreateOrganizationBody) => post<{ organization: { id: string; name: string }; owner: { email: string; created: boolean; temporaryPassword: string | null } }>('/admin/organizations', body),
+  updateOrganization: (id: string, body: OrganizationProfile & { name?: string }) => patch(`/admin/organizations/${id}`, body),
+  orgVerification: (id: string) => get<VerificationOverview>(`/admin/organizations/${id}/verification`),
+  uploadOrgDocument: async (id: string, documentType: string, file: File) => {
+    const fd = new FormData();
+    fd.append('documentType', documentType);
+    fd.append('file', file);
+    return (await http.post(`/admin/organizations/${id}/documents`, fd)).data.data;
+  },
+  createOrgSender: (id: string, body: { name: string; purpose: string; sampleMessage?: string; approveNow: boolean; reason: string }) => post<SenderId>(`/admin/organizations/${id}/senders`, body),
+  withdrawOrgSender: (id: string, senderId: string, reason: string) => post(`/admin/organizations/${id}/senders/${senderId}/withdraw`, { reason }),
+  updateOrgMember: (id: string, memberId: string, body: { roleId?: string; status?: 'ACTIVE' | 'DISABLED'; reason: string }) => patch(`/admin/organizations/${id}/members/${memberId}`, body),
+  removeOrgMember: (id: string, memberId: string, reason: string) => post(`/admin/organizations/${id}/members/${memberId}/remove`, { reason }),
+  markOrgDocumentOnFile: (id: string, documentType: string, note?: string) => post(`/admin/organizations/${id}/documents/on-file`, { documentType, note }),
+  submitOrgDocumentValue: (id: string, documentType: string, value: string) => post(`/admin/organizations/${id}/documents/value`, { documentType, value }),
+  deleteOrgDocument: (id: string, documentId: string) => http.delete(`/admin/organizations/${id}/documents/${documentId}`),
+  finalizeOrganization: (id: string, body: { outcome: 'SAVE_DRAFT' | 'SUBMIT' | 'APPROVE'; note?: string }) => post<VerificationOverview>(`/admin/organizations/${id}/finalize`, body),
   organizationRoles: (id: string) => get<{ id: string; name: string; description: string | null }[]>(`/admin/organizations/${id}/roles`),
   grantOrganizationAccess: (id: string, body: { person: { fullName: string; email: string; phone?: string }; roleId: string }) => post<{ user: { email: string; created: boolean; temporaryPassword: string | null } }>(`/admin/organizations/${id}/members`, body),
   setOrganizationStatus: (id: string, action: 'suspend' | 'reactivate', reason?: string) => post(`/admin/organizations/${id}/status`, { action, reason }),
@@ -247,7 +275,9 @@ export const adminService = {
   apiScopes: () => get<ApiScope[]>('/admin/integrations/scopes'),
   integrations: () => get<IntegrationClient[]>('/admin/integrations'),
   createIntegration: (body: { name: string; scopes: string[]; allowedIps: string[]; expiresAt?: string | null }) => post<{ integration: IntegrationClient; secret: string }>('/admin/integrations', body),
+  updateIntegration: (id: string, body: { name?: string; scopes?: string[]; allowedIps?: string[]; expiresAt?: string | null }) => patch<IntegrationClient>(`/admin/integrations/${id}`, body),
   setIntegrationEnabled: (id: string, enabled: boolean) => post(`/admin/integrations/${id}/${enabled ? 'enable' : 'disable'}`),
   revokeIntegration: (id: string) => post(`/admin/integrations/${id}/revoke`),
+  rotateIntegration: (id: string, overlapMinutes: number) => post<{ integration: IntegrationClient; secret: string }>(`/admin/integrations/${id}/rotate`, { overlapMinutes }),
   integrationActivity: (id: string) => get<IntegrationActivity[]>(`/admin/integrations/${id}/activity`),
 };

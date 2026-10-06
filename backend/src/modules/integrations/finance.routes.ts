@@ -3,7 +3,8 @@ import type { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from '../../config/prisma';
 import { authenticateIntegrationKey, requireIntegrationScope } from '../../middlewares/integrationAuth';
-import { integrationLimiter } from '../../middlewares/rateLimit';
+import { idempotency } from '../../middlewares/idempotency';
+import { credentialIpLimiter, integrationLimiter } from '../../middlewares/rateLimit';
 import { actorFromRequest, metaFromRequest, type Actor } from '../../types/actor';
 import { AppError } from '../../utils/errors';
 import { asyncHandler, ok, paginated, paginationSchema, parse, toSkipTake, uuidParam } from '../../utils/http';
@@ -19,7 +20,8 @@ import * as verification from '../verification/verification.service';
  * Every call is audited against the credential that made it.
  */
 export const financeIntegrationRouter = Router();
-financeIntegrationRouter.use(authenticateIntegrationKey, integrationLimiter);
+// IP limiter → authenticate → per-credential limiter → idempotent replay of retried writes.
+financeIntegrationRouter.use(credentialIpLimiter, authenticateIntegrationKey, integrationLimiter, idempotency);
 
 const OPEN = ['SUBMITTED', 'UNDER_REVIEW'] as const;
 const DOCUMENT_FIELDS = { id: true, documentType: true, originalName: true, value: true, mimeType: true, sizeBytes: true, status: true, reviewNote: true, createdAt: true, reviewedAt: true } as const;

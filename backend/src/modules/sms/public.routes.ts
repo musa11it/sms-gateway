@@ -2,6 +2,7 @@ import { Router, type RequestHandler } from 'express';
 import { z } from 'zod';
 import { logger } from '../../config/logger';
 import { prisma } from '../../config/prisma';
+import { idempotency } from '../../middlewares/idempotency';
 import { publicApiLimiter } from '../../middlewares/rateLimit';
 import { actorFromRequest, metaFromRequest } from '../../types/actor';
 import { AppError } from '../../utils/errors';
@@ -121,6 +122,7 @@ publicRouter.post(
 publicRouter.post(
   '/sms/send',
   requireScope('sms.send'),
+  idempotency,
   asyncHandler(async (req, res) => {
     const body = parse(sendSchema, req.body);
     const idem = req.get('idempotency-key');

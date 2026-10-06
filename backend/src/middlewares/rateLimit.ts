@@ -1,6 +1,6 @@
 import rateLimit, { type Options } from 'express-rate-limit';
 import type { Request } from 'express';
-import { isTest } from '../config/env';
+import { env, isTest } from '../config/env';
 import { getSetting, type SettingKey } from '../modules/settings/settings.service';
 
 /**
@@ -67,10 +67,18 @@ export function publicApiLimiter(fixedLimit?: number, multiplier = 1) {
   });
 }
 
-/** External integrations (e.g. the finance system): limited per credential, not per IP. */
+/** Before authentication: per source IP, so guessing API keys from one address is throttled. */
+export const credentialIpLimiter = rateLimit({
+  ...base,
+  windowMs: 60_000,
+  limit: env.API_IP_RATE_LIMIT,
+  keyGenerator: (req) => `ip:${req.ip}`,
+});
+
+/** After authentication: per platform credential, so systems sharing an IP do not starve each other. */
 export const integrationLimiter = rateLimit({
   ...base,
   windowMs: 60_000,
-  limit: 120,
+  limit: env.API_RATE_LIMIT,
   keyGenerator: (req) => (req.integration ? `integration:${req.integration.id}` : `ip:${req.ip}`),
 });

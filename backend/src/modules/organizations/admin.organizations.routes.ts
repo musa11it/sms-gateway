@@ -10,7 +10,18 @@ import { ORGANIZATION_SCOPES } from '../integrations/scopes';
 import { createOrganizationByAdmin, grantOrganizationAccess } from './admin.provisioning.service';
 import { audit } from '../audit-logs/audit.service';
 import { notifyOrganization } from '../notifications/notification.service';
-import { syncVerificationSuspension } from '../verification/verification.service';
+import { documentUpload } from '../../middlewares/upload';
+import {
+  decideVerification,
+  deleteDocument,
+  markDocumentOnFile,
+  getCurrentVerification,
+  getVerificationOverview,
+  submitDocumentValue,
+  submitVerification,
+  syncVerificationSuspension,
+  uploadDocument,
+} from '../verification/verification.service';
 
 export const adminOrganizationsRouter = Router();
 
@@ -71,6 +82,7 @@ adminOrganizationsRouter.post(
         contactPersonPhone: text(30),
         contactPersonEmail: text(255),
         smsPurpose: text(1000),
+        expectedMonthlyVolume: z.coerce.number().int().min(0).max(100_000_000).optional(),
         owner: person,
         activate: z.boolean().default(false),
         apiAccess: z.object({ enabled: z.boolean(), allowedScopes: z.array(z.enum(ORGANIZATION_SCOPES)).nullable() }).optional(),
@@ -173,19 +185,106 @@ adminOrganizationsRouter.patch(
   requirePlatformPermission('organizations.update'),
   asyncHandler(async (req, res) => {
     const { id } = parse(uuidParam, req.params);
+    const nullableText = (max: number) => z.string().trim().max(max).nullable().optional();
     const body = parse(
       z.object({
         name: z.string().trim().min(2).max(160).optional(),
-        registrationNumber: z.string().trim().max(80).nullable().optional(),
-        taxId: z.string().trim().max(80).nullable().optional(),
-        businessType: z.string().trim().max(80).nullable().optional(),
-        country: z.string().trim().max(80).nullable().optional(),
+        registrationNumber: nullableText(80),
+        taxId: nullableText(80),
+        businessType: nullableText(80),
+        country: nullableText(80),
+        city: nullableText(80),
+        address: nullableText(500),
+        website: nullableText(300),
+        contactPersonName: nullableText(120),
+        contactPersonPhone: nullableText(30),
+        contactPersonEmail: nullableText(255),
+        smsPurpose: nullableText(1000),
+        expectedMonthlyVolume: z.coerce.number().int().min(0).max(100_000_000).nullable().optional(),
       }),
       req.body,
     );
     const updated = await prisma.organization.update({ where: { id }, data: body });
     await audit({ actor: actorFromRequest(req), action: 'ORGANIZATION_UPDATED', resource: 'organization', resourceId: id, organizationId: id, metadata: { fields: Object.keys(body), byStaff: true }, meta: metaFromRequest(req) });
     return ok(res, updated, 'Organization updated');
+  }),
+);
+
+// ── Completing an organization's onboarding on its behalf ────────────────────
+// The same dynamic requirements and rules a customer sees, performed by platform staff.
+
+adminOrganizationsRouter.get(
+  '/:id/verification',
+  requirePlatformPermission('organizations.view'),
+  asyncHandler(async (req, res) => {
+    const { id } = parse(uuidParam, req.params);
+    return ok(res, await getVerificationOverview(id));
+  }),
+);
+
+adminOrganizationsRouter.post(
+  '/:id/documents',
+  requirePlatformPermission('organizations.create'),
+  documentUpload.single('file'),
+  asyncHandler(async (req, res) => {
+    const { id } = parse(uuidParam, req.params);
+    if (!req.file) throw AppError.badRequest('Attach the document in the "file" field', 'FILE_REQUIRED');
+    const { documentType } = parse(z.object({ documentType: z.string().trim().min(1).max(64) }), req.body);
+    return created(res, await uploadDocument(id, req.file, documentType, actorFromRequest(req), metaFromRequest(req)), 'Document uploaded');
+  }),
+);
+
+adminOrganizationsRouter.post(
+  '/:id/documents/value',
+  requirePlatformPermission('organizations.create'),
+  asyncHandler(async (req, res) => {
+    const { id } = parse(uuidParam, req.params);
+    const body = parse(z.object({ documentType: z.string().trim().min(1).max(64), value: z.string().trim().min(1).max(2000) }), req.body);
+    return created(res, await submitDocumentValue(id, body.documentType, body.value, actorFromRequest(req), metaFromRequest(req)), 'Saved');
+  }),
+);
+
+adminOrganizationsRouter.post(
+  '/:id/documents/on-file',
+  requirePlatformPermission('organizations.create'),
+  asyncHandler(async (req, res) => {
+    const { id } = parse(uuidParam, req.params);
+    const body = parse(z.object({ documentType: z.string().trim().min(1).max(64), note: z.string().trim().max(300).optional() }), req.body);
+    return created(res, await markDocumentOnFile(id, body.documentType, body.note, actorFromRequest(req), metaFromRequest(req)), 'Marked as already on file');
+  }),
+);
+
+adminOrganizationsRouter.delete(
+  '/:id/documents/:documentId',
+  requirePlatformPermission('organizations.create'),
+  asyncHandler(async (req, res) => {
+    const { id, documentId } = parse(z.object({ id: z.string().uuid(), documentId: z.string().uuid() }), req.params);
+    await deleteDocument(id, documentId, actorFromRequest(req), metaFromRequest(req), { allowOnFile: true });
+    return ok(res, null, 'Removed');
+  }),
+);
+
+/**
+ * Last step of the wizard. Submitting and approving go through the same services a customer
+ * submission and a staff decision use, so history, notifications and audit entries are identical.
+ */
+adminOrganizationsRouter.post(
+  '/:id/finalize',
+  requirePlatformPermission('organizations.create'),
+  asyncHandler(async (req, res) => {
+    const { id } = parse(uuidParam, req.params);
+    const body = parse(z.object({ outcome: z.enum(['SAVE_DRAFT', 'SUBMIT', 'APPROVE']), note: z.string().trim().max(1000).optional() }), req.body);
+    if (body.outcome === 'APPROVE' && !req.user!.platformPermissions.has('verification.approve')) throw AppError.forbidden('Approving needs the verification.approve permission', 'PERMISSION_DENIED');
+    const actor = actorFromRequest(req);
+    const meta = metaFromRequest(req);
+    if (body.outcome !== 'SAVE_DRAFT') {
+      await submitVerification(id, actor, meta); // refuses with a field list while required details or documents are missing
+      if (body.outcome === 'APPROVE') {
+        const v = await getCurrentVerification(id);
+        await decideVerification(v.id, 'APPROVE', body.note || 'Completed and approved by a platform administrator', actor, meta);
+      }
+    }
+    return ok(res, await getVerificationOverview(id), body.outcome === 'APPROVE' ? 'Organization approved' : body.outcome === 'SUBMIT' ? 'Submitted for review' : 'Saved as draft');
   }),
 );
 

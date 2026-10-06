@@ -78,7 +78,9 @@ export async function createApiKey(
   if (!org.apiAccessEnabled) throw AppError.forbidden('API access is disabled for your organization. Contact support.', 'API_ACCESS_DISABLED');
   const allowed = allowedScopesFor(org);
   const denied = (input.scopes ?? []).filter((sc) => !allowed.includes(sc));
-  if (denied.length) throw AppError.forbidden(`Your organization is not permitted to use: ${denied.join(', ')}`, 'SCOPE_NOT_PERMITTED');
+  if (denied.length) {
+    throw AppError.unprocessable(`Your organization is not permitted to use: ${denied.join(', ')}`, 'SCOPE_NOT_PERMITTED', [{ field: 'scopes', message: `Not permitted: ${denied.join(', ')}` }]);
+  }
   for (const ip of input.allowedIps ?? []) {
     if (!net.isIP(ip)) throw AppError.unprocessable(`"${ip}" is not a valid IP address`, 'INVALID_IP', [{ field: 'allowedIps', message: 'Invalid IP address' }]);
   }

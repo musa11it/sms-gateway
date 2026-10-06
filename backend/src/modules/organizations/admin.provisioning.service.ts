@@ -26,6 +26,7 @@ async function findOrCreateUser(tx: Tx, person: PersonInput, status: 'ACTIVE' | 
   const email = person.email.toLowerCase().trim();
   const existing = await tx.user.findUnique({ where: { email } });
   if (existing) {
+    if (existing.isServiceAccount) throw AppError.conflict('This email belongs to a service account', 'EMAIL_RESERVED');
     if (existing.status === 'DEACTIVATED') throw AppError.conflict('This account is deactivated', 'USER_DEACTIVATED');
     return { user: existing, created: false, temporaryPassword: null };
   }
@@ -49,7 +50,7 @@ async function findOrCreateUser(tx: Tx, person: PersonInput, status: 'ACTIVE' | 
 
 export interface CreateOrganizationInput {
   name: string;
-  profile: Partial<Record<'businessType' | 'country' | 'city' | 'address' | 'registrationNumber' | 'taxId' | 'website' | 'contactPersonName' | 'contactPersonPhone' | 'contactPersonEmail' | 'smsPurpose', string>>;
+  profile: Partial<Record<'businessType' | 'country' | 'city' | 'address' | 'registrationNumber' | 'taxId' | 'website' | 'contactPersonName' | 'contactPersonPhone' | 'contactPersonEmail' | 'smsPurpose', string>> & { expectedMonthlyVolume?: number };
   owner: PersonInput;
   /** Skip verification: the organization (and its owner) become ACTIVE immediately. */
   activate: boolean;
@@ -64,7 +65,11 @@ export async function createOrganizationByAdmin(input: CreateOrganizationInput, 
     const org = await tx.organization.update({
       where: { id: base.id },
       data: {
-        ...input.profile,
+        // The owner is the contact person unless the caller says otherwise, so nothing is asked twice.
+        contactPersonName: input.owner.fullName.trim(),
+        contactPersonPhone: input.owner.phone?.trim() || undefined,
+        contactPersonEmail: input.owner.email.toLowerCase().trim(),
+        ...Object.fromEntries(Object.entries(input.profile).filter(([, v]) => v !== undefined)),
         ...(input.apiAccess ? { apiAccessEnabled: input.apiAccess.enabled, apiAllowedScopes: input.apiAccess.allowedScopes ?? Prisma.DbNull } : {}),
         ...(input.activate ? { status: 'ACTIVE', approvedAt: new Date() } : {}),
       },
