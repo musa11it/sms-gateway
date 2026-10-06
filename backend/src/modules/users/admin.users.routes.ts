@@ -40,6 +40,7 @@ adminUsersRouter.get(
       req.query,
     );
     const where: Prisma.UserWhereInput = {
+      isServiceAccount: false, // API credentials' service accounts are managed under Integrations
       ...(q.status ? { status: q.status } : {}),
       ...(q.type === 'staff' ? { roles: { some: {} } } : q.type === 'customer' ? { roles: { none: {} } } : {}),
       ...(q.search ? { OR: [{ email: { contains: q.search } }, { fullName: { contains: q.search } }] } : {}),

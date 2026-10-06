@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { isProduction } from '../config/env';
 import { prisma } from '../config/prisma';
 import { authenticate, requireVerifiedEmail } from '../middlewares/auth';
+import { idempotency } from '../middlewares/idempotency';
 import { authenticateStaff } from '../middlewares/integrationAuth';
 import { orgContext } from '../middlewares/organization';
 import { adminLimiter } from '../middlewares/rateLimit';
@@ -33,6 +34,7 @@ import { adminProvidersRouter } from '../modules/providers/admin.providers.route
 import { adminRoutingRouter } from '../modules/providers/admin.routing.routes';
 import { adminDeveloperRouter } from '../modules/api-keys/admin.developer.routes';
 import { adminInquiriesRouter, siteRouter } from '../modules/site/site.routes';
+import { adminOrganizationOperationsRouter } from '../modules/organizations/admin.operations.routes';
 import { adminIntegrationsRouter } from '../modules/integrations/admin.integrations.routes';
 import { financeIntegrationRouter } from '../modules/integrations/finance.routes';
 import { adminVerificationRouter } from '../modules/verification/admin.verification.routes';
@@ -92,29 +94,12 @@ apiRouter.use('/notifications', authenticate, notificationRouter);
 
 // ── Platform admin API: staff only, permission-checked per route ────────
 const admin = Router();
-admin.use(authenticate, requireStaff, adminLimiter);
-admin.use('/reports', adminReportsRouter);
-admin.use('/users', adminUsersRouter);
-admin.use('/organizations', adminOrganizationsRouter);
-admin.use('/verifications', adminVerificationRouter);
-admin.use('/senders', adminSendersRouter);
-admin.use('/sms', adminSmsRouter);
-admin.use('/billing', adminBillingRouter);
-admin.use('/roles', adminRolesRouter);
-admin.use('/audit-logs', adminAuditRouter);
-admin.use('/settings', adminSettingsRouter);
-admin.use('/api-keys', adminApiKeysRouter);
-admin.use('/finance', adminFinanceRouter);
-admin.use('/providers', adminProvidersRouter);
-admin.use('/routing', adminRoutingRouter);
-admin.use('/pricing', adminPricingRouter);
-admin.use('/developer', adminDeveloperRouter);
-admin.use('/inquiries', adminInquiriesRouter);
-admin.use(authenticateStaff, requireStaff, adminLimiter);
+admin.use(authenticateStaff, requireStaff, adminLimiter, idempotency);
 export const adminMounts: [string, Router][] = [
   ['/reports', adminReportsRouter],
   ['/users', adminUsersRouter],
   ['/organizations', adminOrganizationsRouter],
+  ['/organizations', adminOrganizationOperationsRouter], // staff acting on an organization's behalf (reason required)
   ['/verifications', adminVerificationRouter],
   ['/senders', adminSendersRouter],
   ['/sms', adminSmsRouter],
@@ -125,9 +110,12 @@ export const adminMounts: [string, Router][] = [
   ['/api-keys', adminApiKeysRouter],
   ['/finance', adminFinanceRouter],
   ['/providers', adminProvidersRouter],
+  ['/routing', adminRoutingRouter],
+  ['/pricing', adminPricingRouter],
   ['/developer', adminDeveloperRouter],
   ['/inquiries', adminInquiriesRouter],
   ['/integrations', adminIntegrationsRouter],
+  ['/api-credentials', adminIntegrationsRouter], // alias of /integrations
 ];
 for (const [path, router] of adminMounts) admin.use(path, router);
 apiRouter.use('/admin', admin);

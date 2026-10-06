@@ -271,7 +271,7 @@ const FORMAT_MIME = { PDF: 'application/pdf', PNG: 'image/png', JPEG: 'image/jpe
 const FORMAT_LABEL = { PDF: 'PDF', PNG: 'PNG', JPEG: 'JPEG' } as const;
 
 /** Link / text / date / choice answer for one verification item. */
-function ValueInput({ requirement, current, onSave, saving }: { requirement: VerificationRequirement; current?: string | null; onSave: (value: string) => void; saving: boolean }) {
+export function ValueInput({ requirement, current, onSave, saving }: { requirement: VerificationRequirement; current?: string | null; onSave: (value: string) => void; saving: boolean }) {
   const [value, setValue] = useState(current ?? '');
   useEffect(() => setValue(current ?? ''), [current]);
   const common = { value, onChange: (e: { target: { value: string } }) => setValue(e.target.value), 'aria-label': requirement.label };

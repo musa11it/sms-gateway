@@ -16,7 +16,7 @@ import { base62, hashSecret } from '../api-keys/apiKey.service';
  * Format: sgw_int_<prefix 12 hex>_<secret 40 base62>. Only an HMAC of the secret is stored.
  */
 const KEY_RE = /^sgw_int_([0-9a-f]{12})_([A-Za-z0-9]{40})$/;
-import { PLATFORM_SCOPES, isHighRiskScope } from './scopes';
+import { PLATFORM_SCOPES, requiresControls } from './scopes';
 
 export const INTEGRATION_SCOPES = PLATFORM_SCOPES;
 export type IntegrationScope = string;
@@ -35,6 +35,8 @@ export function serializeIntegration(k: Row) {
     lastUsedAt: k.lastUsedAt,
     lastUsedIp: k.lastUsedIp,
     usageCount: k.usageCount,
+    rotatedAt: k.rotatedAt,
+    previousKeyValidUntil: k.previousValidUntil && k.previousValidUntil > new Date() ? k.previousValidUntil : null,
     revokedAt: k.revokedAt,
     status: k.revokedAt ? 'REVOKED' : k.expiresAt && k.expiresAt < new Date() ? 'EXPIRED' : !k.isEnabled ? 'DISABLED' : 'ACTIVE',
     createdAt: k.createdAt,
@@ -56,22 +58,26 @@ async function createServiceUser(tx: Tx, name: string, prefix: string) {
       passwordHash: await hashPassword(crypto.randomBytes(48).toString('base64url')),
       status: 'ACTIVE',
       emailVerifiedAt: new Date(),
+      isServiceAccount: true,
     },
   });
 }
 
-export async function createIntegration(
-  input: { name: string; scopes: IntegrationScope[]; allowedIps: string[]; expiresAt?: Date | null },
-  actor: Actor,
-  meta?: RequestMeta,
-) {
-  for (const ip of input.allowedIps) {
+/** IP list, expiry and the extra controls that high-risk scopes demand. Used on create and update. */
+/** An explicit, deliberate "any IP address" choice (as opposed to leaving the list empty). */
+export const ANY_IP = '*';
+
+function assertValidLimits(input: { scopes: string[]; allowedIps: string[]; expiresAt?: Date | null }) {
+  if (input.allowedIps.includes(ANY_IP) && input.allowedIps.length > 1) {
+    throw AppError.unprocessable('Use either "any IP address" or a list of addresses, not both', 'INVALID_IP', [{ field: 'allowedIps', message: 'Choose one' }]);
+  }
+  for (const ip of input.allowedIps.filter((i) => i !== ANY_IP)) {
     if (!net.isIP(ip)) throw AppError.unprocessable(`"${ip}" is not a valid IP address`, 'INVALID_IP', [{ field: 'allowedIps', message: 'Invalid IP address' }]);
   }
   if (isProduction && input.allowedIps.length === 0) {
     throw AppError.unprocessable('Restrict this credential to at least one IP address', 'IP_ALLOWLIST_REQUIRED', [{ field: 'allowedIps', message: 'Required in production' }]);
   }
-  const risky = input.scopes.filter(isHighRiskScope);
+  const risky = input.scopes.filter(requiresControls);
   if (risky.length && (input.allowedIps.length === 0 || !input.expiresAt)) {
     throw AppError.unprocessable(
       `These permissions move money or change access (${risky.join(', ')}). Restrict the credential to specific IP addresses and set an expiry date.`,
@@ -80,6 +86,14 @@ export async function createIntegration(
     );
   }
   if (input.expiresAt && input.expiresAt <= new Date()) throw AppError.unprocessable('Expiry must be in the future', 'INVALID_EXPIRY', [{ field: 'expiresAt', message: 'Must be in the future' }]);
+}
+
+export async function createIntegration(
+  input: { name: string; scopes: IntegrationScope[]; allowedIps: string[]; expiresAt?: Date | null },
+  actor: Actor,
+  meta?: RequestMeta,
+) {
+  assertValidLimits(input);
 
   const prefix = crypto.randomBytes(6).toString('hex');
   const secret = base62(40);
@@ -101,6 +115,58 @@ export async function createIntegration(
   });
   await audit({ actor, action: 'INTEGRATION_CREATED', resource: 'integration_client', resourceId: row.id, metadata: { name: row.name, prefix, scopes: input.scopes, allowedIps: input.allowedIps }, meta });
   return { integration: serializeIntegration(row), secret: `sgw_int_${prefix}_${secret}` };
+}
+
+export async function updateIntegration(
+  id: string,
+  patch: { name?: string; scopes?: string[]; allowedIps?: string[]; expiresAt?: Date | null },
+  actor: Actor,
+  meta?: RequestMeta,
+) {
+  const row = await prisma.integrationClient.findUnique({ where: { id } });
+  if (!row) throw AppError.notFound('Integration');
+  if (row.revokedAt) throw AppError.conflict('Revoked credentials cannot be changed', 'ALREADY_REVOKED');
+  const next = {
+    name: patch.name ?? row.name,
+    scopes: patch.scopes ?? stringList(row.scopes),
+    allowedIps: patch.allowedIps ?? stringList(row.allowedIps),
+    expiresAt: patch.expiresAt === undefined ? row.expiresAt : patch.expiresAt,
+  };
+  assertValidLimits(next);
+  const updated = await prisma.integrationClient.update({ where: { id }, data: next });
+  await audit({
+    actor,
+    action: 'INTEGRATION_UPDATED',
+    resource: 'integration_client',
+    resourceId: id,
+    metadata: { name: updated.name, before: { scopes: stringList(row.scopes), allowedIps: stringList(row.allowedIps), expiresAt: row.expiresAt }, after: { scopes: next.scopes, allowedIps: next.allowedIps, expiresAt: next.expiresAt } },
+    meta,
+  });
+  return serializeIntegration(updated);
+}
+
+/**
+ * Issues a new secret for the same credential. With `overlapMinutes` the previous secret keeps
+ * working for that long, so the external system can deploy the new key without downtime.
+ */
+export async function rotateIntegration(id: string, input: { overlapMinutes: number }, actor: Actor, meta?: RequestMeta) {
+  const row = await prisma.integrationClient.findUnique({ where: { id } });
+  if (!row) throw AppError.notFound('Integration');
+  if (row.revokedAt) throw AppError.conflict('Revoked credentials cannot be rotated', 'ALREADY_REVOKED');
+  const secret = base62(40);
+  const overlap = input.overlapMinutes > 0;
+  const updated = await prisma.integrationClient.update({
+    where: { id },
+    data: {
+      keyHash: hashSecret(secret),
+      lastFour: secret.slice(-4),
+      previousKeyHash: overlap ? row.keyHash : null,
+      previousValidUntil: overlap ? new Date(Date.now() + input.overlapMinutes * 60_000) : null,
+      rotatedAt: new Date(),
+    },
+  });
+  await audit({ actor, action: 'INTEGRATION_ROTATED', resource: 'integration_client', resourceId: id, metadata: { name: row.name, overlapMinutes: input.overlapMinutes }, meta });
+  return { integration: serializeIntegration(updated), secret: `sgw_int_${row.prefix}_${secret}` };
 }
 
 export async function setIntegrationEnabled(id: string, enabled: boolean, actor: Actor, meta?: RequestMeta) {
@@ -138,15 +204,17 @@ export async function authenticateIntegration(raw: string | undefined, ip: strin
   const [, prefix, secret] = match;
   const row = await prisma.integrationClient.findUnique({ where: { prefix } });
   // Compare even when the key is missing so timing does not reveal valid prefixes.
-  const valid = safeEqual(hashSecret(secret), row?.keyHash ?? '0'.repeat(64));
-  if (!row || !valid) throw AppError.unauthorized('Invalid integration key', 'INVALID_INTEGRATION_KEY');
+  const supplied = hashSecret(secret);
+  const matchesCurrent = safeEqual(supplied, row?.keyHash ?? '0'.repeat(64));
+  const matchesPrevious = safeEqual(supplied, row?.previousKeyHash ?? '0'.repeat(64)) && !!row?.previousValidUntil && row.previousValidUntil > new Date();
+  if (!row || !(matchesCurrent || matchesPrevious)) throw AppError.unauthorized('Invalid integration key', 'INVALID_INTEGRATION_KEY');
   if (row.revokedAt) throw AppError.unauthorized('This credential has been revoked', 'INTEGRATION_REVOKED');
   if (row.expiresAt && row.expiresAt < new Date()) throw AppError.unauthorized('This credential has expired', 'INTEGRATION_EXPIRED');
   if (!row.isEnabled) throw AppError.forbidden('This credential is disabled', 'INTEGRATION_DISABLED');
   const allowedIps = stringList(row.allowedIps);
-  if (allowedIps.length && (!ip || !allowedIps.includes(ip.replace(/^::ffff:/, '')))) {
+  if (allowedIps.length && !allowedIps.includes(ANY_IP) && (!ip || !allowedIps.includes(ip.replace(/^::ffff:/, '')))) {
     throw AppError.forbidden('Requests from this IP address are not allowed for this credential', 'IP_NOT_ALLOWED');
   }
   await prisma.integrationClient.update({ where: { id: row.id }, data: { lastUsedAt: new Date(), lastUsedIp: ip, usageCount: { increment: 1 } } });
-  return { id: row.id, name: row.name, prefix: row.prefix, scopes: stringList(row.scopes), userId: row.userId };
+  return { id: row.id, name: row.name, prefix: row.prefix, scopes: stringList(row.scopes), userId: row.userId, ipAllowListed: allowedIps.length > 0 && !allowedIps.includes(ANY_IP) };
 }

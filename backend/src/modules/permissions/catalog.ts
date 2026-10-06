@@ -349,6 +349,10 @@ export const GRANT_MIGRATIONS: { version: number; grants: Record<string, string[
       ADMIN: ['organizations.create'],
     },
   },
+  {
+    version: 4,
+    grants: { ADMIN: ['organizations.create'] },
+  },
 ];
 
 export function resolveRolePermissions(role: RoleDef): string[] {

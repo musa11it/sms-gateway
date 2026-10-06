@@ -200,6 +200,8 @@ model User {
   lastLoginAt       DateTime?
   statusReason      String?    @db.Text
   passwordChangedAt DateTime?
+  // Non-interactive identity used by an API credential: cannot sign in, reset a password or hold a session.
+  isServiceAccount  Boolean    @default(false)
   createdAt         DateTime   @default(now())
   updatedAt         DateTime   @updatedAt
 
@@ -1606,6 +1608,10 @@ model IntegrationClient {
   // HMAC-SHA256(pepper, secret). The raw secret is shown exactly once.
   keyHash     String
   lastFour    String
+  // Rotation overlap: the previous secret keeps working until previousValidUntil.
+  previousKeyHash    String?
+  previousValidUntil DateTime?
+  rotatedAt          DateTime?
   scopes      Json
   allowedIps  Json
   isEnabled   Boolean   @default(true)
@@ -1621,4 +1627,42 @@ model IntegrationClient {
   createdAt   DateTime  @default(now())
 
   @@map("integration_clients")
+}
+
+// Replay protection for requests made with an API credential. The unique key makes concurrent
+// retries safe: only one request can claim (credentialId, key); the rest replay or wait.
+model IdempotencyRecord {
+  id           String   @id @default(uuid()) @db.Char(36)
+  credentialId String   @db.Char(36)
+  key          String   @db.VarChar(100)
+  method       String   @db.VarChar(10)
+  path         String   @db.VarChar(255)
+  // SHA-256 of method + path + body: the same key with a different request is rejected.
+  requestHash  String   @db.Char(64)
+  // null while the first request is still running.
+  statusCode   Int?
+  responseBody Json?
+  createdAt    DateTime @default(now())
+
+  @@unique([credentialId, key])
+  @@index([createdAt])
+  @@map("idempotency_records")
+}
+
+// One row per request made with a platform integration credential (never stores secrets or bodies).
+model IntegrationRequestLog {
+  id           String   @id @default(uuid()) @db.Char(36)
+  credentialId String   @db.Char(36)
+  method       String   @db.VarChar(10)
+  path         String   @db.VarChar(255)
+  statusCode   Int
+  durationMs   Int
+  ipAddress    String?
+  errorCode    String?
+  requestId    String?
+  createdAt    DateTime @default(now())
+
+  @@index([credentialId, createdAt])
+  @@index([createdAt])
+  @@map("integration_request_logs")
 }

@@ -25,6 +25,8 @@ export const authenticate: RequestHandler = async (req, _res, next) => {
       throw AppError.unauthorized('Session expired, please sign in again', 'SESSION_REVOKED');
     }
     const user = session.user;
+    // Service accounts act through API credentials only; a session for one is never valid.
+    if (user.isServiceAccount) throw AppError.unauthorized('Session expired, please sign in again', 'SESSION_REVOKED');
     if (BLOCKED_STATUSES.has(user.status)) {
       throw AppError.forbidden(
         user.status === 'SUSPENDED' ? 'Your account has been suspended. Contact support.' : 'Your account is deactivated.',

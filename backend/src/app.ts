@@ -14,8 +14,8 @@ import { apiRouter } from './routes';
 export function createApp() {
   const app = express();
   app.disable('x-powered-by');
-  // Trust the first proxy hop (load balancer) so req.ip is the client address.
-  app.set('trust proxy', 1);
+  // Trust only the configured number of proxy hops, so a client cannot spoof its IP with X-Forwarded-For.
+  app.set('trust proxy', env.TRUST_PROXY);
 
   app.use(requestId);
   app.use(httpLogger);

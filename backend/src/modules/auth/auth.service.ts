@@ -160,7 +160,8 @@ export async function login(input: { email: string; password: string }, meta: Re
   const email = input.email.toLowerCase().trim();
   const user = await prisma.user.findUnique({ where: { email } });
   const valid = await verifyPassword(input.password, user?.passwordHash ?? DUMMY_HASH);
-  if (!user || !valid) {
+  // Service accounts can never sign in, whatever their password hash is.
+  if (!user || !valid || user.isServiceAccount) {
     if (user) await audit({ actor: { type: 'USER', userId: user.id, email }, action: 'LOGIN_FAILED', resource: 'user', resourceId: user.id, meta });
     throw AppError.unauthorized('Invalid email or password', 'INVALID_CREDENTIALS');
   }
@@ -208,7 +209,7 @@ export async function logout(sessionId: string) {
 export async function forgotPassword(emailInput: string) {
   const user = await prisma.user.findUnique({ where: { email: emailInput.toLowerCase().trim() } });
   // Always succeed to avoid account enumeration.
-  if (!user || user.status === 'DEACTIVATED') return;
+  if (!user || user.status === 'DEACTIVATED' || user.isServiceAccount) return;
   const token = await issueUserToken(user.id, 'PASSWORD_RESET', RESET_TOKEN_TTL_MS);
   await sendEmail({
     to: user.email,
@@ -223,6 +224,7 @@ export async function resetPassword(token: string, password: string, meta: Reque
   if (!record || record.type !== 'PASSWORD_RESET' || record.usedAt || record.expiresAt < new Date()) {
     throw AppError.badRequest('This reset link is invalid or has expired', 'TOKEN_INVALID');
   }
+  if (record.user.isServiceAccount) throw AppError.badRequest('This reset link is invalid or has expired', 'TOKEN_INVALID');
   const passwordHash = await hashPassword(password);
   await prisma.$transaction(async (tx) => {
     await tx.userToken.update({ where: { id: record.id }, data: { usedAt: new Date() } });
