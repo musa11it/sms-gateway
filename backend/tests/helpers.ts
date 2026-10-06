@@ -37,7 +37,15 @@ export async function resetDatabase() {
       data: { code: def.code, name: def.name, scope: def.scope, isSystem: true, permissions: { create: perms.map((p) => ({ permissionId: p.id })) } },
     });
   }
-  await prisma.smsPackage.create({ data: { name: 'Starter', credits: 1000, price: new Prisma.Decimal('15000'), currency: 'RWF' } });
+  // Default price ranges (any-quantity purchases): 1–1,000 @13, 1,001–5,000 @11, 5,001–10,000 @9, 10,001+ @8.
+  await prisma.smsPricingTier.createMany({
+    data: [
+      { name: 'Starter', minQuantity: 1, maxQuantity: 1000, unitPrice: new Prisma.Decimal('13'), currency: 'RWF', sortOrder: 1 },
+      { name: 'Growth', minQuantity: 1001, maxQuantity: 5000, unitPrice: new Prisma.Decimal('11'), currency: 'RWF', sortOrder: 2 },
+      { name: 'Business', minQuantity: 5001, maxQuantity: 10000, unitPrice: new Prisma.Decimal('9'), currency: 'RWF', sortOrder: 3 },
+      { name: 'Volume', minQuantity: 10001, maxQuantity: null, unitPrice: new Prisma.Decimal('8'), currency: 'RWF', sortOrder: 4 },
+    ],
+  });
   await createProviders();
 }
 

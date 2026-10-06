@@ -117,7 +117,7 @@ describe('routing', () => {
 
   it('primary/backup rule: a provider can serve another network; DOWN or inactive primaries fall back', async () => {
     await patchProvider('AIRTEL', { networkIds: [nets['RW-AIRTEL'], nets['RW-MTN']] }).expect(200);
-    const rule = await createRule({ name: 'MTN via Airtel', networkId: nets['RW-MTN'], primaryProviderId: ids.AIRTEL, backupProviderIds: [ids.MTN] });
+    const rule = await createRule({ name: 'MTN via Airtel', networkId: nets['RW-MTN'], strategy: 'PRIMARY_BACKUP', primaryProviderId: ids.AIRTEL, backupProviderIds: [ids.MTN] });
     expect(rule.status, JSON.stringify(rule.body)).toBe(201);
     expect(rule.body.data).toMatchObject({ countryCode: 'RW', destination: 'MTN Rwanda', primaryProvider: 'Airtel Rwanda', backupProviders: ['MTN Rwanda'] });
     const first = await sendAndGetProviders(2);
@@ -137,9 +137,9 @@ describe('routing', () => {
     expect(new Set((await sendAndGetProviders(2)).codes)).toEqual(new Set(['GENERIC']));
   });
 
-  it('priority + cost: priority first, cost breaks ties', async () => {
+  it('priority: highest priority first, cost breaks ties', async () => {
     await patchProvider('AIRTEL', { networkIds: [nets['RW-AIRTEL'], nets['RW-MTN']] }).expect(200);
-    await createRule({ name: 'Priority then cost', networkId: nets['RW-MTN'], strategy: 'PRIORITY_THEN_COST' }).expect(201);
+    await createRule({ name: 'Priority', networkId: nets['RW-MTN'], strategy: 'PRIORITY' }).expect(201);
     // MTN and AIRTEL share priority 10; AIRTEL becomes cheaper.
     await patchProvider('AIRTEL', { costPerSms: '7.5' }).expect(200);
     expect(new Set((await sendAndGetProviders(2)).codes)).toEqual(new Set(['AIRTEL']));
@@ -167,9 +167,53 @@ describe('routing', () => {
     expect((await provider('MTN')).capacityBalance).toBe(mtn.capacityBalance - 3);
   });
 
+  it('a degraded provider is still eligible: lowest cost picks it over a dearer healthy one', async () => {
+    await patchProvider('AIRTEL', { networkIds: [nets['RW-AIRTEL'], nets['RW-MTN']] }).expect(200);
+    await createRule({ name: 'Cheapest', networkId: nets['RW-MTN'], strategy: 'LOWEST_COST', allowedProviderIds: [ids.MTN, ids.AIRTEL] }).expect(201);
+    await patchProvider('MTN', { health: 'DEGRADED' }).expect(200); // MTN 8 vs Airtel 8.5
+    expect(new Set((await sendAndGetProviders(1)).codes)).toEqual(new Set(['MTN']));
+    await patchProvider('AIRTEL', { networkIds: [nets['RW-AIRTEL']] }).expect(200);
+  });
+
+  it('switching a rule to Lowest cost clears its primary/backup list', async () => {
+    const rule = await createRule({ name: 'Fixed', networkId: nets['RW-MTN'], strategy: 'PRIMARY_BACKUP', primaryProviderId: ids.GENERIC, backupProviderIds: [ids.MTN] });
+    expect(new Set((await sendAndGetProviders(1)).codes)).toEqual(new Set(['GENERIC']));
+    const upd = await request(app).patch(`/api/v1/admin/routing/rules/${rule.body.data.id}`).set(auth(sa)).send({ strategy: 'LOWEST_COST' });
+    expect(upd.body.data).toMatchObject({ strategy: 'LOWEST_COST', primaryProviderId: null, backupProviderIds: [] });
+    expect(new Set((await sendAndGetProviders(1)).codes)).toEqual(new Set(['MTN']));
+  });
+
+  it('shows, per rule and per destination, which provider is used, why, the backup and who is rejected', async () => {
+    const cappedRule = await createRule({ name: 'Rwanda capped', countryCode: 'RW', strategy: 'LOWEST_COST', maxCostPerSegment: '10' }).expect(201);
+    const shadowed = await createRule({ name: 'MTN only (too late)', networkId: nets['RW-MTN'], strategy: 'PRIORITY' });
+    const rules = (await request(app).get('/api/v1/admin/routing/rules').set(auth(sa))).body.data as { id: string; shadowedBy: { name: string } | null; preview: { destination: string; selected: { name: string; costPerSegment: string } | null; backup: { name: string } | null; reason: string; rejected: { name: string; reason: string }[] } }[];
+    const capped = rules.find((r) => r.id === cappedRule.body.data.id)!;
+    // A country-wide rule is previewed on the first network of that country (Airtel Rwanda, served only by Airtel).
+    expect(capped.preview).toMatchObject({ destination: 'Airtel Rwanda', selected: { name: 'Airtel Rwanda', costPerSegment: '8.50' } });
+    expect(capped.preview.reason).toMatch(/^Lowest eligible cost/);
+    expect(capped.preview.rejected).toEqual(expect.arrayContaining([{ providerId: ids.GENERIC, name: 'Aggregator', reason: 'Cost 11.00 exceeds the rule maximum 10.00' }]));
+    expect(rules.find((r) => r.id === shadowed.body.data.id)!.shadowedBy).toMatchObject({ name: 'Rwanda capped' });
+
+    const overview = (await request(app).get('/api/v1/admin/routing/overview').set(auth(sa))).body.data as { destination: string; rule: { name: string } | null; selected: { name: string } | null; backup: { name: string } | null }[];
+    expect(overview.find((d) => d.destination === 'Rwanda / Airtel Rwanda')).toMatchObject({ rule: { name: 'Rwanda capped' }, selected: { name: 'Airtel Rwanda' } });
+    expect(overview.find((d) => d.destination.startsWith('Other'))).toMatchObject({ rule: null, selected: { name: 'Aggregator' } });
+  });
+
   it('inactive providers are excluded', async () => {
     await patchProvider('MTN', { status: 'INACTIVE' }).expect(200);
     expect(new Set((await sendAndGetProviders(2)).codes)).toEqual(new Set(['GENERIC']));
+  });
+
+  it('customers cannot choose a provider: provider fields in a send are ignored', async () => {
+    const { org, token, sender } = await createActiveOrg();
+    await credit(org.id, 10);
+    const res = await request(app)
+      .post('/api/v1/sms/send')
+      .set(auth(token))
+      .send({ senderId: sender.id, message: 'Hi', recipients: mtnNumbers(1), provider: 'GENERIC', providerId: ids.GENERIC, routingRuleId: 'x' });
+    expect(res.status).toBe(201);
+    const r = await prisma.smsRecipient.findFirstOrThrow({ where: { messageId: res.body.data.id }, include: { smsProvider: true } });
+    expect(r.smsProvider!.code).toBe('MTN'); // default routing, not the customer's choice
   });
 
   it('customers only see credits used, never providers or costs', async () => {
@@ -186,9 +230,13 @@ describe('routing', () => {
 
 describe('routing rules administration', () => {
   it('validates rules, reorders them and audits every change', async () => {
-    expect((await createRule({ name: 'Bad', primaryProviderId: ids.MTN, backupProviderIds: [ids.MTN] })).status).toBe(422);
+    expect((await createRule({ name: 'Bad', strategy: 'PRIMARY_BACKUP', primaryProviderId: ids.MTN, backupProviderIds: [ids.MTN] })).status).toBe(422);
     expect((await createRule({ name: 'Bad', networkId: nets['RW-MTN'], countryCode: 'KE' })).body.code).toBe('COUNTRY_MISMATCH');
-    expect((await createRule({ name: 'Bad', primaryProviderId: ids.MTN, allowedProviderIds: [ids.AIRTEL] })).body.code).toBe('PROVIDER_NOT_ALLOWED');
+    // Each strategy only takes its own fields.
+    expect((await createRule({ name: 'Bad', strategy: 'LOWEST_COST', primaryProviderId: ids.MTN })).body.code).toBe('STRATEGY_FIELD_MISMATCH');
+    expect((await createRule({ name: 'Bad', strategy: 'PRIMARY_BACKUP', primaryProviderId: ids.MTN, allowedProviderIds: [ids.AIRTEL] })).body.code).toBe('STRATEGY_FIELD_MISMATCH');
+    expect((await createRule({ name: 'Bad', strategy: 'PRIMARY_BACKUP' })).body.code).toBe('PRIMARY_REQUIRED');
+    expect((await createRule({ name: 'Bad', strategy: 'PRIORITY_THEN_COST' })).status).toBe(422);
     const a = await createRule({ name: 'Rule A', countryCode: 'RW' });
     const b = await createRule({ name: 'Rule B', countryCode: 'RW' });
     const all = (await request(app).get('/api/v1/admin/routing/rules').set(auth(sa))).body.data as { id: string }[];
@@ -218,8 +266,9 @@ describe('routing simulator', () => {
     const d = res.body.data;
     expect(d.message).toMatchObject({ encoding: 'GSM7', characterCount: 200, segmentsPerRecipient: 2, totalSegments: 2000, totalCredits: 2000 });
     expect(d.destination.network.code).toBe('RW-MTN');
-    expect(d.selected.name).toBe('MTN Rwanda');
-    expect(d.backup.name).toBe('Aggregator');
+    expect(d.selected).toMatchObject({ name: 'MTN Rwanda', costPerSegment: '8.00' });
+    expect(d.backup).toMatchObject({ name: 'Aggregator', costPerSegment: '11.00' });
+    expect(d.rejected).toEqual(expect.arrayContaining([{ providerId: ids.AIRTEL, name: 'Airtel Rwanda', reason: 'Does not serve MTN Rwanda' }]));
     expect(d.reason).toMatch(/Highest-priority eligible provider/);
     expect(d.candidates.find((c: { code: string }) => c.code === 'AIRTEL')).toMatchObject({ eligible: false, reasons: ['Does not serve MTN Rwanda'] });
     expect(d.sender).toMatchObject({ known: false, approved: false });

@@ -34,7 +34,10 @@ adminProvidersRouter.get(
     const { from, to } = resolveRange(parse(rangeQuery, req.query));
     const overview = await providersOverview(from, to);
     // Margin figures need profit.view, like the finance pages.
-    if (!req.user!.platformPermissions.has('profit.view')) overview.economics = { ...overview.economics, grossMargin: null, marginPercent: null };
+    if (!req.user!.platformPermissions.has('profit.view')) {
+      overview.economics = { ...overview.economics, grossMargin: null, marginPercent: null };
+      overview.byProvider = overview.byProvider.map((p) => ({ ...p, grossMargin: null, marginPercent: null }));
+    }
     return ok(res, overview);
   }),
 );

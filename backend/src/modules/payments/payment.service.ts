@@ -61,7 +61,7 @@ export function serializePayment(p: Payment & { invoice?: { id: string; number: 
 
 export async function createPayment(
   organizationId: string,
-  input: { packageId?: string; quantity?: unknown; method: 'MOBILE_MONEY' | 'CARD' | 'BANK_TRANSFER'; payerPhone?: string | null },
+  input: { quantity: unknown; method: 'MOBILE_MONEY' | 'CARD' | 'BANK_TRANSFER'; payerPhone?: string | null },
   actor: Actor,
   meta?: RequestMeta,
 ) {
@@ -70,27 +70,21 @@ export async function createPayment(
   if (org.status !== 'ACTIVE') throw AppError.forbidden('Your organization must be approved before buying SMS', 'ORGANIZATION_NOT_APPROVED');
 
   // What is bought and its price are decided here, on the server — never taken from the client.
-  let order: Pick<Prisma.PaymentUncheckedCreateInput, 'packageId' | 'packageName' | 'credits' | 'amount' | 'currency' | 'pricingTierId' | 'unitPrice' | 'tierMinQuantity' | 'tierMaxQuantity' | 'creditValidityDays'>;
-  if (input.quantity !== undefined) {
-    const quote = await calculateSmsPurchasePrice(input.quantity);
-    const validity = await getSetting('billing.creditValidityDays');
-    order = {
-      packageId: null,
-      packageName: `${quote.quantity.toLocaleString('en-US')} SMS credits`,
-      credits: quote.quantity,
-      amount: new Prisma.Decimal(quote.total),
-      currency: quote.currency,
-      pricingTierId: quote.tier.id,
-      unitPrice: new Prisma.Decimal(quote.unitPrice),
-      tierMinQuantity: quote.tier.minQuantity,
-      tierMaxQuantity: quote.tier.maxQuantity,
-      creditValidityDays: validity > 0 ? validity : null,
-    };
-  } else {
-    const pkg = input.packageId ? await prisma.smsPackage.findUnique({ where: { id: input.packageId } }) : null;
-    if (!pkg || !pkg.isActive) throw AppError.unprocessable('This package is not available', 'PACKAGE_UNAVAILABLE');
-    order = { packageId: pkg.id, packageName: pkg.name, credits: pkg.credits, amount: pkg.price, currency: pkg.currency, creditValidityDays: pkg.validityDays };
-  }
+  // Customers buy any quantity; the pricing tier containing it sets the price (fixed packages were retired).
+  const quote = await calculateSmsPurchasePrice(input.quantity);
+  const validity = await getSetting('billing.creditValidityDays');
+  const order: Pick<Prisma.PaymentUncheckedCreateInput, 'packageId' | 'packageName' | 'credits' | 'amount' | 'currency' | 'pricingTierId' | 'unitPrice' | 'tierMinQuantity' | 'tierMaxQuantity' | 'creditValidityDays'> = {
+    packageId: null,
+    packageName: `${quote.quantity.toLocaleString('en-US')} SMS credits`,
+    credits: quote.quantity,
+    amount: new Prisma.Decimal(quote.total),
+    currency: quote.currency,
+    pricingTierId: quote.tier.id,
+    unitPrice: new Prisma.Decimal(quote.unitPrice),
+    tierMinQuantity: quote.tier.minQuantity,
+    tierMaxQuantity: quote.tier.maxQuantity,
+    creditValidityDays: validity > 0 ? validity : null,
+  };
 
   let payerPhone: string | null = null;
   if (input.method === 'MOBILE_MONEY') {

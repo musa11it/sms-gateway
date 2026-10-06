@@ -16,8 +16,8 @@ import { useApiMutation } from '@/hooks/useApiMutation';
 import { usePermissions } from '@/hooks/useAuth';
 import { useDebounce } from '@/hooks/useDebounce';
 import { adminService } from '@/services/adminService';
-import { businessService } from '@/services/businessService';
-import { fmtDateTime, fmtMoney, fmtNumber } from '@/utils/format';
+import { businessService, type PricingEconomics } from '@/services/businessService';
+import { cn, fmtDateTime, fmtMoney, fmtNumber } from '@/utils/format';
 import { RangePicker, useRange } from '../dashboard/ReportsPage';
 
 // ── SMS pricing tiers ───────────────────────────────────────────────────
@@ -131,7 +131,7 @@ export function PricingTiersPage() {
     <div className="space-y-6">
       <PageHeader
         title="SMS pricing"
-        description="Volume tiers for any-quantity purchases. The quantity a customer buys picks the tier, and that tier’s price applies to the whole purchase."
+        description="Customers buy any amount of credits. The range their quantity falls in sets the price for the whole purchase — use the profit planner to set each range’s price from your real costs."
         actions={canManage && <Button icon={<Plus className="h-4 w-4" />} onClick={() => setModal({ open: true, tier: null })}>New tier</Button>}
       />
       {q.data && gaps.length > 0 && (
@@ -140,6 +140,7 @@ export function PricingTiersPage() {
         </Alert>
       )}
       <QuotePreview />
+      {canAdmin('profit.view') && <ProfitPlanner />}
       {q.isLoading ? (
         <Card padded={false}><TableSkeleton rows={4} /></Card>
       ) : q.error ? (
@@ -256,5 +257,155 @@ export function CustomerFinanceReportPage() {
         />
       </Card>
     </div>
+  );
+}
+
+// ── Profit planner ──────────────────────────────────────────────────────
+
+/** Price that leaves `margin`% after fees and cost: cost ÷ (1 − fee − margin), rounded up to the cent. */
+function targetPrice(cost: number, feePercent: number, margin: number): number | null {
+  const keep = 1 - feePercent / 100 - margin / 100;
+  return keep > 0 ? Math.ceil((cost / keep) * 100) / 100 : null;
+}
+
+function ProfitPlanner() {
+  const q = useQuery({ queryKey: ['admin', 'pricing', 'economics'], queryFn: businessService.pricingEconomics });
+  const [margins, setMargins] = useState<Record<string, string>>({});
+  const [defaultMargin, setDefaultMargin] = useState('25');
+  const [apply, setApply] = useState<{ tier: PricingEconomics['tiers'][number]; price: string } | null>(null);
+  const save = useApiMutation(() => adminService.updatePricingTier(apply!.tier.tierId, { unitPrice: apply!.price }), {
+    success: 'Price updated — new purchases use it, past purchases keep their price',
+    invalidate: [['admin', 'pricing'], ['pricing']],
+    onSuccess: () => setApply(null),
+  });
+  if (q.isLoading) return <Card padded={false}><TableSkeleton rows={4} /></Card>;
+  if (q.error) return <Card><ErrorState error={q.error} onRetry={() => void q.refetch()} /></Card>;
+  const d = q.data!;
+  if (d.restricted || !d.inputs) return <Alert tone="info" title="Profit planning">Costs and margins are visible to staff with the profit.view permission.</Alert>;
+  const i = d.inputs;
+  const expected = i.expectedCostPerCredit ? Number(i.expectedCostPerCredit) : null;
+  const marginFor = (id: string) => Number(margins[id] ?? defaultMargin);
+  const tone = (pct: number | null) => (pct == null ? 'text-slate-400' : pct < 0 ? 'text-red-600' : pct < 10 ? 'text-amber-600' : 'text-emerald-700');
+
+  return (
+    <Card padded={false}>
+      <CardHeader
+        title={<span className="flex items-center gap-2"><TrendingUp className="h-4 w-4 text-emerald-600" /> Profit planner</span>}
+        description="What each range really earns per credit after payment fees and provider cost — and the price that reaches your target margin."
+      />
+      <div className="grid gap-4 border-b border-slate-100 p-5 sm:grid-cols-2 xl:grid-cols-5">
+        {[
+          ['Expected cost / credit', i.expectedCostPerCredit ? fmtMoney(i.expectedCostPerCredit) : '—', 'Average cost of the capacity you hold on usable providers'],
+          ['Worst-case cost / credit', i.worstCaseCostPerCredit ? fmtMoney(i.worstCaseCostPerCredit) : '—', 'Your most expensive usable route (traffic can fall back to it)'],
+          ['Actual cost / credit so far', i.realizedCostPerCredit ? fmtMoney(i.realizedCostPerCredit) : '—', 'From the lots consumed by messages already sent'],
+          ['Payment fees', `${i.paymentFeePercent}%`, `From ${i.paymentFeeSource}`],
+          ['Break-even price', i.breakEvenPrice ? fmtMoney(i.breakEvenPrice) : '—', 'Never price a range below this (worst-case cost + fees)'],
+        ].map(([label, value, hint]) => (
+          <div key={label} className="rounded-xl bg-slate-50 p-4 ring-1 ring-inset ring-slate-100">
+            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</p>
+            <p className="mt-1 text-xl font-semibold tabular-nums text-slate-900">{value}</p>
+            <p className="mt-0.5 text-xs text-slate-500">{hint}</p>
+          </div>
+        ))}
+      </div>
+      <div className="flex flex-wrap items-center gap-3 border-b border-slate-100 px-5 py-3 text-sm">
+        <span className="text-slate-600">Target margin for every range</span>
+        <Input type="number" min={0} max={90} value={defaultMargin} onChange={(e) => setDefaultMargin(e.target.value)} className="w-24 tabular-nums" aria-label="Default target margin percent" />
+        <span className="text-slate-500">% — override per range below. Larger ranges usually take a smaller margin (volume discount) but must stay above break-even.</span>
+      </div>
+      <DataTable
+        rows={d.tiers.map((t) => ({ ...t, id: t.tierId }))}
+        columns={[
+          {
+            key: 'r',
+            header: 'Range',
+            cell: (t) => (
+              <span>
+                <span className={cn('font-medium tabular-nums', !t.isActive && 'text-slate-400')}>{t.maxQuantity === null ? `${fmtNumber(t.minQuantity)}+` : `${fmtNumber(t.minQuantity)} – ${fmtNumber(t.maxQuantity)}`}</span>
+                {!t.isActive && <Badge color="gray" className="ml-2">inactive</Badge>}
+                {t.warnings.map((w) => <span key={w} className="block text-[11px] font-medium text-red-600">{w}</span>)}
+              </span>
+            ),
+          },
+          { key: 'p', header: 'Price', className: 'text-right', headerClassName: 'text-right', cell: (t) => <span className="font-semibold tabular-nums">{fmtMoney(t.unitPrice)}</span> },
+          { key: 'f', header: 'Fee', className: 'text-right', headerClassName: 'text-right', cell: (t) => <span className="tabular-nums text-slate-500">{fmtMoney(t.feePerCredit)}</span> },
+          { key: 'c', header: 'Cost', className: 'text-right', headerClassName: 'text-right', cell: (t) => <span className="tabular-nums text-slate-500">{t.expectedCostPerCredit ? fmtMoney(t.expectedCostPerCredit) : '—'}</span> },
+          {
+            key: 'm',
+            header: 'Margin / credit',
+            className: 'text-right',
+            headerClassName: 'text-right',
+            cell: (t) => (
+              <span className={cn('tabular-nums', tone(t.marginPercent))}>
+                <span className="font-semibold">{t.marginPerCredit ? fmtMoney(t.marginPerCredit) : '—'}</span>
+                {t.marginPercent != null && <span className="block text-[11px]">{t.marginPercent}% · worst {t.worstCaseMarginPercent}%</span>}
+              </span>
+            ),
+          },
+          {
+            key: 's',
+            header: 'Sold',
+            className: 'text-right',
+            headerClassName: 'text-right',
+            cell: (t) => (
+              <span className="tabular-nums">
+                {fmtNumber(t.sales.credits)} credits
+                <span className="block text-[11px] text-slate-500">{fmtMoney(t.sales.revenue)} · {t.sales.purchases} purchase{t.sales.purchases === 1 ? '' : 's'}</span>
+              </span>
+            ),
+          },
+          { key: 'pm', header: 'Projected margin', className: 'text-right', headerClassName: 'text-right', cell: (t) => <span className={cn('tabular-nums', t.sales.projectedMargin && Number(t.sales.projectedMargin) < 0 ? 'text-red-600' : 'text-slate-700')}>{t.sales.projectedMargin ? fmtMoney(t.sales.projectedMargin) : '—'}</span> },
+          {
+            key: 't',
+            header: 'Target',
+            cell: (t) => (
+              <Input
+                type="number"
+                min={0}
+                max={90}
+                value={margins[t.tierId] ?? defaultMargin}
+                onChange={(e) => setMargins((m) => ({ ...m, [t.tierId]: e.target.value }))}
+                className="w-20 tabular-nums"
+                aria-label={`Target margin for ${t.minQuantity}+`}
+              />
+            ),
+          },
+          {
+            key: 'sp',
+            header: 'Price for target',
+            cell: (t) => {
+              const price = expected != null ? targetPrice(expected, i.paymentFeePercent, marginFor(t.tierId)) : null;
+              const floor = i.breakEvenPrice ? Number(i.breakEvenPrice) : 0;
+              if (price == null) return <span className="text-slate-400">—</span>;
+              const same = price.toFixed(2) === Number(t.unitPrice).toFixed(2);
+              return (
+                <span className="flex items-center gap-2">
+                  <span className={cn('font-semibold tabular-nums', price < floor ? 'text-red-600' : 'text-slate-900')} title={price < floor ? 'Below break-even on the worst-case route' : undefined}>{fmtMoney(price.toFixed(2))}</span>
+                  {!same && <Button size="xs" variant="secondary" onClick={() => setApply({ tier: t, price: price.toFixed(2) })}>Apply</Button>}
+                </span>
+              );
+            },
+          },
+        ]}
+        empty={<EmptyState icon={<Layers />} title="No ranges" />}
+      />
+      <div className="grid gap-2 border-t border-slate-100 p-5 text-xs text-slate-600 sm:grid-cols-2">
+        <p><strong className="text-slate-800">Cost per credit</strong> = {d.formulas.costPerCredit}</p>
+        <p><strong className="text-slate-800">Margin per credit</strong> = {d.formulas.marginPerCredit}</p>
+        <p><strong className="text-slate-800">Break-even price</strong> = {d.formulas.breakEven}</p>
+        <p><strong className="text-slate-800">Price for a target margin</strong> = {d.formulas.targetPrice}</p>
+        <p className="sm:col-span-2 text-slate-500">Projected margin on sold credits uses the actual cost of messages sent so far (or the expected cost before any are sent): revenue − payment fees − credits × cost per credit.</p>
+      </div>
+      <ConfirmDialog
+        open={!!apply}
+        onClose={() => setApply(null)}
+        tone="primary"
+        title={apply ? `Set ${apply.tier.maxQuantity === null ? `${fmtNumber(apply.tier.minQuantity)}+` : `${fmtNumber(apply.tier.minQuantity)} – ${fmtNumber(apply.tier.maxQuantity)}`} to ${fmtMoney(apply.price)} per SMS?` : ''}
+        description={apply ? `Currently ${fmtMoney(apply.tier.unitPrice)}. New purchases in this range will use the new price; past purchases keep the price they paid. The change is audit logged.` : ''}
+        confirmLabel="Update price"
+        loading={save.isPending}
+        onConfirm={() => save.mutate(undefined)}
+      />
+    </Card>
   );
 }

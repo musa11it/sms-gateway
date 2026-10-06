@@ -108,63 +108,6 @@ adminBillingRouter.get(
   }),
 );
 
-// ── Packages & pricing ──────────────────────────────────────────────────
-
-const packageBody = z.object({
-  name: z.string().trim().min(2).max(80),
-  description: z.string().trim().max(300).optional().nullable(),
-  credits: z.coerce.number().int().min(1).max(100_000_000),
-  price: z.string().regex(/^\d{1,12}(\.\d{1,2})?$/, 'Price must be a decimal amount, e.g. 15000 or 15000.00'),
-  currency: z.string().trim().length(3).toUpperCase().optional(),
-  validityDays: z.coerce.number().int().min(1).max(3650).optional().nullable(),
-  isActive: z.boolean().optional(),
-  isPopular: z.boolean().optional(),
-  sortOrder: z.coerce.number().int().min(0).max(1000).optional(),
-});
-
-const serializePackage = (p: Prisma.SmsPackageGetPayload<object>) => ({ ...p, price: p.price.toFixed(2), pricePerSms: p.price.div(p.credits).toDecimalPlaces(2).toFixed(2) });
-
-adminBillingRouter.get(
-  '/packages',
-  requirePlatformPermission('packages.view'),
-  asyncHandler(async (_req, res) => {
-    const pkgs = await prisma.smsPackage.findMany({ orderBy: [{ sortOrder: 'asc' }, { credits: 'asc' }], include: { _count: { select: { payments: true } } } });
-    return ok(res, pkgs.map((p) => ({ ...serializePackage(p), paymentCount: p._count.payments })));
-  }),
-);
-
-adminBillingRouter.post(
-  '/packages',
-  requirePlatformPermission('packages.manage'),
-  asyncHandler(async (req, res) => {
-    const body = parse(packageBody, req.body);
-    const pkg = await prisma.smsPackage.create({ data: { ...body, price: new Prisma.Decimal(body.price), currency: body.currency ?? (await getSetting('billing.currency')) } });
-    await audit({ actor: actorFromRequest(req), action: 'PACKAGE_CREATED', resource: 'sms_package', resourceId: pkg.id, metadata: { name: pkg.name, credits: pkg.credits, price: pkg.price.toFixed(2) }, meta: metaFromRequest(req) });
-    return created(res, serializePackage(pkg), 'Package created');
-  }),
-);
-
-adminBillingRouter.patch(
-  '/packages/:id',
-  requirePlatformPermission('packages.manage'),
-  asyncHandler(async (req, res) => {
-    const { id } = parse(uuidParam, req.params);
-    const body = parse(packageBody.partial(), req.body);
-    const before = await prisma.smsPackage.findUnique({ where: { id } });
-    if (!before) throw AppError.notFound('Package');
-    const pkg = await prisma.smsPackage.update({ where: { id }, data: { ...body, price: body.price ? new Prisma.Decimal(body.price) : undefined } });
-    await audit({
-      actor: actorFromRequest(req),
-      action: body.price && !new Prisma.Decimal(body.price).equals(before.price) ? 'PRICING_CHANGED' : 'PACKAGE_UPDATED',
-      resource: 'sms_package',
-      resourceId: id,
-      metadata: { changes: body, previousPrice: before.price.toFixed(2) },
-      meta: metaFromRequest(req),
-    });
-    return ok(res, serializePackage(pkg), 'Package updated');
-  }),
-);
-
 // ── Wallets & ledger ────────────────────────────────────────────────────
 
 adminBillingRouter.get(

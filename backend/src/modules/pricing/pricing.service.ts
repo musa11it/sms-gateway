@@ -1,6 +1,7 @@
 import { Prisma, type SmsPricingTier } from '@prisma/client';
 import { z } from 'zod';
 import { prisma, type Db, type Tx } from '../../config/prisma';
+import { SmsProviderFactory } from '../../integrations/sms/SmsProviderFactory';
 import type { Actor, RequestMeta } from '../../types/actor';
 import { actorUserId } from '../../types/actor';
 import { AppError } from '../../utils/errors';
@@ -168,4 +169,121 @@ export async function deleteTier(id: string, actor: Actor, meta?: RequestMeta) {
     await tx.smsPricingTier.delete({ where: { id } });
     await audit({ actor, action: 'PRICING_TIER_DELETED', resource: 'sms_pricing_tier', resourceId: id, metadata: { tier: serializeTier(tier) }, meta }, tx);
   });
+}
+
+// ── Profit planning ────────────────────────────────────────────────────
+
+/**
+ * How each price range compares with what the SMS actually costs us.
+ *
+ *   cost per credit   C = provider cost per segment ÷ credits per segment
+ *                     expected: average cost of the remaining capacity lots of routable providers
+ *                     worst case: the most expensive routable provider (traffic can fall back to it)
+ *   payment fee rate  f = actual fees ÷ amounts of successful payments (fallback: configured %)
+ *   margin per credit   = P − P·f − C
+ *   break-even price    = C ÷ (1 − f)
+ *   price for target m  = C ÷ (1 − f − m)
+ *
+ * All inputs are read from stored data; nothing here changes prices.
+ */
+export async function pricingEconomics() {
+  const [tiers, providers, lots, paid, routed, creditsPerSegment, feeSetting, tierSales] = await Promise.all([
+    prisma.smsPricingTier.findMany({ orderBy: [{ isActive: 'desc' }, { minQuantity: 'asc' }] }),
+    prisma.smsProvider.findMany({ where: { status: 'ACTIVE', health: { not: 'DOWN' } } }),
+    prisma.$queryRaw<{ providerId: string; remaining: unknown; value: unknown; maxCost: unknown }[]>`
+      SELECT providerId, SUM(remaining) AS remaining, SUM(remaining * unitCost) AS value, MAX(CASE WHEN remaining > 0 THEN unitCost END) AS maxCost
+      FROM provider_capacity_lots GROUP BY providerId`,
+    prisma.payment.aggregate({ where: { status: 'SUCCESS' }, _sum: { amount: true, feeAmount: true } }),
+    prisma.smsRecipient.aggregate({ where: { capacityReleased: false, refunded: false, providerId: { not: null } }, _sum: { providerCost: true, credits: true } }),
+    getSetting('sms.creditsPerSegment'),
+    getSetting('billing.paymentFeePercent'),
+    prisma.payment.groupBy({ by: ['pricingTierId'], where: { status: 'SUCCESS', pricingTierId: { not: null } }, _sum: { credits: true, amount: true, feeAmount: true }, _count: true }),
+  ]);
+
+  const routable = providers.filter((p) => SmsProviderFactory.forProvider(p));
+  const lotRows = lots.filter((l) => routable.some((p) => p.id === l.providerId));
+  const remaining = lotRows.reduce((s, l) => s + Number(l.remaining ?? 0), 0);
+  const value = lotRows.reduce((s, l) => s.plus(String(l.value ?? 0)), new Prisma.Decimal(0));
+  const configured = routable.map((p) => new Prisma.Decimal(p.costPerSms));
+  const lotMax = lotRows.filter((l) => l.maxCost != null).map((l) => new Prisma.Decimal(String(l.maxCost)));
+  const perSegment = (v: Prisma.Decimal) => v.div(creditsPerSegment);
+
+  const expectedSegment = remaining > 0 ? value.div(remaining) : configured.length ? Prisma.Decimal.min(...configured) : null;
+  const worstSegment = configured.length || lotMax.length ? Prisma.Decimal.max(...configured, ...lotMax) : null;
+  const expected = expectedSegment ? perSegment(expectedSegment) : null;
+  const worst = worstSegment ? perSegment(worstSegment) : null;
+
+  const paidAmount = new Prisma.Decimal(paid._sum.amount ?? 0);
+  const feeRate = paidAmount.gt(0) ? new Prisma.Decimal(paid._sum.feeAmount ?? 0).div(paidAmount) : new Prisma.Decimal(feeSetting).div(100);
+  const realizedCost = (routed._sum.credits ?? 0) > 0 ? new Prisma.Decimal(routed._sum.providerCost ?? 0).div(routed._sum.credits!) : null;
+
+  const keep = new Prisma.Decimal(1).minus(feeRate);
+  const priceFor = (cost: Prisma.Decimal | null, margin = 0) => {
+    const denom = keep.minus(margin / 100);
+    return cost && denom.gt(0) ? cost.div(denom).toDecimalPlaces(2, Prisma.Decimal.ROUND_UP) : null;
+  };
+
+  const active = tiers.filter((t) => t.isActive);
+  const rows = tiers.map((t) => {
+    const price = new Prisma.Decimal(t.unitPrice);
+    const fee = price.mul(feeRate);
+    const marginAt = (cost: Prisma.Decimal | null) => (cost ? price.minus(fee).minus(cost) : null);
+    const m = marginAt(expected);
+    const w = marginAt(worst);
+    const sale = tierSales.find((x) => x.pricingTierId === t.id);
+    const soldCredits = sale?._sum.credits ?? 0;
+    const revenue = new Prisma.Decimal(sale?._sum.amount ?? 0);
+    const fees = new Prisma.Decimal(sale?._sum.feeAmount ?? 0);
+    const costBasis = realizedCost ?? expected;
+    const projectedCost = costBasis ? costBasis.mul(soldCredits) : null;
+    const lower = active.filter((x) => x.minQuantity < t.minQuantity).at(-1);
+    return {
+      tierId: t.id,
+      name: t.name,
+      minQuantity: t.minQuantity,
+      maxQuantity: t.maxQuantity,
+      isActive: t.isActive,
+      unitPrice: price.toFixed(2),
+      feePerCredit: fee.toFixed(4),
+      expectedCostPerCredit: expected?.toFixed(4) ?? null,
+      marginPerCredit: m?.toFixed(4) ?? null,
+      marginPercent: m && price.gt(0) ? m.div(price).mul(100).toDecimalPlaces(1).toNumber() : null,
+      worstCaseMarginPerCredit: w?.toFixed(4) ?? null,
+      worstCaseMarginPercent: w && price.gt(0) ? w.div(price).mul(100).toDecimalPlaces(1).toNumber() : null,
+      breakEvenPrice: priceFor(worst)?.toFixed(2) ?? null,
+      sales: {
+        purchases: sale?._count ?? 0,
+        credits: soldCredits,
+        revenue: revenue.toFixed(2),
+        paymentFees: fees.toFixed(2),
+        projectedProviderCost: projectedCost?.toFixed(2) ?? null,
+        projectedMargin: projectedCost ? revenue.minus(fees).minus(projectedCost).toFixed(2) : null,
+      },
+      warnings: [
+        ...(w && w.lt(0) ? ['Below cost on the most expensive route'] : []),
+        ...(m && m.lt(0) ? ['Below the expected cost'] : []),
+        ...(t.isActive && lower && price.gt(lower.unitPrice) ? ['Costs more per SMS than a smaller range'] : []),
+      ],
+    };
+  });
+
+  return {
+    inputs: {
+      creditsPerSegment,
+      paymentFeePercent: feeRate.mul(100).toDecimalPlaces(2).toNumber(),
+      paymentFeeSource: paidAmount.gt(0) ? 'actual payments' : 'configured fallback',
+      expectedCostPerCredit: expected?.toFixed(4) ?? null,
+      worstCaseCostPerCredit: worst?.toFixed(4) ?? null,
+      realizedCostPerCredit: realizedCost?.toFixed(4) ?? null,
+      routableProviders: routable.map((p) => ({ id: p.id, name: p.name, costPerSegment: new Prisma.Decimal(p.costPerSms).toFixed(4) })),
+      breakEvenPrice: priceFor(worst)?.toFixed(2) ?? null,
+    },
+    tiers: rows,
+    formulas: {
+      costPerCredit: 'provider cost per segment ÷ credits per segment',
+      marginPerCredit: 'price − payment fee − cost per credit',
+      breakEven: 'cost per credit ÷ (1 − fee %)',
+      targetPrice: 'cost per credit ÷ (1 − fee % − target margin %)',
+    },
+  };
 }

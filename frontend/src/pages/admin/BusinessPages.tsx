@@ -371,7 +371,7 @@ export function CustomerSalesPage() {
   const t = q.data?.totals;
   return (
     <div className="space-y-6">
-      <PageHeader title="Customer SMS sales" description="Every package sold to a customer, with its estimated provider cost and contribution." />
+      <PageHeader title="Customer SMS sales" description="Every credit purchase by a customer, with its estimated provider cost and contribution." />
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard label="Credits sold" icon={<Coins />} value={fmtNumber(t?.credits)} loading={q.isLoading} />
         <StatCard label="Revenue" icon={<Banknote />} tone="emerald" value={t ? fmtMoney(t.revenue) : '—'} loading={q.isLoading} />
@@ -385,7 +385,7 @@ export function CustomerSalesPage() {
           error={q.error}
           columns={[
             { key: 'o', header: 'Customer', cell: (s) => <Link to={`/admin/organizations/${s.organization.id}`} className="link">{s.organization.name}</Link> },
-            { key: 'p', header: 'Package', cell: (s) => <span>{s.packageName}<span className="block text-xs text-slate-500">{fmtNumber(s.credits)} credits · {s.payment.reference}</span></span> },
+            { key: 'p', header: 'Purchase', cell: (s) => <span>{s.packageName}<span className="block text-xs text-slate-500">{fmtNumber(s.credits)} credits · {s.payment.reference}</span></span> },
             { key: 'r', header: 'Revenue', cell: (s) => <span className="tabular-nums">{fmtMoney(s.revenue, s.currency)}</span> },
             { key: 'c', header: 'Est. provider cost', cell: (s) => <span className="tabular-nums text-slate-500">{fmtMoney(s.estimatedProviderCost, s.currency)}</span> },
             { key: 'f', header: 'Payment fee', cell: (s) => <span className="tabular-nums text-slate-500">{fmtMoney(s.paymentFee, s.currency)}</span> },

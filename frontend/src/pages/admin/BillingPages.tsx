@@ -1,14 +1,13 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { Coins, CreditCard, FileText, Package, Pencil, Plus, RefreshCw, Undo2, Wallet } from 'lucide-react';
-import type { SmsPackage } from '@/api/types';
+import { Coins, CreditCard, FileText, RefreshCw, Undo2, Wallet } from 'lucide-react';
 import { Badge, StatusBadge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
-import { Card, CardHeader } from '@/components/ui/Card';
-import { EmptyState, ErrorState, TableSkeleton } from '@/components/ui/Feedback';
-import { Checkbox, Field, Input, Select, Textarea } from '@/components/ui/Form';
-import { ConfirmDialog, Modal } from '@/components/ui/Overlay';
+import { Card } from '@/components/ui/Card';
+import { EmptyState } from '@/components/ui/Feedback';
+import { Input, Select } from '@/components/ui/Form';
+import { ConfirmDialog } from '@/components/ui/Overlay';
 import { DataTable, Pagination } from '@/components/ui/Table';
 import { PageHeader, Tabs } from '@/components/ui/Misc';
 import { useApiMutation } from '@/hooks/useApiMutation';
@@ -178,68 +177,6 @@ export function WalletsPage() {
         </Card>
       )}
       {adjust && <AdjustWalletModal open organizationId={adjust.id} organizationName={adjust.name} onClose={() => setAdjust(null)} />}
-    </div>
-  );
-}
-
-function PackageModal({ pkg, open, onClose }: { pkg: SmsPackage | null; open: boolean; onClose: () => void }) {
-  const [form, setForm] = useState({ name: '', description: '', credits: '', price: '', currency: 'RWF', validityDays: '', sortOrder: '0', isActive: true, isPopular: false });
-  const [loadedFor, setLoadedFor] = useState<string | null | undefined>(undefined);
-  if (open && loadedFor !== (pkg?.id ?? null)) {
-    setLoadedFor(pkg?.id ?? null);
-    setForm(pkg
-      ? { name: pkg.name, description: pkg.description ?? '', credits: String(pkg.credits), price: pkg.price, currency: pkg.currency, validityDays: pkg.validityDays ? String(pkg.validityDays) : '', sortOrder: String(pkg.sortOrder ?? 0), isActive: pkg.isActive ?? true, isPopular: pkg.isPopular }
-      : { name: '', description: '', credits: '', price: '', currency: 'RWF', validityDays: '365', sortOrder: '0', isActive: true, isPopular: false });
-  }
-  const body = { name: form.name, description: form.description || null, credits: Number(form.credits), price: form.price, currency: form.currency, validityDays: form.validityDays ? Number(form.validityDays) : null, sortOrder: Number(form.sortOrder), isActive: form.isActive, isPopular: form.isPopular };
-  const save = useApiMutation(() => (pkg ? adminService.updatePackage(pkg.id, body) : adminService.createPackage(body)), { success: pkg ? 'Package updated' : 'Package created', invalidate: [['admin', 'packages'], ['packages']], onSuccess: () => { setLoadedFor(undefined); onClose(); } });
-  const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setForm((f) => ({ ...f, [k]: e.target.value }));
-  const valid = form.name.trim().length >= 2 && Number(form.credits) > 0 && /^\d+(\.\d{1,2})?$/.test(form.price);
-  return (
-    <Modal open={open} onClose={() => { setLoadedFor(undefined); onClose(); }} title={pkg ? `Edit ${pkg.name}` : 'New SMS package'} footer={<><Button variant="secondary" onClick={onClose}>Cancel</Button><Button disabled={!valid} loading={save.isPending} onClick={() => save.mutate(undefined)}>Save</Button></>}>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="Name" required><Input value={form.name} onChange={set('name')} /></Field>
-        <Field label="Credits (SMS)" required><Input type="number" min={1} value={form.credits} onChange={set('credits')} /></Field>
-        <Field label="Price" required hint="Decimal, tax inclusive"><Input value={form.price} onChange={set('price')} placeholder="15000" /></Field>
-        <Field label="Currency"><Input value={form.currency} onChange={set('currency')} maxLength={3} /></Field>
-        <Field label="Validity (days)"><Input type="number" value={form.validityDays} onChange={set('validityDays')} /></Field>
-        <Field label="Sort order"><Input type="number" value={form.sortOrder} onChange={set('sortOrder')} /></Field>
-        <Field label="Description" className="sm:col-span-2"><Textarea rows={2} value={form.description} onChange={set('description')} /></Field>
-        <Checkbox label="Active" description="Visible to customers" checked={form.isActive} onChange={(e) => setForm((f) => ({ ...f, isActive: e.target.checked }))} />
-        <Checkbox label="Highlight as best value" checked={form.isPopular} onChange={(e) => setForm((f) => ({ ...f, isPopular: e.target.checked }))} />
-      </div>
-      {pkg && <p className="mt-4 text-xs text-slate-500">Price changes apply to new purchases only; existing payments keep their original amount. Changes are audit logged.</p>}
-    </Modal>
-  );
-}
-
-export function PackagesPage() {
-  const { canAdmin } = usePermissions();
-  const q = useQuery({ queryKey: ['admin', 'packages'], queryFn: adminService.packages });
-  const [modal, setModal] = useState<{ open: boolean; pkg: SmsPackage | null }>({ open: false, pkg: null });
-  return (
-    <div className="space-y-6">
-      <PageHeader title="Packages & pricing" description="SMS bundles customers can buy. Prices are only defined here — never in the app." actions={canAdmin('packages.manage') && <Button icon={<Plus className="h-4 w-4" />} onClick={() => setModal({ open: true, pkg: null })}>New package</Button>} />
-      {q.isLoading ? <Card padded={false}><TableSkeleton rows={4} /></Card> : q.error ? <Card><ErrorState error={q.error} /></Card> : (
-        <Card padded={false}>
-          <CardHeader title="Packages" />
-          <DataTable
-            rows={q.data}
-            columns={[
-              { key: 'n', header: 'Package', cell: (p) => <span><span className="font-medium text-slate-900">{p.name}</span>{p.isPopular && <Badge color="violet" className="ml-2">best value</Badge>}<span className="block text-xs text-slate-500">{p.description}</span></span> },
-              { key: 'c', header: 'Credits', cell: (p) => <span className="tabular-nums">{fmtNumber(p.credits)}</span> },
-              { key: 'p', header: 'Price', cell: (p) => <span className="font-medium tabular-nums">{fmtMoney(p.price, p.currency)}</span> },
-              { key: 'u', header: 'Per SMS', cell: (p) => <span className="tabular-nums text-slate-500">{fmtMoney(p.pricePerSms, p.currency)}</span> },
-              { key: 'v', header: 'Validity', cell: (p) => (p.validityDays ? `${p.validityDays} days` : '—') },
-              { key: 's', header: 'Status', cell: (p) => <StatusBadge status={p.isActive ? 'ACTIVE' : 'DISABLED'} /> },
-              { key: 'x', header: 'Sold', cell: (p) => fmtNumber(p.paymentCount ?? 0) },
-              { key: 'a', header: '', className: 'text-right', cell: (p) => canAdmin('packages.manage') && <Button size="xs" variant="secondary" icon={<Pencil className="h-3 w-3" />} onClick={() => setModal({ open: true, pkg: p })}>Edit</Button> },
-            ]}
-            empty={<EmptyState icon={<Package />} title="No packages" description="Create packages so customers can buy SMS credits." />}
-          />
-        </Card>
-      )}
-      <PackageModal open={modal.open} pkg={modal.pkg} onClose={() => setModal({ open: false, pkg: null })} />
     </div>
   );
 }

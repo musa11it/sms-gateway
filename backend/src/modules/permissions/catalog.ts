@@ -84,8 +84,8 @@ export const PERMISSIONS: PermissionDef[] = [
   P('contacts.delete', 'Contacts', 'Delete contacts and groups', ORG),
   P('contacts.import', 'Contacts', 'Import contacts from CSV', ORG),
 
-  P('packages.view', 'Packages', 'View SMS packages (admin)', PLAT),
-  P('packages.manage', 'Packages', 'Create and edit SMS packages and pricing', PLAT),
+  P('packages.view', 'Pricing', 'View SMS pricing ranges and profit planning', PLAT),
+  P('packages.manage', 'Pricing', 'Create and edit SMS pricing ranges', PLAT),
 
   P('payments.view', 'Payments', 'View payments', BOTH),
   P('payments.create', 'Payments', 'Create payments', ORG),
@@ -336,8 +336,18 @@ export const GRANT_MIGRATIONS: { version: number; grants: Record<string, string[
     grants: {
       CUSTOMER_MANAGER: ['senders.allocate'],
       CUSTOMER_FINANCE: ['senders.allocate'],
+      ADMIN: ['organizations.create'],
     },
-    grants: { ADMIN: ['organizations.create'] },
+  },
+  {
+    // Two branches both shipped a "version 3"; databases seeded from either one only received half
+    // of it. Re-apply both (grants are additive and idempotent).
+    version: 4,
+    grants: {
+      CUSTOMER_MANAGER: ['senders.allocate'],
+      CUSTOMER_FINANCE: ['senders.allocate'],
+      ADMIN: ['organizations.create'],
+    },
   },
 ];
 

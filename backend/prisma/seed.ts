@@ -108,20 +108,6 @@ async function seedStaff(roles: Record<string, string>, passwordHash: string) {
   }
 }
 
-async function seedPackages() {
-  const packages = [
-    { name: 'Starter', credits: 1_000, price: '15000', description: 'Try it out — perfect for small shops', sortOrder: 1 },
-    { name: 'Growth', credits: 5_000, price: '70000', description: 'For growing businesses', sortOrder: 2 },
-    { name: 'Business', credits: 10_000, price: '130000', description: 'Best value for regular campaigns', sortOrder: 3, isPopular: true },
-    { name: 'Pro', credits: 50_000, price: '600000', description: 'High-volume messaging', sortOrder: 4 },
-    { name: 'Enterprise', credits: 100_000, price: '1100000', description: 'Lowest price per SMS', sortOrder: 5 },
-  ];
-  for (const p of packages) {
-    const existing = await prisma.smsPackage.findFirst({ where: { name: p.name } });
-    if (!existing) await prisma.smsPackage.create({ data: { ...p, price: new Prisma.Decimal(p.price), currency: 'RWF', validityDays: 365 } });
-  }
-}
-
 /** Default volume tiers for any-quantity purchases (only when no tier exists yet; Super Admin edits them afterwards). */
 async function seedPricingTiers() {
   if ((await prisma.smsPricingTier.count()) > 0) return;
@@ -334,7 +320,6 @@ async function main() {
   await seedSettings();
   const roles = await seedRbac();
   await seedStaff(roles, passwordHash);
-  await seedPackages();
   await seedPricingTiers();
   const superAdmin = await prisma.user.findUniqueOrThrow({ where: { email: 'superadmin@example.com' } });
   await seedProviders(superAdmin.id);

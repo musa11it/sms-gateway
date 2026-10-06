@@ -37,17 +37,10 @@ const send = (token: string, senderId: string, recipients: string[], message = '
 beforeAll(async () => {
   await resetDatabase();
   superToken = (await createStaff('SUPER_ADMIN')).token;
-  const defs = [
-    { name: 'Starter', minQuantity: 1, maxQuantity: 1000, unitPrice: '13' },
-    { name: 'Growth', minQuantity: 1001, maxQuantity: 5000, unitPrice: '11' },
-    { name: 'Business', minQuantity: 5001, maxQuantity: 10000, unitPrice: '9' },
-    { name: 'Volume', minQuantity: 10001, maxQuantity: null, unitPrice: '8' },
-  ];
-  for (const d of defs) {
-    const res = await request(app).post('/api/v1/admin/pricing/tiers').set(auth(superToken)).send(d);
-    expect(res.status).toBe(201);
-    tierIds[d.name] = res.body.data.id;
-  }
+  // resetDatabase creates the default ranges (13 / 11 / 9 / 8).
+  const tiers = await request(app).get('/api/v1/admin/pricing/tiers').set(auth(superToken));
+  for (const t of tiers.body.data as { id: string; name: string }[]) tierIds[t.name] = t.id;
+  expect(Object.keys(tierIds)).toEqual(['Starter', 'Growth', 'Business', 'Volume']);
 });
 
 describe('pricing engine', () => {

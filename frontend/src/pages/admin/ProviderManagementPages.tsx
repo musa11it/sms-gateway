@@ -13,7 +13,6 @@ import {
   FlaskConical,
   Gauge,
   Globe2,
-  HeartPulse,
   Layers,
   Pencil,
   Plus,
@@ -34,7 +33,7 @@ import { DataTable } from '@/components/ui/Table';
 import { PageHeader, ProgressBar, Tabs } from '@/components/ui/Misc';
 import { useApiMutation } from '@/hooks/useApiMutation';
 import { usePermissions } from '@/hooks/useAuth';
-import { businessService, type Provider, type ProviderEconomics, type RoutingRule, type RoutingStrategy, type SmsNetwork } from '@/services/businessService';
+import { businessService, type Provider, type ProviderEconomics, type RouteSummary, type RoutingRule, type RoutingStrategy, type SmsNetwork } from '@/services/businessService';
 import { cn, fmtDate, fmtDateTime, fmtMoney, fmtNumber, fmtRelative, titleCase } from '@/utils/format';
 import { RangePicker, useRange } from '../dashboard/ReportsPage';
 
@@ -56,9 +55,9 @@ const HEALTH: Record<Provider['health'], { color: BadgeColor; label: string }> =
 };
 
 const STRATEGY: Record<RoutingStrategy, { label: string; hint: string }> = {
-  PRIORITY: { label: 'Priority', hint: 'Highest-priority eligible provider' },
-  LOWEST_COST: { label: 'Lowest cost', hint: 'Cheapest eligible provider (priority breaks ties)' },
-  PRIORITY_THEN_COST: { label: 'Priority + cost', hint: 'Priority first, cost as the tie-breaker' },
+  LOWEST_COST: { label: 'Lowest cost', hint: 'Use the cheapest eligible provider' },
+  PRIORITY: { label: 'Priority', hint: 'Use the highest-priority eligible provider' },
+  PRIMARY_BACKUP: { label: 'Primary + backup', hint: 'Always try one provider first, then backups in order' },
 };
 
 const decimalRe = /^\d{1,8}(\.\d{1,4})?$/;
@@ -424,6 +423,44 @@ export function ProvidersPage() {
           </Card>
 
           <Card padded={false}>
+            <CardHeader title="Credits sold through each provider" description="Customer credits used in the period and the provider that carried them. Customers never see this split." />
+            <DataTable
+              rows={d?.byProvider.map((p) => ({ ...p, id: p.providerId }))}
+              loading={q.isLoading}
+              columns={[
+                { key: 'n', header: 'Provider', cell: (p) => <Link to={`/admin/providers/${p.providerId}`} className="font-medium text-slate-900 hover:text-brand-700">{p.name}</Link> },
+                {
+                  key: 'c',
+                  header: 'Credits',
+                  cell: (p) => (
+                    <span className="flex min-w-[10rem] items-center gap-2">
+                      <span className="w-16 text-right font-semibold tabular-nums">{fmtNumber(p.credits)}</span>
+                      <ProgressBar value={p.sharePercent} className="flex-1" />
+                      <span className="w-12 text-right text-xs tabular-nums text-slate-500">{p.sharePercent}%</span>
+                    </span>
+                  ),
+                },
+                { key: 'm', header: 'Messages', className: 'text-right', headerClassName: 'text-right', cell: (p) => <span className="tabular-nums text-slate-600">{fmtNumber(p.messages)}</span> },
+                { key: 'r', header: 'Revenue', className: 'text-right', headerClassName: 'text-right', cell: (p) => <span className="tabular-nums"><Money value={p.revenue} /></span> },
+                { key: 'pc', header: 'Provider cost', className: 'text-right', headerClassName: 'text-right', cell: (p) => <span className="tabular-nums text-amber-700"><Money value={p.providerCost} />{p.costPerCredit && <span className="block text-[11px] text-slate-400">{fmtMoney(p.costPerCredit)} / credit</span>}</span> },
+                {
+                  key: 'g',
+                  header: 'Gross margin',
+                  className: 'text-right',
+                  headerClassName: 'text-right',
+                  cell: (p) => (
+                    <span className={cn('font-semibold tabular-nums', p.grossMargin && Number(p.grossMargin) < 0 ? 'text-red-600' : 'text-emerald-700')}>
+                      <Money value={p.grossMargin} />
+                      {p.marginPercent != null && <span className="block text-[11px] font-normal">{p.marginPercent}%</span>}
+                    </span>
+                  ),
+                },
+              ]}
+              empty={<EmptyState icon={<Activity />} title="No messages in this period" />}
+            />
+          </Card>
+
+          <Card padded={false}>
             <CardHeader title="Providers" description="Click a provider for lots, cost history, routing rules and profitability." />
             {q.isLoading ? (
               <TableSkeleton rows={3} />
@@ -753,7 +790,14 @@ type RuleForm = {
   reason: string;
 };
 
-const emptyRule: RuleForm = { name: '', countryCode: '', networkId: '', strategy: 'PRIORITY', primaryProviderId: '', backupProviderIds: [], allowedProviderIds: [], minProviderCapacity: '0', maxCostPerSegment: '', isActive: true, description: '', reason: '' };
+const emptyRule: RuleForm = { name: '', countryCode: '', networkId: '', strategy: 'LOWEST_COST', primaryProviderId: '', backupProviderIds: [], allowedProviderIds: [], minProviderCapacity: '0', maxCostPerSegment: '', isActive: true, description: '', reason: '' };
+
+/** The providers a rule tries, in words — matches what the routing engine does for its strategy. */
+function providersInOrder(r: Pick<RoutingRule, 'strategy' | 'primaryProvider' | 'backupProviders' | 'allowedProviders'>) {
+  if (r.strategy === 'PRIMARY_BACKUP') return [r.primaryProvider, ...r.backupProviders].filter(Boolean).join(' → ');
+  const pool = r.allowedProviders.length ? r.allowedProviders.join(', ') : 'All providers serving the destination';
+  return `${pool} · ${r.strategy === 'LOWEST_COST' ? 'cheapest first' : 'highest priority first'}`;
+}
 
 function RuleModal({ rule, open, onClose, providers, networks }: { rule: RoutingRule | null; open: boolean; onClose: () => void; providers: Provider[]; networks: SmsNetwork[] }) {
   const [form, setForm] = useState<RuleForm>(emptyRule);
@@ -783,15 +827,17 @@ function RuleModal({ rule, open, onClose, providers, networks }: { rule: Routing
     setLoadedFor(undefined);
     onClose();
   };
+  const fixed = form.strategy === 'PRIMARY_BACKUP';
   const countries = [...new Map(networks.map((n) => [n.countryCode, n.countryName])).entries()];
+  // Only the fields of the chosen strategy are sent; the server clears the others.
   const body = {
     name: form.name.trim(),
     countryCode: form.countryCode || null,
     networkId: form.networkId || null,
     strategy: form.strategy,
-    primaryProviderId: form.primaryProviderId || null,
-    backupProviderIds: form.backupProviderIds,
-    allowedProviderIds: form.allowedProviderIds,
+    primaryProviderId: fixed ? form.primaryProviderId || null : null,
+    backupProviderIds: fixed ? form.backupProviderIds : [],
+    allowedProviderIds: fixed ? [] : form.allowedProviderIds,
     minProviderCapacity: Number(form.minProviderCapacity) || 0,
     maxCostPerSegment: form.maxCostPerSegment.trim() || null,
     isActive: form.isActive,
@@ -804,7 +850,7 @@ function RuleModal({ rule, open, onClose, providers, networks }: { rule: Routing
     onSuccess: close,
   });
   const costError = form.maxCostPerSegment.trim() && !decimalRe.test(form.maxCostPerSegment.trim()) ? 'Amount such as 7 or 7.50' : undefined;
-  const valid = form.name.trim().length >= 2 && !costError && Number.isInteger(Number(form.minProviderCapacity)) && Number(form.minProviderCapacity) >= 0;
+  const valid = form.name.trim().length >= 2 && !costError && Number.isInteger(Number(form.minProviderCapacity)) && Number(form.minProviderCapacity) >= 0 && (!fixed || !!form.primaryProviderId);
   const filteredNetworks = networks.filter((n) => !form.countryCode || n.countryCode === form.countryCode);
   const toggleIn = (k: 'backupProviderIds' | 'allowedProviderIds', id: string, on: boolean) => setForm((f) => ({ ...f, [k]: on ? [...f[k], id] : f[k].filter((x) => x !== id) }));
   const moveBackup = (i: number, d: -1 | 1) =>
@@ -816,6 +862,7 @@ function RuleModal({ rule, open, onClose, providers, networks }: { rule: Routing
       return { ...f, backupProviderIds: b };
     });
   const name = (id: string) => providers.find((p) => p.id === id)?.name ?? id;
+  const cost = (id: string) => providers.find((p) => p.id === id);
 
   return (
     <Modal
@@ -823,12 +870,12 @@ function RuleModal({ rule, open, onClose, providers, networks }: { rule: Routing
       onClose={close}
       size="lg"
       title={rule ? `Edit rule · ${rule.name}` : 'New routing rule'}
-      description="The first active rule (in priority order) matching a message's destination decides which providers may carry it."
+      description="Rules are checked top to bottom; the first active rule matching a message's destination decides its provider."
       footer={<><Button variant="secondary" onClick={close}>Cancel</Button><Button disabled={!valid} loading={save.isPending} onClick={() => save.mutate(undefined)}>{rule ? 'Save rule' : 'Create rule'}</Button></>}
     >
       <div className="space-y-6">
         <section className="grid gap-4 sm:grid-cols-2">
-          <Field label="Rule name" required className="sm:col-span-2"><Input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="Rwanda MTN — direct first" /></Field>
+          <Field label="Rule name" required className="sm:col-span-2"><Input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="Rwanda — cheapest route" /></Field>
           <Field label="Destination country">
             <Select value={form.countryCode} onChange={(e) => setForm((f) => ({ ...f, countryCode: e.target.value, networkId: '' }))}>
               <option value="">Any country</option>
@@ -844,62 +891,81 @@ function RuleModal({ rule, open, onClose, providers, networks }: { rule: Routing
         </section>
 
         <section>
-          <h4 className="text-sm font-semibold text-slate-900">Provider selection</h4>
-          <div className="mt-3 grid gap-4 sm:grid-cols-2">
-            <Field label="Primary provider" hint="Optional. With a primary/backups the order below is used as-is.">
-              <Select value={form.primaryProviderId} onChange={(e) => setForm((f) => ({ ...f, primaryProviderId: e.target.value, backupProviderIds: f.backupProviderIds.filter((x) => x !== e.target.value) }))}>
-                <option value="">None — use the strategy</option>
-                {providers.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </Select>
-            </Field>
-            <Field label="Strategy" hint={STRATEGY[form.strategy].hint}>
-              <Select value={form.strategy} onChange={(e) => setForm((f) => ({ ...f, strategy: e.target.value as RoutingStrategy }))}>
-                {(Object.keys(STRATEGY) as RoutingStrategy[]).map((s) => <option key={s} value={s}>{STRATEGY[s].label}</option>)}
-              </Select>
-            </Field>
+          <h4 className="text-sm font-semibold text-slate-900">How the provider is chosen</h4>
+          <div className="mt-3 grid gap-2 sm:grid-cols-3" role="radiogroup" aria-label="Strategy">
+            {(Object.keys(STRATEGY) as RoutingStrategy[]).map((st) => (
+              <button
+                key={st}
+                type="button"
+                role="radio"
+                aria-checked={form.strategy === st}
+                onClick={() => setForm((f) => ({ ...f, strategy: st }))}
+                className={cn('rounded-xl border p-3 text-left transition', form.strategy === st ? 'border-brand-300 bg-brand-50/60 ring-1 ring-brand-300' : 'border-slate-200 hover:bg-slate-50')}
+              >
+                <span className="block text-sm font-semibold text-slate-900">{STRATEGY[st].label}</span>
+                <span className="mt-0.5 block text-xs text-slate-500">{STRATEGY[st].hint}</span>
+              </button>
+            ))}
           </div>
-          <div className="mt-4 grid gap-4 sm:grid-cols-2">
-            <div>
-              <p className="label">Backup providers (in order)</p>
-              <div className="space-y-1.5 rounded-lg bg-slate-50 p-3 ring-1 ring-inset ring-slate-100">
-                {form.backupProviderIds.map((id, i) => (
-                  <div key={id} className="flex items-center justify-between gap-2 rounded-md bg-white px-2 py-1.5 text-sm ring-1 ring-slate-200">
-                    <span><span className="mr-2 text-xs text-slate-400">#{i + 1}</span>{name(id)}</span>
-                    <span className="flex gap-0.5">
-                      <button type="button" aria-label="Move up" className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" onClick={() => moveBackup(i, -1)}><ArrowUp className="h-3.5 w-3.5" /></button>
-                      <button type="button" aria-label="Move down" className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" onClick={() => moveBackup(i, 1)}><ArrowDown className="h-3.5 w-3.5" /></button>
-                      <button type="button" aria-label="Remove" className="rounded px-1.5 text-xs text-red-600 hover:bg-red-50" onClick={() => toggleIn('backupProviderIds', id, false)}>Remove</button>
-                    </span>
-                  </div>
-                ))}
-                <Select value="" onChange={(e) => e.target.value && toggleIn('backupProviderIds', e.target.value, true)} aria-label="Add backup provider">
-                  <option value="">+ Add backup…</option>
-                  {providers.filter((p) => p.id !== form.primaryProviderId && !form.backupProviderIds.includes(p.id)).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+
+          {fixed ? (
+            <div className="mt-4 space-y-3">
+              <Field label="Primary provider" required hint="Always tried first">
+                <Select value={form.primaryProviderId} onChange={(e) => setForm((f) => ({ ...f, primaryProviderId: e.target.value, backupProviderIds: f.backupProviderIds.filter((x) => x !== e.target.value) }))}>
+                  <option value="">Choose…</option>
+                  {providers.map((p) => <option key={p.id} value={p.id}>{p.name} — {fmtMoney(p.costPerSms, p.currency)}/segment</option>)}
                 </Select>
+              </Field>
+              <div>
+                <p className="label">Backups, in the order they are tried</p>
+                <div className="space-y-1.5 rounded-lg bg-slate-50 p-3 ring-1 ring-inset ring-slate-100">
+                  {!form.backupProviderIds.length && <p className="text-xs text-slate-500">No backups: if the primary can't be used, the send is refused.</p>}
+                  {form.backupProviderIds.map((id, i) => (
+                    <div key={id} className="flex items-center justify-between gap-2 rounded-md bg-white px-2 py-1.5 text-sm ring-1 ring-slate-200">
+                      <span><span className="mr-2 text-xs text-slate-400">#{i + 1}</span>{name(id)}{cost(id) && <span className="ml-2 text-xs text-slate-400">{fmtMoney(cost(id)!.costPerSms, cost(id)!.currency)}</span>}</span>
+                      <span className="flex gap-0.5">
+                        <button type="button" aria-label="Move up" className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" onClick={() => moveBackup(i, -1)}><ArrowUp className="h-3.5 w-3.5" /></button>
+                        <button type="button" aria-label="Move down" className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700" onClick={() => moveBackup(i, 1)}><ArrowDown className="h-3.5 w-3.5" /></button>
+                        <button type="button" className="rounded px-1.5 text-xs text-red-600 hover:bg-red-50" onClick={() => toggleIn('backupProviderIds', id, false)}>Remove</button>
+                      </span>
+                    </div>
+                  ))}
+                  <Select value="" onChange={(e) => e.target.value && toggleIn('backupProviderIds', e.target.value, true)} aria-label="Add backup provider">
+                    <option value="">+ Add backup…</option>
+                    {providers.filter((p) => p.id !== form.primaryProviderId && !form.backupProviderIds.includes(p.id)).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </Select>
+                </div>
               </div>
             </div>
-            <div>
-              <p className="label">Allowed providers</p>
-              <div className="space-y-1.5 rounded-lg bg-slate-50 p-3 ring-1 ring-inset ring-slate-100">
-                <p className="text-xs text-slate-500">None selected = every provider serving the destination.</p>
+          ) : (
+            <div className="mt-4">
+              <p className="label">Providers to choose from</p>
+              <div className="grid gap-2 rounded-lg bg-slate-50 p-3 ring-1 ring-inset ring-slate-100 sm:grid-cols-2">
+                <p className="text-xs text-slate-500 sm:col-span-2">None selected = every provider that serves the destination. The {form.strategy === 'LOWEST_COST' ? 'cheapest' : 'highest-priority'} eligible one is used; the next one is the automatic backup.</p>
                 {providers.map((p) => (
-                  <Checkbox key={p.id} label={p.name} checked={form.allowedProviderIds.includes(p.id)} onChange={(e) => toggleIn('allowedProviderIds', p.id, e.target.checked)} />
+                  <Checkbox
+                    key={p.id}
+                    label={p.name}
+                    description={`${fmtMoney(p.costPerSms, p.currency)}/segment · priority ${p.priority}`}
+                    checked={form.allowedProviderIds.includes(p.id)}
+                    onChange={(e) => toggleIn('allowedProviderIds', p.id, e.target.checked)}
+                  />
                 ))}
               </div>
             </div>
-          </div>
+          )}
         </section>
 
         <section>
-          <h4 className="text-sm font-semibold text-slate-900">Cost & capacity guards</h4>
+          <h4 className="text-sm font-semibold text-slate-900">Guards</h4>
           <div className="mt-3 grid gap-4 sm:grid-cols-2">
-            <Field label="Maximum cost per segment" error={costError} hint="Providers above this are not eligible. Empty = no limit."><Input value={form.maxCostPerSegment} onChange={(e) => setForm((f) => ({ ...f, maxCostPerSegment: e.target.value }))} placeholder="7.00" invalid={!!costError} /></Field>
-            <Field label="Minimum provider capacity" hint="Skip providers that would fall below this (in addition to each provider's own reserve)"><Input type="number" min={0} value={form.minProviderCapacity} onChange={(e) => setForm((f) => ({ ...f, minProviderCapacity: e.target.value }))} /></Field>
+            <Field label="Maximum cost per segment" error={costError} hint="Providers above this are never used by this rule. Empty = no limit."><Input value={form.maxCostPerSegment} onChange={(e) => setForm((f) => ({ ...f, maxCostPerSegment: e.target.value }))} placeholder="7.00" invalid={!!costError} /></Field>
+            <Field label="Minimum capacity to keep" hint="Skip a provider that would drop below this (in addition to its own reserve)"><Input type="number" min={0} value={form.minProviderCapacity} onChange={(e) => setForm((f) => ({ ...f, minProviderCapacity: e.target.value }))} /></Field>
           </div>
         </section>
 
         <section className="grid gap-4">
-          <Checkbox label="Active" description="Inactive rules are ignored by routing" checked={form.isActive} onChange={(e) => setForm((f) => ({ ...f, isActive: e.target.checked }))} />
+          <Checkbox label="Active" description="Inactive rules are ignored" checked={form.isActive} onChange={(e) => setForm((f) => ({ ...f, isActive: e.target.checked }))} />
           <Field label="Description"><Textarea rows={2} value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} /></Field>
           {rule && <Field label="Reason for the change" hint="Recorded in the audit log"><Input value={form.reason} onChange={(e) => setForm((f) => ({ ...f, reason: e.target.value }))} /></Field>}
         </section>
@@ -943,10 +1009,26 @@ function NetworkModal({ network, open, onClose }: { network: SmsNetwork | null; 
   );
 }
 
+/** "Who is used, why, and what if it is down" for one route. */
+function RouteDecision({ s, compact }: { s: RouteSummary; compact?: boolean }) {
+  if (!s.selected) return <span className="text-sm font-medium text-red-600">No eligible provider — sends refused</span>;
+  return (
+    <span className="block min-w-0">
+      <span className="flex flex-wrap items-center gap-x-2">
+        <span className="font-semibold text-slate-900">{s.selected.name}</span>
+        <span className="text-xs tabular-nums text-slate-500">{fmtMoney(s.selected.costPerSegment)}/segment · {fmtNumber(s.selected.available)} usable</span>
+      </span>
+      {!compact && <span className="block text-xs text-slate-500">{s.reason}</span>}
+      <span className="block text-xs text-slate-500">Backup: {s.backup ? `${s.backup.name} (${fmtMoney(s.backup.costPerSegment)})` : <span className="text-amber-700">none — sends refused if unavailable</span>}</span>
+    </span>
+  );
+}
+
 export function RoutingRulesPage() {
   const { canAdmin } = usePermissions();
   const canManage = canAdmin('providers.manage');
   const rules = useQuery({ queryKey: ['admin', 'routing', 'rules'], queryFn: businessService.routingRules });
+  const overview = useQuery({ queryKey: ['admin', 'routing', 'overview'], queryFn: businessService.routingOverview });
   const networks = useQuery({ queryKey: ['admin', 'routing', 'networks'], queryFn: businessService.networks });
   const providers = useQuery({ queryKey: ['admin', 'providers'], queryFn: businessService.providers });
   const [modal, setModal] = useState<{ open: boolean; rule: RoutingRule | null }>({ open: false, rule: null });
@@ -974,8 +1056,8 @@ export function RoutingRulesPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Routing rules"
-        description="Decide which providers carry messages to each destination. Customers never choose a provider — they simply see credits used."
+        title="Routing"
+        description="Customers only buy credits — the platform picks the provider for every message. Here you decide how."
         breadcrumbs={[{ label: 'SMS providers', to: '/admin/providers' }, { label: 'Routing' }]}
         actions={
           <div className="flex gap-2">
@@ -984,14 +1066,36 @@ export function RoutingRulesPage() {
           </div>
         }
       />
-      <Alert tone="info" title="How a provider is chosen">
-        The first active rule matching the destination (top to bottom) applies; without a match, every provider serving the destination is tried by priority. A provider is skipped when it is inactive, down, lacks an adapter, does not serve the network, costs more than the rule allows, or would drop below its capacity reserve — then the next one is used.
-      </Alert>
+
+      <Card padded={false}>
+        <CardHeader title="Where messages go right now" description="For each destination: the provider used, why, its cost and capacity, and the backup if it becomes unavailable." />
+        <DataTable
+          rows={overview.data?.map((o) => ({ ...o, id: o.networkId ?? 'other' }))}
+          loading={overview.isLoading}
+          error={overview.error}
+          columns={[
+            { key: 'd', header: 'Destination', cell: (o) => <span className="flex items-center gap-1.5 font-medium text-slate-900"><Globe2 className="h-3.5 w-3.5 text-slate-400" />{o.destination}</span> },
+            { key: 'u', header: 'Provider used', cell: (o) => <RouteDecision s={o} /> },
+            { key: 'r', header: 'Rule', cell: (o) => (o.rule ? <span className="text-sm">{o.rule.name}<span className="block text-xs text-slate-500">{STRATEGY[o.rule.strategy].label}</span></span> : <span className="text-xs text-slate-500">Default routing<span className="block">priority order</span></span>) },
+            {
+              key: 'x',
+              header: 'Ruled out',
+              cell: (o) =>
+                o.rejected.length ? (
+                  <span className="block max-w-xs space-y-0.5 text-xs text-slate-500">{o.rejected.map((r) => <span key={r.providerId} className="block truncate" title={r.reason}><span className="font-medium text-slate-700">{r.name}:</span> {r.reason}</span>)}</span>
+                ) : (
+                  <span className="text-xs text-slate-400">—</span>
+                ),
+            },
+          ]}
+          empty={<EmptyState icon={<Globe2 />} title="No destinations yet" description="Add destination networks below." />}
+        />
+      </Card>
 
       <Card padded={false}>
         <CardHeader
           title="Rules"
-          description="Evaluated in this order."
+          description="Checked top to bottom; the first active rule matching the destination is used. Destinations no rule matches use default routing."
           action={order && canManage && (
             <span className="flex gap-2">
               <Button size="xs" variant="secondary" onClick={() => setOrder(null)}>Discard</Button>
@@ -1006,6 +1110,7 @@ export function RoutingRulesPage() {
         ) : (
           <DataTable
             rows={ordered}
+            rowClassName={(r) => (!r.isActive ? 'opacity-60' : '')}
             columns={[
               {
                 key: 'o',
@@ -1014,7 +1119,7 @@ export function RoutingRulesPage() {
                   const i = ordered.indexOf(r);
                   return (
                     <span className="flex items-center gap-1">
-                      <span className="w-6 tabular-nums text-slate-500">{i + 1}</span>
+                      <span className="w-5 tabular-nums font-medium text-slate-500">{i + 1}</span>
                       {canManage && (
                         <>
                           <button type="button" aria-label="Move up" disabled={i === 0} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700 disabled:opacity-30" onClick={() => move(i, -1)}><ArrowUp className="h-3.5 w-3.5" /></button>
@@ -1025,13 +1130,23 @@ export function RoutingRulesPage() {
                   );
                 },
               },
-              { key: 'n', header: 'Rule', cell: (r) => <span><span className="font-medium text-slate-900">{r.name}</span>{r.description && <span className="block max-w-xs truncate text-xs text-slate-500">{r.description}</span>}</span> },
-              { key: 'd', header: 'Destination', cell: (r) => <span className="flex items-center gap-1.5"><Globe2 className="h-3.5 w-3.5 text-slate-400" />{r.destination}</span> },
-              { key: 's', header: 'Strategy', cell: (r) => <span title={STRATEGY[r.strategy].hint}>{STRATEGY[r.strategy].label}</span> },
-              { key: 'p', header: 'Primary', cell: (r) => (r.primaryProvider ? <Badge color="blue">{r.primaryProvider}</Badge> : <span className="text-slate-400">—</span>) },
-              { key: 'b', header: 'Backup', cell: (r) => (r.backupProviders.length ? <span className="text-xs">{r.backupProviders.join(' → ')}</span> : <span className="text-slate-400">—</span>) },
+              {
+                key: 'n',
+                header: 'Rule',
+                cell: (r) => (
+                  <span className="block max-w-[14rem]">
+                    <span className="font-medium text-slate-900">{r.name}</span>
+                    {r.shadowedBy && <span className="block text-[11px] font-medium text-amber-700">Never reached — "{r.shadowedBy.name}" matches first</span>}
+                    {r.description && <span className="block truncate text-xs text-slate-500">{r.description}</span>}
+                  </span>
+                ),
+              },
+              { key: 'd', header: 'Destination', cell: (r) => <span className="whitespace-nowrap">{r.destination}</span> },
+              { key: 's', header: 'Strategy', cell: (r) => <Badge color={r.strategy === 'LOWEST_COST' ? 'green' : r.strategy === 'PRIORITY' ? 'blue' : 'violet'}>{STRATEGY[r.strategy].label}</Badge> },
+              { key: 'p', header: 'Providers / order', cell: (r) => <span className="block max-w-[16rem] text-xs text-slate-700">{providersInOrder(r)}</span> },
               { key: 'c', header: 'Max cost', className: 'text-right', headerClassName: 'text-right', cell: (r) => <span className="tabular-nums">{r.maxCostPerSegment ? fmtMoney(r.maxCostPerSegment) : '—'}</span> },
               { key: 'm', header: 'Min capacity', className: 'text-right', headerClassName: 'text-right', cell: (r) => <span className="tabular-nums">{r.minProviderCapacity ? fmtNumber(r.minProviderCapacity) : '—'}</span> },
+              { key: 'now', header: 'Uses now', cell: (r) => <span className="block max-w-[15rem]"><span className="text-[11px] text-slate-400">{r.preview.destination}</span><RouteDecision s={r.preview} compact /></span> },
               { key: 'a', header: 'Status', cell: (r) => <StatusBadge status={r.isActive ? 'ACTIVE' : 'INACTIVE'} /> },
               {
                 key: 'x',
@@ -1046,7 +1161,7 @@ export function RoutingRulesPage() {
                   ),
               },
             ]}
-            empty={<EmptyState icon={<Route />} title="No routing rules" description="Default routing applies: providers serving the destination, by priority. Add rules for primary/backup providers, cost caps or capacity guards." />}
+            empty={<EmptyState icon={<Route />} title="No routing rules" description="Default routing applies: providers serving the destination, highest priority first. Add a rule to pick the cheapest provider, fix a primary + backups, or cap the cost." />}
           />
         )}
       </Card>
@@ -1104,29 +1219,33 @@ export function RoutingRulesPage() {
 export function RoutingSimulatorPage() {
   const networks = useQuery({ queryKey: ['admin', 'routing', 'networks'], queryFn: businessService.networks });
   const [form, setForm] = useState({ countryCode: 'RW', networkId: '', senderName: '', recipients: '1000', message: 'Hello! Your order has been confirmed. Thank you for choosing us.' });
-  const sim = useApiMutation(
-    () =>
-      businessService.simulateRouting({
-        networkId: form.networkId || null,
-        countryCode: form.networkId ? null : form.countryCode || null,
-        senderName: form.senderName.trim() || null,
-        recipients: Number(form.recipients),
-        message: form.message,
-      }),
-    { silentError: false },
+  const sim = useApiMutation(() =>
+    businessService.simulateRouting({
+      networkId: form.networkId || null,
+      countryCode: form.networkId ? null : form.countryCode || null,
+      senderName: form.senderName.trim() || null,
+      recipients: Number(form.recipients),
+      message: form.message,
+    }),
   );
   const s = sim.data;
   const countries = [...new Map((networks.data ?? []).map((n) => [n.countryCode, n.countryName])).entries()];
   const valid = Number.isInteger(Number(form.recipients)) && Number(form.recipients) >= 1 && form.message.length > 0;
+  const row = (label: string, value: React.ReactNode) => (
+    <div className="flex flex-col gap-0.5 border-b border-slate-100 py-3 last:border-0 sm:flex-row sm:gap-6">
+      <dt className="w-44 shrink-0 text-sm text-slate-500">{label}</dt>
+      <dd className="min-w-0 text-sm text-slate-900">{value}</dd>
+    </div>
+  );
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Routing simulator"
-        description="See exactly how a send would be routed right now. Nothing is sent, no wallet credits or provider capacity are touched."
+        description="See exactly how a send would be routed right now. Nothing is sent and no credits or provider capacity are used."
         breadcrumbs={[{ label: 'SMS providers', to: '/admin/providers' }, { label: 'Routing', to: '/admin/routing' }, { label: 'Simulator' }]}
       />
-      <div className="grid gap-6 xl:grid-cols-[380px_1fr]">
+      <div className="grid gap-6 xl:grid-cols-[360px_1fr]">
         <Card className="h-fit space-y-4">
           <Field label="Destination country">
             <Select value={form.countryCode} onChange={(e) => setForm((f) => ({ ...f, countryCode: e.target.value, networkId: '' }))}>
@@ -1141,7 +1260,7 @@ export function RoutingSimulatorPage() {
             </Select>
           </Field>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Sender ID"><Input value={form.senderName} onChange={(e) => setForm((f) => ({ ...f, senderName: e.target.value }))} maxLength={11} placeholder="ACME" /></Field>
+            <Field label="Sender ID"><Input value={form.senderName} onChange={(e) => setForm((f) => ({ ...f, senderName: e.target.value }))} maxLength={11} placeholder="Optional" /></Field>
             <Field label="Recipients"><Input type="number" min={1} value={form.recipients} onChange={(e) => setForm((f) => ({ ...f, recipients: e.target.value }))} /></Field>
           </div>
           <Field label="Message"><Textarea rows={4} value={form.message} onChange={(e) => setForm((f) => ({ ...f, message: e.target.value }))} /></Field>
@@ -1149,58 +1268,36 @@ export function RoutingSimulatorPage() {
         </Card>
 
         {!s ? (
-          <Card><EmptyState icon={<FlaskConical />} title="Run a simulation" description="Pick a destination and message to see the matching rule, eligible providers and the decision." /></Card>
+          <Card><EmptyState icon={<FlaskConical />} title="Run a simulation" description="Pick a destination and message to see which provider would be used, why, and at what cost." /></Card>
         ) : (
           <div className="space-y-4">
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-              <StatCard label="Encoding" icon={<HeartPulse />} value={s.message.encoding === 'GSM7' ? 'GSM-7' : 'Unicode'} hint={`${fmtNumber(s.message.characterCount)} characters`} />
-              <StatCard label="Segments" icon={<Layers />} tone="violet" value={fmtNumber(s.message.totalSegments)} hint={`${s.message.segmentsPerRecipient} per recipient`} />
-              <StatCard label="Est. provider cost" icon={<CircleDollarSign />} tone="amber" value={fmtMoney(s.estimate.providerCost)} hint="from the lots that would be consumed" />
-              <StatCard label="Est. gross margin" icon={<TrendingUp />} tone="emerald" value={s.estimate.grossMargin ? fmtMoney(s.estimate.grossMargin) : '—'} hint={s.estimate.revenue ? `revenue ${fmtMoney(s.estimate.revenue)}` : 'no sales history yet'} />
-            </div>
-
             <Card className={cn('ring-1', s.selected ? 'ring-emerald-200' : 'ring-red-200')}>
-              <div className="flex flex-wrap items-start justify-between gap-4">
-                <div>
-                  <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Selected provider</p>
-                  <p className={cn('mt-1 text-2xl font-semibold', s.selected ? 'text-slate-900' : 'text-red-600')}>{s.selected?.name ?? 'None — send would be refused'}</p>
-                  <p className="mt-1 max-w-2xl text-sm text-slate-600">{s.reason}</p>
-                </div>
-                <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
-                  <div><dt className="text-xs text-slate-500">Backup</dt><dd className="font-medium">{s.backup?.name ?? '—'}</dd></div>
-                  <div><dt className="text-xs text-slate-500">Matching rule</dt><dd className="font-medium">{s.rule ? `#${s.rule.priority} ${s.rule.name}` : 'Default routing'}</dd></div>
-                  <div><dt className="text-xs text-slate-500">Destination</dt><dd>{s.destination.network?.name ?? (s.destination.countryCode ? `${s.destination.countryCode}, unknown network` : 'Unknown')}</dd></div>
-                  <div><dt className="text-xs text-slate-500">Strategy</dt><dd>{STRATEGY[s.strategy].label}</dd></div>
-                </dl>
-              </div>
-              {s.allocations.length > 1 && (
-                <div className="mt-4 rounded-lg bg-slate-50 p-3 text-sm">
-                  <p className="font-medium text-slate-800">Capacity split</p>
-                  <ul className="mt-1 space-y-0.5 text-slate-600">
-                    {s.allocations.map((a) => <li key={a.providerId}>{a.name}: {fmtNumber(a.recipients)} recipients · {fmtNumber(a.segments)} segments · {fmtMoney(a.estimatedCost)}</li>)}
-                  </ul>
-                </div>
-              )}
-              {s.unroutedRecipients > 0 && <Alert tone="danger" className="mt-4">Not enough eligible capacity for {fmtNumber(s.unroutedRecipients)} recipients — a real send would be refused and nothing charged.</Alert>}
-              {s.sender && (!s.sender.known || !s.sender.approved) && <Alert tone="warning" className="mt-4">Sender ID "{s.sender.name}" {s.sender.known ? 'is not approved' : 'does not exist'}; a real send would be rejected before routing.</Alert>}
+              <dl>
+                {row('Destination', s.destination.network ? `${s.destination.countryCode} / ${s.destination.network.name}` : s.destination.countryCode ? `${s.destination.countryCode} / unknown network` : 'Other destinations')}
+                {row('Required segments', <span className="tabular-nums">{fmtNumber(s.message.totalSegments)} <span className="text-slate-500">({fmtNumber(s.message.segmentsPerRecipient)} per recipient · {s.message.encoding === 'GSM7' ? 'GSM-7' : 'Unicode'} · {fmtNumber(s.message.characterCount)} characters)</span></span>)}
+                {row('Selected provider', s.selected ? <span className="text-base font-semibold">{s.selected.name} <span className="text-sm font-normal text-slate-500">· {fmtMoney(s.selected.costPerSegment)}/segment · {fmtNumber(s.selected.available)} usable</span></span> : <span className="font-semibold text-red-600">None — the send would be refused and nothing charged</span>)}
+                {row('Reason', s.reason)}
+                {row('Rule', s.rule ? `#${s.rule.priority} ${s.rule.name} (${STRATEGY[s.rule.strategy].label})` : 'Default routing (no rule matches)')}
+                {row('Backup', s.backup ? `${s.backup.name} · ${fmtMoney(s.backup.costPerSegment)}/segment` : <span className="text-amber-700">None — if the selected provider becomes unavailable, sends are refused</span>)}
+                {row(
+                  'Rejected providers',
+                  s.rejected.length ? (
+                    <ul className="space-y-0.5">{s.rejected.map((r) => <li key={r.providerId}><span className="font-medium">{r.name}</span> <span className="text-slate-500">— {r.reason}</span></li>)}</ul>
+                  ) : (
+                    'None'
+                  ),
+                )}
+                {s.allocations.length > 1 && row('Capacity split', <ul className="space-y-0.5">{s.allocations.map((a) => <li key={a.providerId}>{a.name}: {fmtNumber(a.recipients)} recipients · {fmtNumber(a.segments)} segments · {fmtMoney(a.estimatedCost)}</li>)}</ul>)}
+              </dl>
+              {s.unroutedRecipients > 0 && <Alert tone="danger" className="mt-3">Not enough eligible capacity for {fmtNumber(s.unroutedRecipients)} recipients — a real send would be refused and nothing charged.</Alert>}
+              {s.sender && (!s.sender.known || !s.sender.approved) && <Alert tone="warning" className="mt-3">Sender ID "{s.sender.name}" {s.sender.known ? 'is not approved' : 'does not exist'}; a real send would be rejected before routing.</Alert>}
             </Card>
 
-            <Card padded={false}>
-              <CardHeader title="Candidates" description="In evaluation order." />
-              <DataTable
-                rows={s.candidates.map((c) => ({ ...c, id: c.providerId }))}
-                columns={[
-                  { key: 'n', header: 'Provider', cell: (c) => <span className="flex items-center gap-2"><span className={cn('h-2 w-2 rounded-full', c.eligible ? 'bg-emerald-500' : 'bg-slate-300')} /><span className="font-medium">{c.name}</span>{c.providerId === s.selected?.providerId && <Badge color="green">selected</Badge>}{c.providerId === s.backup?.providerId && <Badge color="violet">backup</Badge>}</span> },
-                  { key: 'r', header: 'Role', cell: (c) => titleCase(c.role) },
-                  { key: 'h', header: 'Health', cell: (c) => <HealthBadge health={c.health} /> },
-                  { key: 'p', header: 'Priority', className: 'text-right', headerClassName: 'text-right', cell: (c) => <span className="tabular-nums">{c.priority}</span> },
-                  { key: 'c', header: 'Cost / segment', className: 'text-right', headerClassName: 'text-right', cell: (c) => <span className="tabular-nums">{fmtMoney(c.costPerSegment)}</span> },
-                  { key: 'a', header: 'Capacity', className: 'text-right', headerClassName: 'text-right', cell: (c) => <span className="tabular-nums">{fmtNumber(c.capacity)}{c.reserve > 0 && <span className="block text-[11px] text-slate-400">reserve {fmtNumber(c.reserve)}</span>}</span> },
-                  { key: 'e', header: 'Eligibility', cell: (c) => (c.eligible ? <Badge color="green">Eligible</Badge> : <span className="text-xs text-red-600">{c.reasons.join(' · ')}</span>) },
-                ]}
-                empty={<EmptyState icon={<RadioTower />} title="No candidate providers" />}
-              />
-            </Card>
+            <div className="grid gap-4 sm:grid-cols-3">
+              <StatCard label="Customer pays" icon={<Banknote />} value={s.estimate.revenue ? fmtMoney(s.estimate.revenue) : '—'} hint={s.estimate.revenuePerCredit ? `${fmtNumber(s.message.totalCredits)} credits × ${fmtMoney(s.estimate.revenuePerCredit)}` : 'no sales history yet'} />
+              <StatCard label="Provider cost" icon={<CircleDollarSign />} tone="amber" value={fmtMoney(s.estimate.providerCost)} hint="from the capacity lots that would be used" />
+              <StatCard label="Gross margin" icon={<TrendingUp />} tone="emerald" value={s.estimate.grossMargin ? fmtMoney(s.estimate.grossMargin) : '—'} hint="customer pays − provider cost" />
+            </div>
           </div>
         )}
       </div>
