@@ -1,4 +1,4 @@
-import { downloadFile, get, getPage, http, patch, post } from '@/api/client';
+import { del, downloadFile, get, getPage, http, patch, post } from '@/api/client';
 import type { CustomerFinanceRow, Paginated } from '@/api/types';
 
 /** Supply side, finance and platform-owner business data (Super Admin console). */
@@ -316,6 +316,7 @@ export const businessService = {
   networks: () => get<SmsNetwork[]>('/admin/routing/networks'),
   createNetwork: (body: Record<string, unknown>) => post<SmsNetwork>('/admin/routing/networks', body),
   updateNetwork: (id: string, body: Record<string, unknown>) => patch<SmsNetwork>(`/admin/routing/networks/${id}`, body),
+  deleteNetwork: (id: string) => del(`/admin/routing/networks/${id}`),
   routingRules: () => get<RoutingRule[]>('/admin/routing/rules'),
   routingOverview: () => get<RoutingOverviewRow[]>('/admin/routing/overview'),
   createRoutingRule: (body: Record<string, unknown>) => post<RoutingRule>('/admin/routing/rules', body),

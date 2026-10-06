@@ -21,6 +21,7 @@ import {
   Route,
   ShoppingCart,
   SlidersHorizontal,
+  Trash2,
   TrendingUp,
 } from 'lucide-react';
 import { Badge, StatusBadge, type BadgeColor } from '@/components/ui/Badge';
@@ -1036,6 +1037,12 @@ export function RoutingRulesPage() {
   const [order, setOrder] = useState<string[] | null>(null);
   const [confirmOrder, setConfirmOrder] = useState(false);
   const [toggle, setToggle] = useState<RoutingRule | null>(null);
+  const [deleting, setDeleting] = useState<SmsNetwork | null>(null);
+  const deleteNet = useApiMutation((n: SmsNetwork) => businessService.deleteNetwork(n.id), {
+    success: 'Network deleted',
+    invalidate: [['admin', 'routing'], ['admin', 'providers']],
+    onSuccess: () => setDeleting(null),
+  });
   const toggleM = useApiMutation((r: RoutingRule) => businessService.updateRoutingRule(r.id, { isActive: !r.isActive }), {
     success: (r) => (r.isActive ? 'Rule activated' : 'Rule deactivated'),
     invalidate: [['admin', 'routing']],
@@ -1182,7 +1189,18 @@ export function RoutingRulesPage() {
             { key: 'p', header: 'Prefixes', cell: (n) => <span className="font-mono text-xs">{n.prefixes.join(', ')}</span> },
             { key: 'v', header: 'Providers', className: 'text-right', headerClassName: 'text-right', cell: (n) => <span className="tabular-nums">{n.providerCount ?? 0}</span> },
             { key: 's', header: 'Status', cell: (n) => <StatusBadge status={n.isActive ? 'ACTIVE' : 'INACTIVE'} /> },
-            { key: 'x', header: '', className: 'text-right', cell: (n) => canManage && <Button size="xs" variant="secondary" icon={<Pencil className="h-3 w-3" />} onClick={() => setNetModal({ open: true, network: n })}>Edit</Button> },
+            {
+              key: 'x',
+              header: '',
+              className: 'text-right',
+              cell: (n) =>
+                canManage && (
+                  <span className="flex justify-end gap-1">
+                    <Button size="xs" variant="secondary" icon={<Pencil className="h-3 w-3" />} onClick={() => setNetModal({ open: true, network: n })}>Edit</Button>
+                    <Button size="xs" variant="ghost" className="text-red-600" icon={<Trash2 className="h-3 w-3" />} onClick={() => setDeleting(n)}>Delete</Button>
+                  </span>
+                ),
+            },
           ]}
           empty={<EmptyState icon={<Globe2 />} title="No networks" description="Add destination networks so providers and rules can target them." />}
         />
@@ -1190,6 +1208,23 @@ export function RoutingRulesPage() {
 
       <RuleModal open={modal.open} rule={modal.rule} onClose={() => setModal({ open: false, rule: null })} providers={providers.data ?? []} networks={networks.data ?? []} />
       <NetworkModal open={netModal.open} network={netModal.network} onClose={() => setNetModal({ open: false, network: null })} />
+      <ConfirmDialog
+        open={!!deleting}
+        onClose={() => setDeleting(null)}
+        title={`Delete ${deleting?.name ?? 'network'}?`}
+        description={
+          <span className="block space-y-2">
+            <span className="block">
+              Numbers starting with <span className="font-mono">{deleting?.prefixes.join(', ')}</span> will no longer match this network; they will only be routed to providers that serve all destinations.
+              {deleting?.providerCount ? ` It is removed from the ${deleting.providerCount} provider${deleting.providerCount === 1 ? '' : 's'} that serve it.` : ''}
+            </span>
+            <span className="block text-xs text-slate-500">Not possible while a routing rule targets it, or once messages have been routed to it — deactivate it instead in that case.</span>
+          </span>
+        }
+        confirmLabel="Delete network"
+        loading={deleteNet.isPending}
+        onConfirm={() => deleting && deleteNet.mutate(deleting)}
+      />
       <ConfirmDialog
         open={!!toggle}
         onClose={() => setToggle(null)}

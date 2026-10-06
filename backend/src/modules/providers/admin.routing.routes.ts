@@ -38,6 +38,16 @@ adminRoutingRouter.patch(
   }),
 );
 
+adminRoutingRouter.delete(
+  '/networks/:id',
+  requirePlatformPermission('providers.manage'),
+  asyncHandler(async (req, res) => {
+    const { id } = parse(uuidParam, req.params);
+    await svc.deleteNetwork(id, actorFromRequest(req), metaFromRequest(req));
+    return ok(res, null, 'Network deleted');
+  }),
+);
+
 adminRoutingRouter.get('/rules', requirePlatformPermission('providers.view'), asyncHandler(async (_req, res) => ok(res, await svc.listRules())));
 
 /** Which provider each destination uses right now, why, and what happens if it is unavailable. */
