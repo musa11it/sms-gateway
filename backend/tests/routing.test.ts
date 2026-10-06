@@ -249,6 +249,36 @@ describe('routing rules administration', () => {
     expect((await request(app).post('/api/v1/admin/routing/rules/reorder').set(auth(sa)).send({ ids: [b.body.data.id] })).body.code).toBe('INVALID_ORDER');
   });
 
+  it('deletes unused networks; refuses networks used by a rule or by past messages', async () => {
+    const del = (id: string, token = sa) => request(app).delete(`/api/v1/admin/routing/networks/${id}`).set(auth(token));
+    const mkNet = (code: string, prefixes: string[]) => request(app).post('/api/v1/admin/routing/networks').set(auth(sa)).send({ code, name: code, countryCode: 'UG', countryName: 'Uganda', prefixes });
+
+    // Unused network (with a provider linked to it) is deleted, links included, and audited.
+    const spare = await mkNet('UG-SPARE', ['+25670']);
+    await patchProvider('MTN', { networkIds: [nets['RW-MTN'], spare.body.data.id] }).expect(200);
+    const { token } = await createActiveOrg();
+    expect((await del(spare.body.data.id, token)).status).toBe(403);
+    expect((await del(spare.body.data.id)).status).toBe(200);
+    expect(await prisma.smsNetwork.findUnique({ where: { id: spare.body.data.id } })).toBeNull();
+    expect(await prisma.smsProviderNetwork.count({ where: { networkId: spare.body.data.id } })).toBe(0);
+    expect(await prisma.auditLog.count({ where: { action: 'ROUTING_NETWORK_DELETED', resourceId: spare.body.data.id } })).toBe(1);
+
+    // Used by a rule → refused, naming the rule.
+    const ug = await mkNet('UG-MTN', ['+25677']);
+    const rule = await createRule({ name: 'Uganda', networkId: ug.body.data.id, strategy: 'LOWEST_COST' });
+    const inUse = await del(ug.body.data.id);
+    expect(inUse.body.code).toBe('NETWORK_IN_USE');
+    expect(inUse.body.message).toContain('"Uganda"');
+
+    // Messages were routed to it → refused (deactivate instead).
+    await request(app).patch(`/api/v1/admin/routing/rules/${rule.body.data.id}`).set(auth(sa)).send({ networkId: null, countryCode: 'UG' }).expect(200);
+    const sender = await createActiveOrg();
+    await credit(sender.org.id, 5);
+    const sent = await request(app).post('/api/v1/sms/send').set(auth(sender.token)).send({ senderId: sender.sender.id, message: 'Hi', recipients: ['+256771234567'] });
+    expect(sent.status).toBe(201);
+    expect((await del(ug.body.data.id)).body.code).toBe('NETWORK_HAS_HISTORY');
+  });
+
   it('manages destination networks without prefix clashes', async () => {
     const ke = await request(app).post('/api/v1/admin/routing/networks').set(auth(sa)).send({ code: 'KE-SAF', name: 'Safaricom Kenya', countryCode: 'KE', countryName: 'Kenya', prefixes: ['+25471', '+25472'] });
     expect(ke.status).toBe(201);

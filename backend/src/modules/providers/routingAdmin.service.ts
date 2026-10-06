@@ -60,6 +60,28 @@ export async function updateNetwork(id: string, input: Partial<z.infer<typeof ne
   });
 }
 
+/**
+ * Delete a destination network. Refused while a routing rule targets it (change the rule first) or
+ * once messages have been routed to it (deactivate it instead, so message history stays accurate).
+ * Provider capability links to the network are removed with it.
+ */
+export async function deleteNetwork(id: string, actor: Actor, meta?: RequestMeta) {
+  return prisma.$transaction(async (tx) => {
+    const network = await tx.smsNetwork.findUnique({ where: { id }, include: { _count: { select: { providers: true } } } });
+    if (!network) throw AppError.notFound('Network');
+    const rules = await tx.smsRoutingRule.findMany({ where: { networkId: id }, select: { name: true } });
+    if (rules.length) {
+      throw AppError.conflict(`${network.name} is used by routing rule${rules.length > 1 ? 's' : ''} ${rules.map((r) => `"${r.name}"`).join(', ')}. Change or remove the rule's network first.`, 'NETWORK_IN_USE');
+    }
+    const messages = await tx.smsRecipient.count({ where: { networkId: id } });
+    if (messages) {
+      throw AppError.conflict(`${messages.toLocaleString()} messages were routed to ${network.name}; deactivate it instead so their history stays accurate.`, 'NETWORK_HAS_HISTORY');
+    }
+    await tx.smsNetwork.delete({ where: { id } });
+    await audit({ actor, action: 'ROUTING_NETWORK_DELETED', resource: 'sms_network', resourceId: id, metadata: { network: serializeNetwork(network), providerLinksRemoved: network._count.providers }, meta }, tx);
+  });
+}
+
 // ── Rules ────────────────────────────────────────────────────────────────
 
 const ruleFields = {
