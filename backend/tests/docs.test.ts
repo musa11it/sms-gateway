@@ -1,7 +1,7 @@
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 import { SCOPES } from '../src/modules/integrations/scopes';
-import { documentedAdminPermissions } from '../src/docs/adminEndpoints';
+import { documentedAdminPermissions, orphanedBodies } from '../src/docs/adminEndpoints';
 import { app } from './helpers';
 
 describe('API documentation', () => {
@@ -34,5 +34,18 @@ describe('API documentation', () => {
     // Every permission a documented endpoint asks for can actually be granted to a credential.
     const grantable = SCOPES.map((s) => s.key);
     expect(documentedAdminPermissions().every((p) => grantable.includes(p))).toBe(true);
+  });
+
+  it('has no hand-written request body for a route that does not exist', () => {
+    expect(orphanedBodies()).toEqual([]);
+  });
+
+  it('documents request bodies and examples for the key admin endpoints', async () => {
+    const spec = (await request(app).get('/api/docs/openapi.json')).body;
+    const create = spec.paths['/admin/api-credentials'].post;
+    expect(create.requestBody.content['application/json'].schema.required).toEqual(['name', 'scopes']);
+    expect(create.requestBody.content['application/json'].example.name).toBe('Finance System');
+    expect(spec.paths['/admin/organizations'].post.requestBody.content['application/json'].schema.properties.owner).toBeDefined();
+    expect(spec.paths['/admin/api-credentials/{id}/rotate'].post.requestBody.content['application/json'].example).toEqual({ overlapMinutes: 60 });
   });
 });

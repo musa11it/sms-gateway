@@ -337,6 +337,9 @@ export const GRANT_MIGRATIONS: { version: number; grants: Record<string, string[
       CUSTOMER_MANAGER: ['senders.allocate'],
       CUSTOMER_FINANCE: ['senders.allocate'],
     },
+  },
+  {
+    version: 4,
     grants: { ADMIN: ['organizations.create'] },
   },
 ];

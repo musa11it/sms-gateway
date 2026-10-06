@@ -27,6 +27,8 @@ export interface VerificationItem {
   status: string;
   reviewNote: string | null;
   createdAt: string;
+  /** Staff recorded that the platform already holds this document (no file was uploaded). */
+  onFile?: boolean;
 }
 
 export interface VerificationOverview {

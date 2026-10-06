@@ -17,28 +17,35 @@ export interface ApiScopeDef {
   group: string;
   label: string;
   description: string;
-  /** Moves money or changes access: needs an IP allow-list and an expiry on the credential. */
+  risk: RiskLevel;
+  /** `risk` is high or critical: needs an IP allow-list and an expiry on the credential. */
   highRisk?: boolean;
 }
 
 const ORGANIZATION: ApiScopeDef[] = [
-  { key: 'sms.send', level: 'ORGANIZATION', group: 'Public API', label: 'Send SMS', description: 'Send messages on behalf of the organization (spends its credits).' },
-  { key: 'sms.read', level: 'ORGANIZATION', group: 'Public API', label: 'Read messages', description: 'Read the status and delivery of the organization’s messages.' },
-  { key: 'balance.read', level: 'ORGANIZATION', group: 'Public API', label: 'Read balance', description: 'Read the organization’s SMS credit balance.' },
+  { key: 'sms.send', level: 'ORGANIZATION', group: 'Public API', label: 'Send SMS', description: 'Send messages on behalf of the organization (spends its credits).', risk: 'normal' },
+  { key: 'sms.read', level: 'ORGANIZATION', group: 'Public API', label: 'Read messages', description: 'Read the status and delivery of the organization’s messages.', risk: 'normal' },
+  { key: 'balance.read', level: 'ORGANIZATION', group: 'Public API', label: 'Read balance', description: 'Read the organization’s SMS credit balance.', risk: 'normal' },
 ];
 
+export type RiskLevel = 'normal' | 'high' | 'critical';
+
 /**
- * A Super Admin may grant a credential any platform permission. The ones below can move money or
- * change who has access, so a credential holding any of them must also be locked to specific IP
- * addresses and have an expiry date (enforced when the credential is created).
+ * A Super Admin may grant a credential any platform permission, but risk decides the extra controls:
+ *  - high:     moves money or changes access/configuration → needs an IP allow-list and an expiry.
+ *  - critical: can change who holds power (roles, users, credentials) → same controls, and the
+ *              credential can never be used to manage other credentials (see `humanOnly`).
+ * Everything not listed is `normal`.
  */
-const HIGH_RISK = new Set([
+const CRITICAL = new Set(['roles.create', 'roles.update', 'roles.delete', 'roles.assign', 'users.create', 'users.update', 'integrations.manage']);
+const HIGH = new Set([
   'wallet.adjust', 'wallet.refund', 'payments.refund', 'payments.verify', 'packages.manage', 'settings.update',
-  'providers.manage', 'provider_purchases.create', 'expenses.manage',
-  'roles.create', 'roles.update', 'roles.delete', 'roles.assign', 'users.create', 'users.update', 'users.approve',
-  'integrations.manage', 'api_keys.revoke',
+  'providers.manage', 'provider_purchases.create', 'expenses.manage', 'users.approve', 'api_keys.revoke',
 ]);
-export const isHighRiskScope = (key: string) => HIGH_RISK.has(key);
+export const scopeRisk = (key: string): RiskLevel => (CRITICAL.has(key) ? 'critical' : HIGH.has(key) ? 'high' : 'normal');
+/** Scopes that require an IP allow-list and an expiry on the credential. */
+export const requiresControls = (key: string) => scopeRisk(key) !== 'normal';
+export const isHighRiskScope = requiresControls;
 
 const PLATFORM: ApiScopeDef[] = PERMISSIONS.filter((p) => p.scopes.includes('PLATFORM')).map((p) => ({
   key: p.key,
@@ -46,7 +53,8 @@ const PLATFORM: ApiScopeDef[] = PERMISSIONS.filter((p) => p.scopes.includes('PLA
   group: p.group,
   label: p.key,
   description: p.description,
-  highRisk: HIGH_RISK.has(p.key),
+  risk: scopeRisk(p.key),
+  highRisk: requiresControls(p.key),
 }));
 
 export const SCOPES: ApiScopeDef[] = [...ORGANIZATION, ...PLATFORM];

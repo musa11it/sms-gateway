@@ -24,6 +24,11 @@ const schema = z.object({
   ACCESS_TOKEN_TTL: z.string().default('15m'),
   REFRESH_TOKEN_TTL_DAYS: int(14),
   API_KEY_PEPPER: z.string().min(8),
+  // Requests per minute: one credential, and one source IP before authentication (blunts key guessing).
+  API_RATE_LIMIT: int(120),
+  API_IP_RATE_LIMIT: int(300),
+  // Number of reverse proxies in front of the app whose X-Forwarded-For is trusted (0 = none).
+  TRUST_PROXY: int(1),
   ENCRYPTION_KEY: z.string().regex(/^[0-9a-fA-F]{64}$/, 'ENCRYPTION_KEY must be 64 hex characters'),
 
   QUEUE_DRIVER: z.enum(['memory', 'bullmq']).default('memory'),

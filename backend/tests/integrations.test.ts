@@ -102,7 +102,7 @@ describe('finance system integration', () => {
     // Cap scopes: balance.read removed, so the existing key loses it immediately.
     await set({ enabled: true, allowedScopes: ['sms.read'] }).expect(200);
     expect((await request(app).get('/api/v1/public/balance').set(bearer(secret))).status).toBe(403);
-    expect((await createKey(['sms.send'])).status).toBe(403);
+    expect((await createKey(['sms.send'])).status).toBe(422);
 
     // Switch the organization off entirely.
     await set({ enabled: false, allowedScopes: null }).expect(200);
