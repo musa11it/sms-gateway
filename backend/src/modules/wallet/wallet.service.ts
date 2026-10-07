@@ -10,7 +10,7 @@ import { audit } from '../audit-logs/audit.service';
 import { notifyOrganization } from '../notifications/notification.service';
 import { releaseSenderCredits } from '../senders/allocation.service';
 import { emitWebhookEvent } from '../webhooks/webhook.service';
-import { consumeLots, createLot, latestExpiry, readConsumption, restoreLots } from './creditLots';
+import { consumedPrice, consumeLots, createLot, latestExpiry, readConsumption, restoreLots, type LotConsumption } from './creditLots';
 
 export interface LedgerEntry {
   organizationId: string;
@@ -28,6 +28,10 @@ export interface LedgerEntry {
   restoreOf?: string;
   /** Debits: consume this credit lot before the FEFO order (expiry, purchase reversal). */
   preferLotId?: string;
+  /** Credits: selling price of one credit, frozen on the new lot (null/omitted = free credits). */
+  unitPrice?: Prisma.Decimal | null;
+  /** Credits with restoreOf: the exact lots to refill (e.g. one recipient's share of a batch debit). */
+  restoreLots?: LotConsumption[];
 }
 
 export function isDuplicateReference(err: unknown): boolean {
@@ -83,16 +87,16 @@ export async function applyLedgerEntry(tx: Tx, entry: LedgerEntry) {
     const original = entry.restoreOf ? await tx.walletTransaction.findUnique({ where: { reference: entry.restoreOf } }) : null;
     let leftover = entry.amount;
     if (original) {
-      const consumed = readConsumption(original.metadata);
+      const consumed = entry.restoreLots?.length ? entry.restoreLots : readConsumption(original.metadata);
       const r = await restoreLots(tx, consumed, entry.amount);
       leftover = r.leftover;
       metadata = { ...metadata, restoredLots: r.restored };
       const allocationId = (original.metadata as { allocationId?: unknown } | null)?.allocationId;
       if (typeof allocationId === 'string') await releaseSenderCredits(tx, allocationId, entry.amount);
-      if (leftover > 0) entry = { ...entry, expiresAt: await latestExpiry(tx, consumed) };
+      if (leftover > 0) entry = { ...entry, expiresAt: await latestExpiry(tx, consumed), unitPrice: entry.unitPrice ?? (consumedPrice(consumed) ? new Prisma.Decimal(consumedPrice(consumed)!) : null) };
     }
     if (leftover > 0) {
-      await createLot(tx, { walletId: wallet.id, organizationId: entry.organizationId, transactionId, type: entry.type, credits: leftover, expiresAt: entry.expiresAt });
+      await createLot(tx, { walletId: wallet.id, organizationId: entry.organizationId, transactionId, type: entry.type, credits: leftover, expiresAt: entry.expiresAt, unitPrice: entry.unitPrice });
     }
   }
 

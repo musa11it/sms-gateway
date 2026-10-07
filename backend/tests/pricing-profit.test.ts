@@ -4,6 +4,7 @@ import { prisma } from '../src/config/prisma';
 import { PaymentProviderFactory } from '../src/integrations/payments/PaymentProviderFactory';
 import type { SimulationPaymentProvider } from '../src/integrations/payments/SimulationPaymentProvider';
 import { verifyAndApply } from '../src/modules/payments/payment.service';
+import { dispatchMessage } from '../src/modules/sms/sms.service';
 import { app, createActiveOrg, createStaff, resetDatabase } from './helpers';
 
 const auth = (t: string) => ({ Authorization: `Bearer ${t}` });
@@ -75,12 +76,15 @@ describe('credits sold through each provider', () => {
       .set(auth(token))
       .send({ senderId: sender.id, message: 'x'.repeat(200), recipients: ['+250788200001', '+250788200002', '+250788200003', '+250728200004', '+250728200005', '+447400123457'] });
     expect(res.status).toBe(201);
+    await dispatchMessage(res.body.data.id); // accepted by the providers → realized
     const ov = await request(app).get('/api/v1/admin/providers/overview?range=today').set(auth(sa));
     const by = Object.fromEntries((ov.body.data.byProvider as { code: string; credits: number; providerCost: string; sharePercent: number; revenue: string }[]).map((p) => [p.code, p]));
     expect(by.MTN).toMatchObject({ credits: 6, providerCost: '48.00', sharePercent: 50 });
     expect(by.AIRTEL).toMatchObject({ credits: 4, providerCost: '34.00' });
     expect(by.GENERIC).toMatchObject({ credits: 2, providerCost: '22.00' });
-    expect(Number(by.MTN.revenue)).toBeGreaterThan(0);
+    // Revenue at the price the 100 credits were bought at (13.00): 6 × 13 = 78.00 → gross profit 30.00.
+    expect(by.MTN).toMatchObject({ revenue: '78.00', grossProfit: '30.00' });
+    expect(by.GENERIC).toMatchObject({ revenue: '26.00', grossProfit: '4.00' });
     expect(await prisma.smsRecipient.count({ where: { organizationId: org.id } })).toBe(6);
   });
 });

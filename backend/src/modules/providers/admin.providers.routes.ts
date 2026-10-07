@@ -36,8 +36,8 @@ adminProvidersRouter.get(
     const overview = await providersOverview(from, to);
     // Margin figures need profit.view, like the finance pages.
     if (!req.user!.platformPermissions.has('profit.view')) {
-      overview.economics = { ...overview.economics, grossMargin: null, marginPercent: null };
-      overview.byProvider = overview.byProvider.map((p) => ({ ...p, grossMargin: null, marginPercent: null }));
+      overview.economics = { ...overview.economics, grossMargin: null, grossProfit: null, marginPercent: null };
+      overview.byProvider = overview.byProvider.map((p) => ({ ...p, grossMargin: null, grossProfit: null, marginPercent: null }));
     }
     return ok(res, overview);
   }),
@@ -101,7 +101,7 @@ adminProvidersRouter.get(
     const traffic = await prisma.smsRecipient.groupBy({ by: ['status'], where: { providerId: id, createdAt: { gte: since } }, _count: true });
     const { from, to } = resolveRange(parse(rangeQuery, req.query));
     const detail = await providerDetail(id, from, to);
-    if (!req.user!.platformPermissions.has('profit.view')) detail.economics = { ...detail.economics, grossMargin: null, marginPercent: null };
+    if (!req.user!.platformPermissions.has('profit.view')) detail.economics = { ...detail.economics, grossMargin: null, grossProfit: null, marginPercent: null };
     return ok(res, {
       ...detail,
       network: adapter?.network ?? null,

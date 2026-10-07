@@ -13,7 +13,9 @@ import { queue } from '../../workers/queue';
 import { audit } from '../audit-logs/audit.service';
 import { notifyOrganization } from '../notifications/notification.service';
 import { getSetting } from '../settings/settings.service';
+import { readConsumption } from '../wallet/creditLots';
 import { applyLedgerEntry, scheduleLowBalanceCheck } from '../wallet/wallet.service';
+import { recipientRevenue } from '../finance/smsFinancials.service';
 import { checkDestination } from '../providers/destination.service';
 import { releaseMessageCapacity, releaseRecipientCapacity, routeAndReserve } from '../providers/provider.service';
 import { loadRoutingContext } from '../providers/routing.service';
@@ -178,8 +180,23 @@ export async function sendSms(input: SendSmsInput) {
         // Route each destination to an upstream provider and reserve provider capacity
         // (in segments) atomically with the customer's wallet debit below.
         const routes = await routeAndReserve(tx, { reservationRef: messageId, phones: prepared.recipients.map((r) => r.phone), segmentsPerRecipient: q.segments, actor: input.actor });
+        // Sender IDs with a credit allocation draw from it; others may only use unreserved credits.
+        ({ allocationId } = await reserveSenderCredits(tx, { organizationId: org.id, senderId: sender.id, senderName: sender.name, credits: q.totalCredits }));
+        // Credits are deducted when the message is accepted (reserved for scheduled sends;
+        // refunded if cancelled or rejected by the provider).
+        const debit = await applyLedgerEntry(tx, {
+          organizationId: org.id,
+          type: 'SMS_DEBIT',
+          amount: -q.totalCredits,
+          reference: `sms:${messageId}`,
+          description: `${input.source === 'CAMPAIGN' ? 'Campaign' : 'SMS'} to ${prepared.recipients.length.toLocaleString()} recipient(s) × ${q.segments} segment(s)`,
+          createdById: actorUserId(input.actor),
+          metadata: { messageId, recipients: prepared.recipients.length, segments: q.segments, segmentationVersion: q.segmentationVersion, source: input.source, ...(allocationId ? { allocationId } : {}) },
+        });
+        // Each recipient's credits, in order, from the credit lots the debit consumed (price frozen per lot).
+        const revenues = recipientRevenue(readConsumption(debit.transaction.metadata), q.creditsPerRecipient, prepared.recipients.length);
         await tx.smsRecipient.createMany({
-          data: prepared.recipients.map((r) => {
+          data: prepared.recipients.map((r, i) => {
             const route = routes.get(r.phone)!;
             return {
               messageId,
@@ -190,7 +207,10 @@ export async function sendSms(input: SendSmsInput) {
               credits: q.creditsPerRecipient,
               providerId: route.providerId,
               provider: route.adapterKey,
-              providerCost: route.unitCost.mul(q.segments).toDecimalPlaces(4),
+              providerCost: route.providerCost,
+              costLots: route.costLots as unknown as Prisma.InputJsonValue,
+              revenue: revenues[i].revenue,
+              revenueLots: revenues[i].revenueLots as unknown as Prisma.InputJsonValue,
               countryCode: route.countryCode,
               networkId: route.networkId,
               routingRuleId: route.routingRuleId,
@@ -198,19 +218,6 @@ export async function sendSms(input: SendSmsInput) {
               status: 'QUEUED' as const,
             };
           }),
-        });
-        // Sender IDs with a credit allocation draw from it; others may only use unreserved credits.
-        ({ allocationId } = await reserveSenderCredits(tx, { organizationId: org.id, senderId: sender.id, senderName: sender.name, credits: q.totalCredits }));
-        // Credits are deducted when the message is accepted (reserved for scheduled sends;
-        // refunded if cancelled or rejected by the provider).
-        await applyLedgerEntry(tx, {
-          organizationId: org.id,
-          type: 'SMS_DEBIT',
-          amount: -q.totalCredits,
-          reference: `sms:${messageId}`,
-          description: `${input.source === 'CAMPAIGN' ? 'Campaign' : 'SMS'} to ${prepared.recipients.length.toLocaleString()} recipient(s) × ${q.segments} segment(s)`,
-          createdById: actorUserId(input.actor),
-          metadata: { messageId, recipients: prepared.recipients.length, segments: q.segments, segmentationVersion: q.segmentationVersion, source: input.source, ...(allocationId ? { allocationId } : {}) },
         });
         await audit(
           {
@@ -271,6 +278,8 @@ async function refundRecipient(recipient: SmsRecipient, reason: string, segments
       amount: recipient.credits,
       reference: `refund:sms:${recipient.id}:${recipient.attempts}`,
       restoreOf: `sms:${recipient.messageId}`,
+      // Refill exactly the credit lots this recipient used (same price and expiry).
+      restoreLots: readConsumption({ lots: recipient.revenueLots }),
       description: `Refund: message to ${recipient.phone} rejected (${reason})`,
       metadata: { recipientId: recipient.id, messageId: recipient.messageId },
     });
@@ -502,9 +511,10 @@ export async function retryRecipient(recipientId: string, actor: Actor, meta?: R
   if (org.status !== 'ACTIVE') throw AppError.conflict('Organization is not active', 'ORGANIZATION_NOT_ACTIVE');
 
   await prisma.$transaction(async (tx) => {
+    let recharge: { revenue?: Prisma.Decimal; revenueLots?: Prisma.InputJsonValue } = {};
     if (r.refunded) {
       const { allocationId } = await reserveSenderCredits(tx, { organizationId: r.organizationId, senderId: r.message.senderId, senderName: r.message.senderName, credits: r.credits });
-      await applyLedgerEntry(tx, {
+      const debit = await applyLedgerEntry(tx, {
         organizationId: r.organizationId,
         type: 'SMS_DEBIT',
         amount: -r.credits,
@@ -513,6 +523,9 @@ export async function retryRecipient(recipientId: string, actor: Actor, meta?: R
         createdById: actorUserId(actor),
         metadata: { recipientId: r.id, ...(allocationId ? { allocationId } : {}) },
       });
+      // The re-charge draws from today's lots: revenue follows the credits actually used.
+      const [rev] = recipientRevenue(readConsumption(debit.transaction.metadata), r.credits, 1);
+      recharge = { revenue: rev.revenue, revenueLots: rev.revenueLots as unknown as Prisma.InputJsonValue };
     }
     let reroute = {};
     if (r.capacityReleased || !r.providerId) {
@@ -521,7 +534,8 @@ export async function retryRecipient(recipientId: string, actor: Actor, meta?: R
       reroute = {
         providerId: route.providerId,
         provider: route.adapterKey,
-        providerCost: route.unitCost.mul(r.message.segments).toDecimalPlaces(4),
+        providerCost: route.providerCost,
+        costLots: route.costLots as unknown as Prisma.InputJsonValue,
         countryCode: route.countryCode,
         networkId: route.networkId,
         routingRuleId: route.routingRuleId,
@@ -531,7 +545,16 @@ export async function retryRecipient(recipientId: string, actor: Actor, meta?: R
     }
     await tx.smsRecipient.update({
       where: { id: r.id },
-      data: { status: 'QUEUED', refunded: false, providerMessageId: null, errorCode: null, errorMessage: null, failedAt: null, ...reroute },
+      data: {
+        status: 'QUEUED',
+        refunded: false,
+        providerMessageId: null,
+        errorCode: null,
+        errorMessage: null,
+        failedAt: null,
+        ...reroute,
+        ...recharge,
+      },
     });
     await tx.smsMessage.update({ where: { id: r.messageId }, data: { status: 'QUEUED', completedAt: null } });
     await audit({ actor, action: 'SMS_RETRIED', resource: 'sms_recipient', resourceId: r.id, organizationId: r.organizationId, metadata: { recharged: r.refunded }, meta }, tx);

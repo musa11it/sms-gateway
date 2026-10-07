@@ -10,6 +10,7 @@ import { audit } from '../audit-logs/audit.service';
 import { rangeQuery, resolveRange } from '../reports/report.service';
 import { getSetting } from '../settings/settings.service';
 import { customerReport, financialSeries, financialSummary, financialTables, providerBreakdown } from './finance.service';
+import { profitBreakdown, profitTotals, purchaseFinancials, recipientFinancials } from './smsFinancials.service';
 
 export const adminFinanceRouter = Router();
 
@@ -34,6 +35,7 @@ adminFinanceRouter.get(
       summary.money.netProfit = null as unknown as string;
       summary.money.netMarginPercent = null;
       summary.unitEconomics.salesContribution = null as unknown as string;
+      summary.smsProfit = { ...summary.smsProfit, grossProfit: null, grossMarginPercent: null };
     }
     return ok(res, {
       range: { from, to, unit, range: q.range },
@@ -56,7 +58,43 @@ adminFinanceRouter.get(
     const canProfit = req.user!.platformPermissions.has('profit.view');
     let rows = await customerReport(from, to);
     if (q.search) rows = rows.filter((r) => r.organization.name.toLowerCase().includes(q.search!.toLowerCase()));
-    return ok(res, { range: { from, to, range: q.range }, canViewProfit: canProfit, customers: rows.map((r) => (canProfit ? r : { ...r, grossMargin: null })) });
+    return ok(res, { range: { from, to, range: q.range }, canViewProfit: canProfit, customers: rows.map((r) => (canProfit ? r : { ...r, grossMargin: null, grossProfit: null, grossMarginPercent: null })) });
+  }),
+);
+
+/**
+ * SMS gross profit (segment level) for the period, filtered and grouped — the same figures every
+ * other view uses. Group by provider, organization (customer), campaign, country, network, day or month.
+ */
+adminFinanceRouter.get(
+  '/profit',
+  requirePlatformPermission('profit.view'),
+  asyncHandler(async (req, res) => {
+    const q = parse(
+      rangeQuery.extend({
+        groupBy: z.enum(['provider', 'organization', 'campaign', 'country', 'network', 'day', 'month']).default('provider'),
+        organizationId: z.string().uuid().optional(),
+        providerId: z.string().uuid().optional(),
+        campaignId: z.string().uuid().optional(),
+        countryCode: z.string().trim().length(2).toUpperCase().optional(),
+        networkId: z.string().uuid().optional(),
+      }),
+      req.query,
+    );
+    const { from, to } = resolveRange(q, undefined, await earliestActivity());
+    const filter = { from, to, organizationId: q.organizationId, providerId: q.providerId, campaignId: q.campaignId, countryCode: q.countryCode, networkId: q.networkId };
+    const [totals, rows] = await Promise.all([profitTotals(filter), profitBreakdown(filter, q.groupBy)]);
+    return ok(res, { range: { from, to, range: q.range }, groupBy: q.groupBy, currency: await getSetting('billing.currency'), totals, rows });
+  }),
+);
+
+/** One SMS: what the customer paid for its segments, which provider and lots carried it, and the gross profit. */
+adminFinanceRouter.get(
+  '/sms/:id',
+  requirePlatformPermission('profit.view'),
+  asyncHandler(async (req, res) => {
+    const { id } = parse(uuidParam, req.params);
+    return ok(res, { currency: await getSetting('billing.currency'), ...(await recipientFinancials(id)) });
   }),
 );
 
@@ -74,9 +112,22 @@ adminFinanceRouter.get(
       prisma.customerPurchase.count({ where }),
       prisma.customerPurchase.aggregate({ where, _sum: { revenue: true, credits: true, estimatedProviderCost: true, paymentFee: true, contribution: true } }),
     ]);
+    const financials = await purchaseFinancials(items);
+    const canProfit = req.user!.platformPermissions.has('profit.view');
     res.json({
       success: true,
-      data: items.map((s) => ({ ...s, revenue: s.revenue.toFixed(2), estimatedProviderCost: s.estimatedProviderCost.toFixed(2), paymentFee: s.paymentFee.toFixed(2), contribution: s.contribution.toFixed(2) })),
+      data: items.map((s) => {
+        const usage = financials.get(s.id)!;
+        return {
+          ...s,
+          revenue: s.revenue.toFixed(2),
+          estimatedProviderCost: s.estimatedProviderCost.toFixed(2),
+          paymentFee: s.paymentFee.toFixed(2),
+          contribution: s.contribution.toFixed(2),
+          // Realized use of these credits: gross profit only exists for credits actually used.
+          usage: canProfit ? usage : { ...usage, grossProfit: null, grossMarginPercent: null },
+        };
+      }),
       pagination: { page: q.page, limit: q.limit, total, totalPages: Math.max(1, Math.ceil(total / q.limit)) },
       totals: {
         credits: sums._sum.credits ?? 0,

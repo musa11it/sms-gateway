@@ -214,15 +214,32 @@ export function CustomerFinanceReportPage() {
   const q = useQuery({ queryKey: ['admin', 'finance', 'customers', r.params, debounced], queryFn: () => businessService.customerReport({ ...r.params, ...(debounced ? { search: debounced } : {}) }) });
   const rows = q.data?.customers ?? [];
   const sum = (f: (x: (typeof rows)[number]) => number) => rows.reduce((s, x) => s + f(x), 0);
-  const money = (v: number) => fmtMoney(v.toFixed(2));
+  // Money totals in whole cents, so the totals reconcile exactly (revenue − cost = gross profit).
+  const cents = (f: (x: (typeof rows)[number]) => string | null) => sum((x) => Math.round(Number(f(x) ?? 0) * 100));
+  const money = (c: number) => fmtMoney((c / 100).toFixed(2));
+  const revenueUsed = cents((x) => x.smsRevenue);
+  const grossProfit = cents((x) => x.grossProfit);
   return (
     <div className="space-y-6">
-      <PageHeader title="Customer report" description="SMS bought and used per customer against the provider cost of the messages routed for them. All figures come from stored transactions." actions={<RangePicker {...r} options={REPORT_RANGES} />} />
+      <PageHeader
+        title="Customer report"
+        description="Credits each customer bought, the credits they used for SMS accepted by providers (valued at the price they were bought at), the provider cost of those SMS and the gross profit. Unused credits are not counted as SMS revenue and carry no provider cost."
+        actions={<RangePicker {...r} options={REPORT_RANGES} />}
+      />
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="SMS purchased" icon={<Coins />} loading={q.isLoading} value={fmtNumber(sum((x) => x.smsPurchased))} />
-        <StatCard label="Revenue" icon={<Banknote />} tone="emerald" loading={q.isLoading} value={money(sum((x) => Number(x.revenue)))} />
-        <StatCard label="Provider cost" icon={<Receipt />} tone="amber" loading={q.isLoading} value={money(sum((x) => Number(x.providerCost)))} hint={`${fmtNumber(sum((x) => x.smsUsed))} SMS used`} />
-        {q.data?.canViewProfit && <StatCard label="Gross SMS margin" icon={<TrendingUp />} tone="violet" loading={q.isLoading} value={money(sum((x) => Number(x.grossMargin ?? 0)))} hint="Revenue − provider cost" />}
+        <StatCard label="Credits sold" icon={<Coins />} loading={q.isLoading} value={fmtNumber(sum((x) => x.smsPurchased))} hint={`${money(cents((x) => x.revenue))} credit sales`} />
+        <StatCard label="Customer revenue" icon={<Banknote />} tone="emerald" loading={q.isLoading} value={money(revenueUsed)} hint={`${fmtNumber(sum((x) => x.smsUsed))} credits used for SMS`} />
+        <StatCard label="Provider cost" icon={<Receipt />} tone="amber" loading={q.isLoading} value={money(cents((x) => x.providerCost))} hint="Stock lot cost of those SMS" />
+        {q.data?.canViewProfit && (
+          <StatCard
+            label="Gross profit"
+            icon={<TrendingUp />}
+            tone={grossProfit < 0 ? 'red' : 'violet'}
+            loading={q.isLoading}
+            value={money(grossProfit)}
+            hint={revenueUsed > 0 ? `${((grossProfit / revenueUsed) * 100).toFixed(2)}% gross margin` : 'Customer revenue − provider cost'}
+          />
+        )}
       </div>
       <Card padded={false}>
         <div className="border-b border-slate-100 p-4">
@@ -234,10 +251,10 @@ export function CustomerFinanceReportPage() {
           error={q.error}
           columns={[
             { key: 'o', header: 'Customer', cell: (x) => <Link to={`/admin/organizations/${x.organization.id}`} className="link">{x.organization.name}</Link> },
-            { key: 'p', header: 'Purchased', className: 'text-right', headerClassName: 'text-right', cell: (x) => <span className="tabular-nums">{fmtNumber(x.smsPurchased)}</span> },
-            { key: 'r', header: 'Revenue', className: 'text-right', headerClassName: 'text-right', cell: (x) => <span className="font-medium tabular-nums">{fmtMoney(x.revenue)}</span> },
-            { key: 'u', header: 'Used', className: 'text-right', headerClassName: 'text-right', cell: (x) => <span className="tabular-nums">{fmtNumber(x.smsUsed)}</span> },
-            { key: 'b', header: 'Balance', className: 'text-right', headerClassName: 'text-right', cell: (x) => <span className="tabular-nums text-slate-600">{fmtNumber(x.currentBalance)}</span> },
+            { key: 'p', header: 'Credits sold', className: 'text-right', headerClassName: 'text-right', cell: (x) => <span className="tabular-nums">{fmtNumber(x.smsPurchased)}<span className="block text-[11px] text-slate-500">{fmtMoney(x.revenue)}</span></span> },
+            { key: 'u', header: 'Credits used', className: 'text-right', headerClassName: 'text-right', cell: (x) => <span className="tabular-nums">{fmtNumber(x.smsUsed)}</span> },
+            { key: 'b', header: 'Credits remaining', className: 'text-right', headerClassName: 'text-right', cell: (x) => <span className="tabular-nums text-slate-600">{fmtNumber(x.currentBalance)}</span> },
+            { key: 'r', header: 'Customer revenue', className: 'text-right', headerClassName: 'text-right', cell: (x) => <span className="font-medium tabular-nums">{fmtMoney(x.smsRevenue)}</span> },
             {
               key: 'v',
               header: 'Provider usage',
@@ -250,7 +267,20 @@ export function CustomerFinanceReportPage() {
             },
             { key: 'c', header: 'Provider cost', className: 'text-right', headerClassName: 'text-right', cell: (x) => <span className="tabular-nums text-slate-600">{fmtMoney(x.providerCost)}</span> },
             ...(q.data?.canViewProfit
-              ? [{ key: 'm', header: 'Gross margin', className: 'text-right', headerClassName: 'text-right', cell: (x: (typeof rows)[number]) => <span className="font-semibold tabular-nums text-emerald-700">{fmtMoney(x.grossMargin)}</span> }]
+              ? [
+                  {
+                    key: 'm',
+                    header: 'Gross profit',
+                    className: 'text-right',
+                    headerClassName: 'text-right',
+                    cell: (x: (typeof rows)[number]) => (
+                      <span className={cn('font-semibold tabular-nums', Number(x.grossProfit) < 0 ? 'text-red-600' : 'text-emerald-700')}>
+                        {fmtMoney(x.grossProfit)}
+                        {x.grossMarginPercent != null && <span className="block text-[11px] font-normal">{x.grossMarginPercent}%</span>}
+                      </span>
+                    ),
+                  },
+                ]
               : []),
           ]}
           empty={<EmptyState icon={<Coins />} title="No customer activity" description="No purchases or messages in this period." />}

@@ -363,13 +363,15 @@ describe('providers', () => {
     const pay = await request(app).post('/api/v1/payments').set(auth(token)).send({ quantity: 1500, method: 'MOBILE_MONEY', payerPhone: '0788123456' });
     await simulator().simulatePayerAction(pay.body.data.payment.providerReference, 'APPROVE');
     await verifyAndApply(pay.body.data.payment.id);
-    await send(token, sender.id, phones(10)).expect(201);
+    const sent = await send(token, sender.id, phones(10)).expect(201);
+    await dispatchMessage(sent.body.data.id); // accepted by the provider → realized
     const rep = await request(app).get('/api/v1/admin/finance/customers?range=today').set(auth(superToken));
     expect(rep.status).toBe(200);
     const row = rep.body.data.customers.find((c: { organization: { id: string } }) => c.organization.id === org.id);
     const cost = (await prisma.smsRecipient.aggregate({ where: { organizationId: org.id }, _sum: { providerCost: true } }))._sum.providerCost!.toDecimalPlaces(2);
-    expect(row).toMatchObject({ smsPurchased: 1500, revenue: '16500.00', smsUsed: 10, currentBalance: 1490, messagesRouted: 10, providerCost: cost.toFixed(2) });
-    expect(row.grossMargin).toBe((16500 - Number(cost)).toFixed(2));
+    // Sales: 1,500 credits for 16,500. Gross profit only on the 10 credits used, at the 11.00 they were bought at.
+    expect(row).toMatchObject({ smsPurchased: 1500, revenue: '16500.00', smsUsed: 10, currentBalance: 1490, messagesRouted: 10, smsRevenue: '110.00', providerCost: cost.toFixed(2) });
+    expect(row.grossProfit).toBe((110 - Number(cost)).toFixed(2));
     expect((await request(app).get('/api/v1/admin/finance/customers').set(auth(token))).status).toBe(403);
   });
 });

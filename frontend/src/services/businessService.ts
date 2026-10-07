@@ -101,8 +101,11 @@ export interface ProviderEconomics {
   revenuePerCredit: string | null;
   revenue: string | null;
   providerCost: string;
+  /** Gross profit (realized SMS revenue − provider cost); grossMargin is the same value, kept for older screens. */
   grossMargin: string | null;
+  grossProfit?: string | null;
   marginPercent: number | null;
+  pending?: { messages: number; credits: number; revenue: string; providerCost: string };
 }
 
 export interface ProviderOverview {
@@ -127,6 +130,11 @@ export interface ProviderLot {
   unitCost: string;
   totalCost: string;
   remainingValue: string;
+  /** Segments used by SMS (net of returns) and their cost at this lot's own unit cost. */
+  consumed: number;
+  consumedCost: string;
+  /** Segments removed by stock adjustments (not SMS). */
+  writtenOff: number;
   createdAt: string;
 }
 
@@ -222,7 +230,18 @@ export interface RoutingSimulation {
   allocations: { providerId: string; name: string; recipients: number; segments: number; estimatedCost: string }[];
   unroutedRecipients: number;
   customer: { organizationId: string; name: string; balance: number; required: number; sufficient: boolean } | null;
-  estimate: { providerCost: string; revenue: string | null; revenuePerCredit: string | null; grossMargin: string | null };
+  estimate: {
+    providerCost: string;
+    revenue: string | null;
+    revenuePerCredit: string | null;
+    grossMargin: string | null;
+    /** CUSTOMER_LOTS = the chosen customer's own credit prices; PLATFORM_AVERAGE = average realized price. */
+    priceSource?: 'CUSTOMER_LOTS' | 'PLATFORM_AVERAGE' | null;
+    grossProfit?: string | null;
+    grossMarginPercent?: number | null;
+    providerCostPerSegment?: string | null;
+    grossProfitPerSegment?: string | null;
+  };
 }
 
 export interface ProviderDetail extends Provider {
@@ -269,10 +288,50 @@ export interface CapacityEntry {
   provider: { code: string; name: string };
 }
 
+/** Segment-level SMS financials (realized = accepted by a provider and not refunded). revenue − providerCost = grossProfit. */
+export interface SmsFigures {
+  messages: number;
+  segments: number;
+  credits: number;
+  revenue: string;
+  providerCost: string;
+  grossProfit: string | null;
+  grossMarginPercent: number | null;
+}
+
+export type ProfitGroup = 'provider' | 'organization' | 'campaign' | 'country' | 'network' | 'day' | 'month';
+
+export interface ProfitReport {
+  range: { from: string; to: string; range: string };
+  groupBy: ProfitGroup;
+  currency: string;
+  totals: SmsFigures & { pending: { messages: number; credits: number; revenue: string; providerCost: string } };
+  rows: (SmsFigures & { key: string | null; label: string })[];
+}
+
+export interface SmsFinancials extends SmsFigures {
+  id: string;
+  phone: string;
+  status: string;
+  currency: string;
+  organization: { id: string; name: string };
+  messageId: string;
+  campaignId: string | null;
+  sentAt: string;
+  provider: { id: string; name: string; code: string } | null;
+  realized: boolean;
+  state: 'REALIZED' | 'PENDING' | 'NOT_CHARGED';
+  customerPricePerCredit: string;
+  providerCostPerSegment: string;
+  revenueLots: { lotId: string; credits: number; unitPrice: string | null; source: string | null; purchasedAt: string | null; reference: string | null }[];
+  costLots: { lotId: string; segments: number; unitCost: string; cost: string; reference: string | null; purchasedAt: string | null }[];
+}
+
 export interface FinanceOverview {
   range: { from: string; to: string; unit: string; range: string };
   currency: string;
   canViewProfit: boolean;
+  smsProfit: SmsFigures & { pending: { messages: number; credits: number; revenue: string; providerCost: string } };
   money: { revenue: string; providerSpend: string; grossMargin: string | null; refunds: string; paymentFees: string; otherExpenses: string; netProfit: string | null; netMarginPercent: number | null };
   unitEconomics: { salesRevenue: string; estimatedProviderCostOfSales: string; paymentFeesOnSales: string; salesContribution: string | null; costOfSmsDelivered: string };
   sms: {
@@ -308,6 +367,8 @@ export interface CustomerSale {
   contribution: string;
   currency: string;
   createdAt: string;
+  /** Realized use of these credits (unused credits carry no provider cost). */
+  usage: { unitPrice: string | null; creditsUsed: number; creditsRemaining: number; creditsOther: number; revenueUsed: string; providerCost: string; grossProfit: string | null; grossMarginPercent: number | null };
 }
 
 export interface Expense {
@@ -365,6 +426,8 @@ export const businessService = {
   ledger: (params: P) => getPage<CapacityEntry>('/admin/providers/ledger', params),
 
   finance: (params: { range: string; from?: string; to?: string }) => get<FinanceOverview>('/admin/finance/overview', params),
+  profit: (params: Record<string, unknown>) => get<ProfitReport>('/admin/finance/profit', params),
+  smsFinancials: (id: string) => get<SmsFinancials>(`/admin/finance/sms/${id}`),
   customerReport: (params: Record<string, unknown>) =>
     get<{ range: { from: string; to: string; range: string }; canViewProfit: boolean; customers: CustomerFinanceRow[] }>('/admin/finance/customers', params),
   sales: async (params: P) => {

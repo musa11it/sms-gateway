@@ -83,7 +83,7 @@ interface CapacityEntry {
 export async function applyCapacityEntry(tx: Tx, e: CapacityEntry) {
   if (!Number.isInteger(e.amount) || e.amount === 0) throw new Error('Capacity amount must be a non-zero integer');
   const existing = await tx.providerCapacityLedger.findUnique({ where: { reference: e.reference } });
-  if (existing) return { entry: existing, duplicate: true as const, cost: D(0) };
+  if (existing) return { entry: existing, duplicate: true as const, cost: D(0), slices: [] as LotSlice[] };
 
   if (e.amount < 0) {
     const need = -e.amount;
@@ -122,8 +122,10 @@ export async function applyCapacityEntry(tx: Tx, e: CapacityEntry) {
   });
 
   let cost = D(0);
+  let slices: LotSlice[] = [];
   if (e.amount < 0) {
-    cost = await consumeLots(tx, e.providerId, -e.amount, entry.id);
+    slices = await consumeLots(tx, e.providerId, -e.amount, entry.id);
+    cost = slices.reduce((s, x) => s.plus(D(x.unitCost).mul(x.segments)), D(0));
   } else {
     let leftover = e.amount;
     if (e.restoreOf) leftover = await restoreLots(tx, e.restoreOf, e.amount);
@@ -142,24 +144,54 @@ export async function applyCapacityEntry(tx: Tx, e: CapacityEntry) {
       });
     }
   }
-  return { entry, duplicate: false as const, cost };
+  return { entry, duplicate: false as const, cost, slices };
 }
 
-/** Take `quantity` from the provider's lots, oldest first, recording each lot used. Returns the total cost. */
+/** Segments taken from one capacity lot, at that lot's historical unit cost. */
+export interface LotSlice {
+  lotId: string;
+  segments: number;
+  unitCost: string;
+}
+
+/** Take `quantity` from the provider's lots, oldest first, recording each lot used. Returns the slices taken, in order. */
 async function consumeLots(tx: Tx, providerId: string, quantity: number, ledgerEntryId: string) {
   const lots = await tx.providerCapacityLot.findMany({ where: { providerId, remaining: { gt: 0 } }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] });
   let left = quantity;
-  let cost = D(0);
+  const slices: LotSlice[] = [];
   for (const lot of lots) {
     if (left === 0) break;
     const n = Math.min(left, lot.remaining);
     await tx.providerCapacityLot.update({ where: { id: lot.id }, data: { remaining: { decrement: n } } });
     await tx.providerLotConsumption.create({ data: { lotId: lot.id, ledgerEntryId, quantity: n, unitCost: lot.unitCost } });
-    cost = cost.plus(D(lot.unitCost).mul(n));
+    slices.push({ lotId: lot.id, segments: n, unitCost: D(lot.unitCost).toFixed(4) });
     left -= n;
   }
   if (left > 0) throw new Error(`Capacity lots out of sync for provider ${providerId}: ${left} segments missing`);
-  return cost;
+  return slices;
+}
+
+/**
+ * Split an ordered list of lot slices into consecutive chunks of `size` units (one per recipient),
+ * so every recipient carries the exact lots — and so the exact cost/price — of its own units.
+ */
+export function splitSlices<T extends { lotId: string }>(slices: (T & { qty: number })[], size: number, count: number) {
+  const queue = slices.map((s) => ({ ...s }));
+  const out: (T & { qty: number })[][] = [];
+  for (let i = 0; i < count; i++) {
+    let need = size;
+    const mine: (T & { qty: number })[] = [];
+    while (need > 0 && queue.length) {
+      const head = queue[0];
+      const n = Math.min(need, head.qty);
+      mine.push({ ...head, qty: n });
+      head.qty -= n;
+      need -= n;
+      if (head.qty === 0) queue.shift();
+    }
+    out.push(mine);
+  }
+  return out;
 }
 
 /** Give capacity back to the lots a usage entry consumed (most recently consumed first). Returns what could not be placed. */
@@ -281,8 +313,11 @@ export async function adjustCapacity(
 export interface RouteAssignment {
   providerId: string;
   adapterKey: string;
-  /** Provider cost of ONE segment for this route (cost of the capacity lots consumed). */
+  /** Provider cost of ONE segment for this route (average of the lots this recipient consumed). */
   unitCost: Prisma.Decimal;
+  /** Exact provider cost of this recipient's segments and the lots they came from. */
+  providerCost: Prisma.Decimal;
+  costLots: LotSlice[];
   /** Destination country/network, the rule that chose the provider (null = default routing) and a short note. */
   countryCode: string | null;
   networkId: string | null;
@@ -332,10 +367,11 @@ export async function routeAndReserve(tx: Tx, input: { reservationRef: string; p
     });
   }
 
-  const unitCosts = new Map<string, Prisma.Decimal>();
+  // Each provider's lot slices, split in recipient order: recipient N gets the next `need` segments.
+  const costs = new Map<string, { providerCost: Prisma.Decimal; costLots: LotSlice[] }>();
   for (const [providerId, segments] of perProvider) {
     const p = ctx.providers.find((x) => x.id === providerId)!;
-    const { cost } = await applyCapacityEntry(tx, {
+    const { slices } = await applyCapacityEntry(tx, {
       providerId,
       type: 'USAGE',
       amount: -segments,
@@ -344,7 +380,11 @@ export async function routeAndReserve(tx: Tx, input: { reservationRef: string; p
       unitCost: weightedAverageCost(p),
       createdById: input.actor ? actorUserId(input.actor) : null,
     });
-    unitCosts.set(providerId, cost.div(segments).toDecimalPlaces(4));
+    const phones = [...decisions].filter(([, d]) => d.providerId === providerId).map(([phone]) => phone);
+    splitSlices(slices.map((s) => ({ ...s, qty: s.segments })), need, phones.length).forEach((mine, i) => {
+      const costLots = mine.map(({ lotId, unitCost, qty }) => ({ lotId, segments: qty, unitCost }));
+      costs.set(phones[i], { providerCost: costLots.reduce((s, x) => s.plus(D(x.unitCost).mul(x.segments)), D(0)), costLots });
+    });
     const after = p.capacityBalance - segments;
     if (p.capacityBalance >= p.lowCapacityThreshold && after < p.lowCapacityThreshold) {
       void notifyStaff('providers.manage', {
@@ -359,7 +399,8 @@ export async function routeAndReserve(tx: Tx, input: { reservationRef: string; p
   const assignment = new Map<string, RouteAssignment>();
   for (const [phone, d] of decisions) {
     const p = ctx.providers.find((x) => x.id === d.providerId)!;
-    assignment.set(phone, { ...d, adapterKey: SmsProviderFactory.keyFor(p), unitCost: unitCosts.get(d.providerId)! });
+    const c = costs.get(phone)!;
+    assignment.set(phone, { ...d, adapterKey: SmsProviderFactory.keyFor(p), unitCost: c.providerCost.div(need).toDecimalPlaces(4), ...c });
   }
   return assignment;
 }

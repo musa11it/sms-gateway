@@ -998,6 +998,9 @@ model SmsCreditLot {
   sourceType          WalletTransactionType
   credits             Int
   remaining           Int
+  // Selling price of one credit in this lot, frozen at purchase (null = credits given for free, e.g.
+  // admin credit). Revenue of every SMS segment drawn from the lot uses this price, never today's.
+  unitPrice           Decimal?              @db.Decimal(14, 4)
   // null = never expires
   expiresAt           DateTime?
   expiredAt           DateTime?
@@ -1401,8 +1404,15 @@ model SmsRecipient {
   // Adapter key (e.g. mtn:simulation) and the provider account the message was routed to.
   provider          String?
   providerId        String?            @db.Char(36)
-  // Provider cost of this recipient's segments (cost of the capacity lots consumed at routing time).
+  // Provider cost of this recipient's segments: exact cost of the provider capacity lots consumed at
+  // routing time ([{ lotId, segments, unitCost }] in costLots). Never recalculated.
   providerCost      Decimal?           @db.Decimal(14, 4)
+  costLots          Json?
+  // Customer revenue of this recipient's credits: Σ credits × the selling price of the customer credit
+  // lots they were drawn from ([{ lotId, credits, unitPrice }] in revenueLots). Never recalculated.
+  // Realized (counted as SMS revenue/gross profit) once a provider accepted the message and it was not refunded.
+  revenue           Decimal?           @db.Decimal(14, 4)
+  revenueLots       Json?
   // Routing decision: destination country/network, the rule that selected the provider (null = default
   // routing) and a short note (e.g. backup used and why). Never recalculated.
   countryCode       String?            @db.Char(2)

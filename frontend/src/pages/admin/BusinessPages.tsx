@@ -28,10 +28,11 @@ import { EmptyState, ErrorState, PageLoader, Skeleton } from '@/components/ui/Fe
 import { Field, Input, Select } from '@/components/ui/Form';
 import { ConfirmDialog, Modal } from '@/components/ui/Overlay';
 import { DataTable, Pagination } from '@/components/ui/Table';
-import { DescriptionList, PageHeader, Tabs } from '@/components/ui/Misc';
+import { DescriptionList, PageHeader, ProgressBar, Tabs } from '@/components/ui/Misc';
 import { useApiMutation } from '@/hooks/useApiMutation';
 import { usePermissions } from '@/hooks/useAuth';
-import { businessService, type Expense } from '@/services/businessService';
+import { adminService } from '@/services/adminService';
+import { businessService, type CustomerSale, type Expense, type ProfitGroup } from '@/services/businessService';
 import { cn, fmtDate, fmtDateTime, fmtMoney, fmtNumber, fmtRelative, titleCase } from '@/utils/format';
 import { RangePicker, useRange } from '../dashboard/ReportsPage';
 
@@ -52,6 +53,84 @@ const k = (v: number) => (Math.abs(v) >= 1_000_000 ? `${(v / 1_000_000).toFixed(
 
 // ── Finance dashboard ──────────────────────────────────────────────────
 
+const PROFIT_GROUPS: { value: ProfitGroup; label: string; header: string }[] = [
+  { value: 'provider', label: 'Provider', header: 'Provider' },
+  { value: 'organization', label: 'Customer', header: 'Customer' },
+  { value: 'campaign', label: 'Campaign', header: 'Campaign' },
+  { value: 'country', label: 'Country', header: 'Destination country' },
+  { value: 'network', label: 'Network', header: 'Destination network' },
+  { value: 'day', label: 'Day', header: 'Day' },
+  { value: 'month', label: 'Month', header: 'Month' },
+];
+
+const profitTone = (v: string | null | undefined) => (v != null && Number(v) < 0 ? 'text-red-600' : 'text-emerald-700');
+
+/**
+ * SMS gross profit, segment level: revenue of the credits used for SMS accepted by providers (each at
+ * the price it was bought at) − cost of the provider stock lots those SMS consumed. Same figures as
+ * the provider, customer, campaign and per-SMS views.
+ */
+function SmsGrossProfit({ params, cur }: { params: { range: string; from?: string; to?: string }; cur: string }) {
+  const [groupBy, setGroupBy] = useState<ProfitGroup>('provider');
+  const [organizationId, setOrganizationId] = useState('');
+  const [providerId, setProviderId] = useState('');
+  const filters = { ...params, groupBy, ...(organizationId ? { organizationId } : {}), ...(providerId ? { providerId } : {}) };
+  const q = useQuery({ queryKey: ['admin', 'finance', 'profit', filters], queryFn: () => businessService.profit(filters) });
+  const providers = useQuery({ queryKey: ['admin', 'providers'], queryFn: businessService.providers });
+  const orgs = useQuery({ queryKey: ['admin', 'organizations', 'finance-filter'], queryFn: () => adminService.organizations({ page: 1, limit: 100 }) });
+  const t = q.data?.totals;
+  const m = (v: string | null | undefined) => (v == null ? '—' : fmtMoney(v, cur));
+  const header = PROFIT_GROUPS.find((g) => g.value === groupBy)!.header;
+  return (
+    <Card padded={false}>
+      <CardHeader
+        title="SMS gross profit"
+        description="Per SMS segment: what the customer paid for the credits used (at their purchase price) minus what the provider stock those SMS consumed cost us. Only SMS accepted by a provider count; payment fees and operating costs are not included."
+      />
+      <div className="grid gap-4 p-5 sm:grid-cols-2 xl:grid-cols-4">
+        <StatCard label="Customer revenue" icon={<Banknote />} tone="emerald" loading={q.isLoading} value={m(t?.revenue)} hint={t ? `${fmtNumber(t.credits)} credits used · ${fmtNumber(t.messages)} SMS` : undefined} />
+        <StatCard label="Provider cost" icon={<ShoppingCart />} tone="amber" loading={q.isLoading} value={m(t?.providerCost)} hint={t ? `${fmtNumber(t.segments)} segments at their stock lot cost` : undefined} />
+        <StatCard label="Gross profit" icon={<TrendingUp />} tone={t?.grossProfit && Number(t.grossProfit) < 0 ? 'red' : 'brand'} loading={q.isLoading} value={m(t?.grossProfit)} hint="Customer revenue − provider cost" />
+        <StatCard
+          label="Gross margin"
+          icon={<Calculator />}
+          tone="violet"
+          loading={q.isLoading}
+          value={t?.grossMarginPercent != null ? `${t.grossMarginPercent}%` : '—'}
+          hint={t?.pending.messages ? `${fmtNumber(t.pending.messages)} SMS waiting for a provider (${fmtNumber(t.pending.credits)} credits reserved, not counted)` : 'Gross profit ÷ customer revenue'}
+        />
+      </div>
+      <div className="flex flex-wrap items-end justify-between gap-3 border-t border-slate-100 px-5 pt-3">
+        <Tabs tabs={PROFIT_GROUPS.map((g) => ({ value: g.value, label: g.label }))} value={groupBy} onChange={setGroupBy} className="border-b-0" />
+        <div className="flex flex-wrap gap-2 pb-2">
+          <Select value={organizationId} onChange={(e) => setOrganizationId(e.target.value)} className="h-9 w-48 py-1 text-sm" aria-label="Customer">
+            <option value="">All customers</option>
+            {(orgs.data?.data ?? []).map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+          </Select>
+          <Select value={providerId} onChange={(e) => setProviderId(e.target.value)} className="h-9 w-44 py-1 text-sm" aria-label="Provider">
+            <option value="">All providers</option>
+            {(providers.data ?? []).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </Select>
+        </div>
+      </div>
+      <DataTable
+        rows={q.data?.rows.map((r) => ({ ...r, id: r.key ?? 'none' }))}
+        loading={q.isLoading}
+        error={q.error}
+        columns={[
+          { key: 'l', header, cell: (r) => <span className="font-medium text-slate-900">{r.label}</span> },
+          { key: 's', header: 'Segments', className: 'text-right', headerClassName: 'text-right', cell: (r) => <span className="tabular-nums">{fmtNumber(r.segments)}</span> },
+          { key: 'r', header: 'Customer revenue', className: 'text-right', headerClassName: 'text-right', cell: (r) => <span className="tabular-nums">{m(r.revenue)}</span> },
+          { key: 'c', header: 'Provider cost', className: 'text-right', headerClassName: 'text-right', cell: (r) => <span className="tabular-nums text-amber-700">{m(r.providerCost)}</span> },
+          { key: 'g', header: 'Gross profit', className: 'text-right', headerClassName: 'text-right', cell: (r) => <span className={cn('font-semibold tabular-nums', profitTone(r.grossProfit))}>{m(r.grossProfit)}</span> },
+          { key: 'p', header: 'Gross margin', className: 'text-right', headerClassName: 'text-right', cell: (r) => <span className={cn('tabular-nums', profitTone(r.grossProfit))}>{r.grossMarginPercent != null ? `${r.grossMarginPercent}%` : '—'}</span> },
+        ]}
+        empty={<EmptyState icon={<TrendingUp />} title="No SMS accepted by providers in this period" description="Gross profit appears once providers accept messages." />}
+      />
+    </Card>
+  );
+}
+
 export function FinancePage() {
   const r = useRange('month');
   const q = useQuery({ queryKey: ['admin', 'finance', r.params], queryFn: () => businessService.finance(r.params) });
@@ -66,9 +145,9 @@ export function FinancePage() {
       ) : (
         <>
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <StatCard label="Customer revenue" icon={<Banknote />} tone="emerald" loading={q.isLoading} value={m(d?.money.revenue)} hint={`${fmtNumber(d?.counts.payments)} verified payments`} />
-            <StatCard label="Provider spend" icon={<ShoppingCart />} tone="amber" loading={q.isLoading} value={m(d?.money.providerSpend)} hint={`${fmtNumber(d?.counts.providerPurchases)} capacity purchases`} />
-            <StatCard label="Gross SMS margin" icon={<TrendingUp />} tone="brand" loading={q.isLoading} value={m(d?.money.grossMargin)} hint="Revenue − provider spend" />
+            <StatCard label="Customer payments" icon={<Banknote />} tone="emerald" loading={q.isLoading} value={m(d?.money.revenue)} hint={`Cash received · ${fmtNumber(d?.counts.payments)} verified payments`} />
+            <StatCard label="Provider stock purchases" icon={<ShoppingCart />} tone="amber" loading={q.isLoading} value={m(d?.money.providerSpend)} hint={`Cash paid · ${fmtNumber(d?.counts.providerPurchases)} capacity purchases`} />
+            <StatCard label="Cash margin" icon={<TrendingUp />} tone="brand" loading={q.isLoading} value={m(d?.money.grossMargin)} hint="Payments − stock purchases (cash basis, not gross profit)" />
             <StatCard
               label="Net profit"
               icon={<Calculator />}
@@ -78,6 +157,8 @@ export function FinancePage() {
               hint={d?.money.netMarginPercent != null ? `${d.money.netMarginPercent}% net margin` : d?.canViewProfit === false ? 'Requires profit permission' : 'No revenue in period'}
             />
           </div>
+
+          {d?.canViewProfit && <SmsGrossProfit params={r.params} cur={cur} />}
 
           <div className="grid gap-6 xl:grid-cols-3">
             <Card padded={false} className="xl:col-span-2">
@@ -102,12 +183,12 @@ export function FinancePage() {
               </div>
             </Card>
             <Card padded={false}>
-              <CardHeader title="Profit calculation" description="Transparent formula for the selected period" />
+              <CardHeader title="Cash profit calculation" description="Money in and out in the selected period" />
               <div className="space-y-2 p-5 text-sm">
                 {[
-                  ['Customer revenue', d?.money.revenue, 'plus'],
-                  ['Provider spend', d?.money.providerSpend, 'minus'],
-                  ['Gross SMS margin', d?.money.grossMargin, 'subtotal'],
+                  ['Customer payments', d?.money.revenue, 'plus'],
+                  ['Provider stock purchases', d?.money.providerSpend, 'minus'],
+                  ['Cash margin', d?.money.grossMargin, 'subtotal'],
                   ['Refunds', d?.money.refunds, 'minus'],
                   ['Payment fees', d?.money.paymentFees, 'minus'],
                   ['Other expenses', d?.money.otherExpenses, 'minus'],
@@ -118,7 +199,7 @@ export function FinancePage() {
                     <span className={cn('tabular-nums', kind === 'minus' && 'text-slate-500')}>{q.isLoading ? '…' : m(value as string | null)}</span>
                   </div>
                 ))}
-                <p className="pt-3 text-xs text-slate-500">{d?.formula.costBasis}. Amounts in {cur}.</p>
+                <p className="pt-3 text-xs text-slate-500">Cash view: stock bought in the period counts as a cost even if it is not used yet. SMS gross profit above matches revenue and cost per segment instead. Amounts in {cur}.</p>
               </div>
             </Card>
           </div>
@@ -140,7 +221,7 @@ export function FinancePage() {
                     { label: 'Est. provider cost of credits sold', value: m(d?.unitEconomics.estimatedProviderCostOfSales) },
                     { label: 'Payment fees on sales', value: m(d?.unitEconomics.paymentFeesOnSales) },
                     { label: 'Sales contribution', value: <strong>{m(d?.unitEconomics.salesContribution)}</strong> },
-                    { label: 'Cost of SMS delivered (WAC)', value: m(d?.unitEconomics.costOfSmsDelivered) },
+                    { label: 'Provider cost of SMS sent (stock lot cost)', value: m(d?.unitEconomics.costOfSmsDelivered) },
                     { label: 'Formula', value: <span className="text-xs text-slate-500">{d?.formula.saleContribution}</span> },
                   ]}
                 />
@@ -371,12 +452,14 @@ export function CustomerSalesPage() {
   const t = q.data?.totals;
   return (
     <div className="space-y-6">
-      <PageHeader title="Customer SMS sales" description="Every credit purchase by a customer, with its estimated provider cost and contribution." />
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <PageHeader
+        title="Customer SMS sales"
+        description="Every credit purchase, at the price the customer paid. Gross profit only exists for credits already used for SMS accepted by a provider; unused credits carry no provider cost."
+      />
+      <div className="grid gap-4 sm:grid-cols-3">
         <StatCard label="Credits sold" icon={<Coins />} value={fmtNumber(t?.credits)} loading={q.isLoading} />
-        <StatCard label="Revenue" icon={<Banknote />} tone="emerald" value={t ? fmtMoney(t.revenue) : '—'} loading={q.isLoading} />
-        <StatCard label="Est. provider cost + fees" icon={<Receipt />} tone="amber" value={t ? fmtMoney(String(Number(t.estimatedProviderCost) + Number(t.paymentFees))) : '—'} loading={q.isLoading} />
-        {canAdmin('profit.view') && <StatCard label="Contribution" icon={<TrendingUp />} tone="violet" value={t ? fmtMoney(t.contribution) : '—'} loading={q.isLoading} />}
+        <StatCard label="Purchase value" icon={<Banknote />} tone="emerald" value={t ? fmtMoney(t.revenue) : '—'} loading={q.isLoading} hint="Credit sales (cash received)" />
+        <StatCard label="Payment fees" icon={<Receipt />} tone="amber" value={t ? fmtMoney(t.paymentFees) : '—'} loading={q.isLoading} hint="Operating cost — not part of gross profit" />
       </div>
       <Card padded={false}>
         <DataTable
@@ -386,10 +469,44 @@ export function CustomerSalesPage() {
           columns={[
             { key: 'o', header: 'Customer', cell: (s) => <Link to={`/admin/organizations/${s.organization.id}`} className="link">{s.organization.name}</Link> },
             { key: 'p', header: 'Purchase', cell: (s) => <span>{s.packageName}<span className="block text-xs text-slate-500">{fmtNumber(s.credits)} credits · {s.payment.reference}</span></span> },
-            { key: 'r', header: 'Revenue', cell: (s) => <span className="tabular-nums">{fmtMoney(s.revenue, s.currency)}</span> },
-            { key: 'c', header: 'Est. provider cost', cell: (s) => <span className="tabular-nums text-slate-500">{fmtMoney(s.estimatedProviderCost, s.currency)}</span> },
+            {
+              key: 'r',
+              header: 'Purchase value',
+              cell: (s) => (
+                <span className="tabular-nums">
+                  {fmtMoney(s.revenue, s.currency)}
+                  {s.usage.unitPrice && <span className="block text-xs text-slate-500">{fmtMoney(s.usage.unitPrice, s.currency)} / credit</span>}
+                </span>
+              ),
+            },
+            {
+              key: 'u',
+              header: 'Credits used / remaining',
+              cell: (s) => (
+                <span className="block min-w-[9rem]">
+                  <span className="flex justify-between text-xs tabular-nums"><span>{fmtNumber(s.usage.creditsUsed)} used</span><span className="font-medium">{fmtNumber(s.usage.creditsRemaining)} left</span></span>
+                  <ProgressBar value={s.credits ? (s.usage.creditsUsed / s.credits) * 100 : 0} className="mt-1" />
+                  {s.usage.creditsOther > 0 && <span className="block text-[11px] text-slate-400">{fmtNumber(s.usage.creditsOther)} in progress, expired or reversed</span>}
+                </span>
+              ),
+            },
+            { key: 'ru', header: 'Customer revenue', cell: (s) => <span className="tabular-nums" title="Credits used × purchase price">{fmtMoney(s.usage.revenueUsed, s.currency)}</span> },
+            { key: 'c', header: 'Provider cost', cell: (s) => <span className="tabular-nums text-amber-700" title="Stock lot cost of the SMS sent with these credits">{fmtMoney(s.usage.providerCost, s.currency)}</span> },
+            ...(canAdmin('profit.view')
+              ? [
+                  {
+                    key: 'm',
+                    header: 'Gross profit',
+                    cell: (s: CustomerSale) => (
+                      <span className={cn('font-medium tabular-nums', Number(s.usage.grossProfit) < 0 ? 'text-red-600' : 'text-emerald-600')}>
+                        {fmtMoney(s.usage.grossProfit, s.currency)}
+                        {s.usage.creditsUsed > 0 && s.usage.grossMarginPercent != null && <span className="block text-[11px] font-normal">{s.usage.grossMarginPercent}%</span>}
+                      </span>
+                    ),
+                  },
+                ]
+              : []),
             { key: 'f', header: 'Payment fee', cell: (s) => <span className="tabular-nums text-slate-500">{fmtMoney(s.paymentFee, s.currency)}</span> },
-            ...(canAdmin('profit.view') ? [{ key: 'm', header: 'Contribution', cell: (s: { contribution: string; currency: string }) => <span className="font-medium tabular-nums text-emerald-600">{fmtMoney(s.contribution, s.currency)}</span> }] : []),
             { key: 'd', header: 'Date', cell: (s) => fmtDateTime(s.createdAt) },
           ]}
           empty={<EmptyState icon={<Coins />} title="No sales yet" description="Sales appear when customers' payments are verified." />}
@@ -615,10 +732,10 @@ export function AdminBusinessSummary() {
       <CardHeader title="This month's business" description="From the finance ledgers" action={<Link to="/admin/finance" className="link text-sm">Business overview →</Link>} />
       <div className="grid gap-px bg-slate-100 sm:grid-cols-3 xl:grid-cols-6">
         {[
-          ['Total revenue', d ? fmtMoney(d.money.revenue, cur) : '—', Banknote],
-          ['Provider cost', d ? fmtMoney(d.money.providerSpend, cur) : '—', ShoppingCart],
-          ['Gross profit', d?.money.grossMargin != null ? fmtMoney(d.money.grossMargin, cur) : '—', TrendingUp],
-          ['Net profit', d?.money.netProfit != null ? fmtMoney(d.money.netProfit, cur) : '—', Calculator],
+          ['Customer revenue (SMS sent)', d ? fmtMoney(d.smsProfit.revenue, cur) : '—', Banknote],
+          ['Provider cost', d ? fmtMoney(d.smsProfit.providerCost, cur) : '—', ShoppingCart],
+          ['Gross profit', d?.smsProfit.grossProfit != null ? `${fmtMoney(d.smsProfit.grossProfit, cur)} · ${d.smsProfit.grossMarginPercent}%` : '—', TrendingUp],
+          ['Net cash profit', d?.money.netProfit != null ? fmtMoney(d.money.netProfit, cur) : '—', Calculator],
           ['SMS sold / used', d ? `${fmtNumber(d.sms.soldToCustomers)} / ${fmtNumber(d.sms.usedByCustomers)}` : '—', Coins],
           ['Provider capacity', d ? fmtNumber(d.sms.providerCapacityRemaining) : '—', Boxes],
         ].map(([label, value, Icon]) => {
@@ -632,5 +749,76 @@ export function AdminBusinessSummary() {
         })}
       </div>
     </Card>
+  );
+}
+
+/** One SMS: what the customer paid for its segments, which provider and stock lots carried it, and the gross profit. */
+export function SmsFinancialsModal({ id, onClose }: { id: string | null; onClose: () => void }) {
+  const q = useQuery({ queryKey: ['admin', 'finance', 'sms', id], queryFn: () => businessService.smsFinancials(id!), enabled: !!id });
+  const d = q.data;
+  const m = (v: string | null | undefined) => (v == null ? '—' : fmtMoney(v, d?.currency ?? 'RWF'));
+  const STATE = { REALIZED: { color: 'green', label: 'Realized' }, PENDING: { color: 'amber', label: 'Pending — waiting for a provider' }, NOT_CHARGED: { color: 'gray', label: 'Not charged (refunded)' } } as const;
+  return (
+    <Modal open={!!id} onClose={onClose} size="lg" title="SMS gross profit" description={d ? `${d.phone} · ${d.organization.name}` : undefined}>
+      {q.isLoading || !d ? (
+        q.error ? <ErrorState error={q.error} /> : <Skeleton className="h-48" />
+      ) : (
+        <div className="space-y-5">
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <StatusBadge status={d.status} />
+            <Badge color={STATE[d.state].color}>{STATE[d.state].label}</Badge>
+            <span className="text-slate-500">{d.provider ? `via ${d.provider.name}` : 'No provider'} · {fmtNumber(d.segments)} segment{d.segments === 1 ? '' : 's'}</span>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-4">
+            {[
+              ['Customer revenue', m(d.revenue), `${fmtNumber(d.credits)} × ${m(d.customerPricePerCredit)}`, 'text-slate-900'],
+              ['Provider cost', m(d.providerCost), `${fmtNumber(d.segments)} × ${m(d.providerCostPerSegment)}`, 'text-amber-700'],
+              ['Gross profit', m(d.grossProfit), Number(d.grossProfit) < 0 ? 'Loss on this SMS' : 'Revenue − cost', profitTone(d.grossProfit)],
+              ['Gross margin', d.grossMarginPercent != null ? `${d.grossMarginPercent}%` : '—', 'Profit ÷ revenue', profitTone(d.grossProfit)],
+            ].map(([label, value, hint, tone]) => (
+              <div key={label} className="rounded-lg bg-slate-50 p-3 ring-1 ring-inset ring-slate-100">
+                <p className="text-xs text-slate-500">{label}</p>
+                <p className={cn('mt-0.5 text-lg font-semibold tabular-nums', tone)}>{value}</p>
+                <p className="text-[11px] text-slate-500">{hint}</p>
+              </div>
+            ))}
+          </div>
+          {!d.realized && <p className="text-xs text-slate-500">Not counted in gross profit: {d.state === 'PENDING' ? 'no provider has accepted it yet (credits reserved).' : 'it was never accepted by a provider, so the credits were refunded.'}</p>}
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <p className="label">Customer credits used</p>
+              <ul className="space-y-1 text-sm">
+                {d.revenueLots.length ? (
+                  d.revenueLots.map((l) => (
+                    <li key={l.lotId} className="flex justify-between gap-3">
+                      <span className="text-slate-600">{fmtNumber(l.credits)} × {l.unitPrice ? m(l.unitPrice) : 'free credit'}<span className="block text-[11px] text-slate-400">{l.reference ?? l.source} {l.purchasedAt ? `· ${fmtDate(l.purchasedAt)}` : ''}</span></span>
+                      <span className="tabular-nums">{m((Number(l.unitPrice ?? 0) * l.credits).toFixed(4))}</span>
+                    </li>
+                  ))
+                ) : (
+                  <li className="text-xs text-slate-500">Sent before per-lot tracking: valued at the customer's average purchase price.</li>
+                )}
+              </ul>
+            </div>
+            <div>
+              <p className="label">Provider stock consumed</p>
+              <ul className="space-y-1 text-sm">
+                {d.costLots.length ? (
+                  d.costLots.map((l) => (
+                    <li key={l.lotId} className="flex justify-between gap-3">
+                      <span className="text-slate-600">{fmtNumber(l.segments)} × {m(l.unitCost)}<span className="block text-[11px] text-slate-400">{l.reference} {l.purchasedAt ? `· bought ${fmtDate(l.purchasedAt)}` : ''}</span></span>
+                      <span className="tabular-nums">{m(l.cost)}</span>
+                    </li>
+                  ))
+                ) : (
+                  <li className="text-xs text-slate-500">{d.provider ? 'Sent before per-lot tracking: cost recorded at routing time.' : 'No stock consumed.'}</li>
+                )}
+              </ul>
+            </div>
+          </div>
+          <p className="text-xs text-slate-500">Prices and costs are frozen when the SMS is sent: later price changes never change these figures.</p>
+        </div>
+      )}
+    </Modal>
   );
 }

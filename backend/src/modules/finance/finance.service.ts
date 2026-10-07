@@ -2,10 +2,17 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../../config/prisma';
 import { getSetting } from '../settings/settings.service';
 import { DEFAULT_TZ, bucketLabels, creditsConsumed, fillBuckets, localBucket, topOrganizations, type Unit } from '../reports/report.service';
+import { REALIZED_STATUSES, figures, profitTotals } from './smsFinancials.service';
 
 /**
  * Financial model (all figures come from ledgers — never from the frontend):
  *
+ * SMS gross profit (primary, per segment — see smsFinancials.service.ts):
+ *   SMS revenue           = Σ revenue of SMS accepted by providers, each credit at the price it was bought at
+ *   Provider cost         = Σ cost of the provider capacity lots those SMS consumed, each lot at its own cost
+ *   Gross profit          = SMS revenue − Provider cost;  Gross margin = Gross profit ÷ SMS revenue
+ *
+ * Cash view (money in / money out in the period):
  *   Customer revenue      = Σ verified customer payments (SUCCESS or later REFUNDED)       [payments]
  *   Provider spend        = Σ successful purchases of SMS capacity from providers           [provider_purchases]
  *   Gross SMS margin      = Customer revenue − Provider spend                                (cash basis)
@@ -40,6 +47,7 @@ export async function financialSummary(from: Date, to: Date) {
   const usage = await prisma.providerCapacityLedger.groupBy({ by: ['type'], where: { createdAt: inRange, type: { in: ['USAGE', 'RELEASE'] } }, _sum: { amount: true } });
   const segmentsDelivered = -usage.reduce((a, u) => a + (u._sum.amount ?? 0), 0);
 
+  const smsProfit = await profitTotals({ from, to });
   const revenue = dec(payments._sum.amount);
   const providerSpend = dec(purchases._sum.totalCost);
   const refundTotal = dec(refunds._sum.amount);
@@ -50,6 +58,8 @@ export async function financialSummary(from: Date, to: Date) {
 
   return {
     currency: await getSetting('billing.currency'),
+    /** Realized SMS gross profit (segment level): the primary profitability figure. */
+    smsProfit: smsProfit as Omit<typeof smsProfit, 'grossProfit' | 'grossMarginPercent'> & { grossProfit: string | null; grossMarginPercent: number | null },
     money: {
       revenue: money(revenue),
       providerSpend: money(providerSpend),
@@ -78,7 +88,8 @@ export async function financialSummary(from: Date, to: Date) {
     },
     counts: { payments: payments._count, providerPurchases: purchases._count, refunds: refunds._count, expenses: expenses._count, sales: sales._count },
     formula: {
-      grossMargin: 'Customer revenue − Provider spend',
+      smsGrossProfit: 'Revenue of SMS segments accepted by providers (at the price their credits were bought at) − cost of the provider capacity lots they consumed',
+      grossMargin: 'Customer revenue − Provider spend (cash basis)',
       netProfit: 'Gross SMS margin − Refunds − Payment fees − Other expenses',
       saleContribution: 'Sale revenue − Estimated provider cost of credits − Payment fee',
       costBasis: 'Provider cost uses the weighted-average cost of purchased capacity',
@@ -188,25 +199,22 @@ export async function financialTables(from: Date, to: Date) {
 }
 
 /**
- * Per-organization view for the period: credits bought and revenue (customer side) against the
- * provider cost of the messages actually routed for them (supply side). Provider cost is the
- * cost snapshotted on each recipient at routing time; released (rejected/cancelled) capacity is
- * not counted.
+ * Per-organization view for the period. Customer side: credits bought and what was paid. Usage side
+ * (from the authoritative SMS financials): credits used for SMS accepted by providers, the revenue
+ * of exactly those credits at the price they were bought at, the provider cost of the lots they
+ * consumed, and the gross profit. Credits bought but not used carry no provider cost and are not
+ * counted as SMS revenue yet.
  */
 export async function customerReport(from: Date, to: Date) {
   const inRange = { gte: from, lte: to };
-  const [sales, refunds, usage, routed, byProvider] = await Promise.all([
+  const realized = { createdAt: inRange, refunded: false, status: { in: REALIZED_STATUSES } };
+  const [sales, refunds, used, byProvider] = await Promise.all([
     prisma.customerPurchase.groupBy({ by: ['organizationId'], where: { createdAt: inRange }, _sum: { credits: true, revenue: true } }),
     prisma.refund.groupBy({ by: ['organizationId'], where: { createdAt: inRange }, _sum: { amount: true, creditsReversed: true } }),
-    prisma.walletTransaction.groupBy({
-      by: ['organizationId'],
-      where: { type: { in: ['SMS_DEBIT', 'REFUND'] }, createdAt: inRange, NOT: { reference: { startsWith: 'admin:' } } },
-      _sum: { amount: true },
-    }),
-    prisma.smsRecipient.groupBy({ by: ['organizationId'], where: { createdAt: inRange, capacityReleased: false, providerId: { not: null } }, _sum: { providerCost: true }, _count: true }),
-    prisma.smsRecipient.groupBy({ by: ['organizationId', 'providerId'], where: { createdAt: inRange, capacityReleased: false, providerId: { not: null } }, _count: true }),
+    prisma.smsRecipient.groupBy({ by: ['organizationId'], where: realized, _sum: { credits: true, revenue: true, providerCost: true }, _count: true }),
+    prisma.smsRecipient.groupBy({ by: ['organizationId', 'providerId'], where: realized, _count: true }),
   ]);
-  const ids = [...new Set([...sales, ...refunds, ...usage, ...routed].map((r) => r.organizationId))];
+  const ids = [...new Set([...sales, ...refunds, ...used].map((r) => r.organizationId))];
   const [orgs, wallets, providers] = await Promise.all([
     prisma.organization.findMany({ where: { id: { in: ids } }, select: { id: true, name: true } }),
     prisma.wallet.findMany({ where: { organizationId: { in: ids } }, select: { organizationId: true, balance: true } }),
@@ -215,23 +223,25 @@ export async function customerReport(from: Date, to: Date) {
   const rows = orgs.map((o) => {
     const s = sales.find((x) => x.organizationId === o.id);
     const r = refunds.find((x) => x.organizationId === o.id);
-    const u = usage.find((x) => x.organizationId === o.id);
-    const c = routed.find((x) => x.organizationId === o.id);
-    const revenue = dec(s?._sum.revenue);
-    const providerCost = dec(c?._sum.providerCost).toDecimalPlaces(2);
+    const u = used.find((x) => x.organizationId === o.id);
+    const f = figures({ revenue: u?._sum.revenue ?? 0, providerCost: u?._sum.providerCost ?? 0, credits: u?._sum.credits ?? 0, messages: u?._count ?? 0 });
     return {
       organization: o,
       smsPurchased: s?._sum.credits ?? 0,
-      revenue: money(revenue),
+      revenue: money(dec(s?._sum.revenue)),
       refunds: money(dec(r?._sum.amount)),
-      smsUsed: Math.max(0, -(u?._sum.amount ?? 0)),
+      smsUsed: f.credits,
       currentBalance: wallets.find((w) => w.organizationId === o.id)?.balance ?? 0,
-      messagesRouted: c?._count ?? 0,
+      messagesRouted: f.messages,
       providerUsage: byProvider
         .filter((p) => p.organizationId === o.id)
         .map((p) => ({ providerId: p.providerId, provider: providers.find((x) => x.id === p.providerId)?.name ?? 'Unknown', messages: p._count })),
-      providerCost: money(providerCost),
-      grossMargin: money(revenue.minus(providerCost)),
+      smsRevenue: f.revenue,
+      providerCost: f.providerCost,
+      grossProfit: f.grossProfit as string | null,
+      grossMarginPercent: f.grossMarginPercent as number | null,
+      /** @deprecated same as grossProfit (kept for existing clients). */
+      grossMargin: f.grossProfit as string | null,
     };
   });
   return rows.sort((a, b) => Number(b.revenue) - Number(a.revenue) || b.smsUsed - a.smsUsed);

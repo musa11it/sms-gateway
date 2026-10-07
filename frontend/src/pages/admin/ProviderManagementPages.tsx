@@ -85,15 +85,15 @@ function MarginEquation({ e, loading }: { e?: ProviderEconomics; loading?: boole
   );
   return (
     <div className="flex flex-col items-stretch gap-2 md:flex-row md:items-center">
-      {cell('Customer revenue', <Money value={e?.revenue} />, 'text-slate-900', e ? `${fmtNumber(e.creditsUsed)} credits used${e.revenuePerCredit ? ` × ${fmtMoney(e.revenuePerCredit)}` : ''}` : undefined)}
+      {cell('Customer revenue', <Money value={e?.revenue} />, 'text-slate-900', e ? `${fmtNumber(e.creditsUsed)} credits used, each at its purchase price${e.revenuePerCredit ? ` (avg ${fmtMoney(e.revenuePerCredit)})` : ''}` : undefined)}
       <span className="text-center text-xl font-light text-slate-400">−</span>
-      {cell('Provider cost', <Money value={e?.providerCost} />, 'text-amber-700', e ? `${fmtNumber(e.segments)} segments from capacity lots` : undefined)}
+      {cell('Provider cost', <Money value={e?.providerCost} />, 'text-amber-700', e ? `${fmtNumber(e.segments)} segments, each at its stock lot cost` : undefined)}
       <span className="text-center text-xl font-light text-slate-400">=</span>
       {cell(
-        'Gross SMS margin',
+        'Gross profit',
         e?.grossMargin === null && e?.revenue !== null ? 'Restricted' : <Money value={e?.grossMargin} />,
         e?.grossMargin && Number(e.grossMargin) < 0 ? 'text-red-600' : 'text-emerald-700',
-        e?.marginPercent != null ? `${e.marginPercent}% of revenue` : undefined,
+        e?.marginPercent != null ? `${e.marginPercent}% gross margin` : undefined,
       )}
     </div>
   );
@@ -452,11 +452,14 @@ export function ProvidersPage() {
               <span className="text-xs text-slate-500">{d ? `${fmtDate(d.range.from)} – ${fmtDate(d.range.to)} · ${fmtNumber(d.economics.messages)} messages` : ''}</span>
             </div>
             <MarginEquation e={d?.economics} loading={q.isLoading} />
-            {d && !d.economics.revenuePerCredit && <p className="mt-3 text-xs text-slate-500">Revenue appears once customers have bought credits (average net sale price per credit × credits used).</p>}
+            <p className="mt-3 text-xs text-slate-500">
+              Only SMS a provider accepted count (delivery failures stay charged; rejected or cancelled SMS are refunded and excluded). Gross profit excludes payment fees and operating costs.
+              {d?.economics.pending?.messages ? ` ${fmtNumber(d.economics.pending.messages)} messages are still waiting for a provider (${fmtNumber(d.economics.pending.credits)} credits reserved).` : ''}
+            </p>
           </Card>
 
           <Card padded={false}>
-            <CardHeader title="Credits sold through each provider" description="Customer credits used in the period and the provider that carried them. Customers never see this split." />
+            <CardHeader title="Gross profit by provider" description="Customer credits used in the period, the provider that carried them, and what each provider earned or lost. Customers never see this split." />
             <DataTable
               rows={d?.byProvider.map((p) => ({ ...p, id: p.providerId }))}
               loading={q.isLoading}
@@ -474,11 +477,11 @@ export function ProvidersPage() {
                   ),
                 },
                 { key: 'm', header: 'Messages', className: 'text-right', headerClassName: 'text-right', cell: (p) => <span className="tabular-nums text-slate-600">{fmtNumber(p.messages)}</span> },
-                { key: 'r', header: 'Revenue', className: 'text-right', headerClassName: 'text-right', cell: (p) => <span className="tabular-nums"><Money value={p.revenue} /></span> },
+                { key: 'r', header: 'Customer revenue', className: 'text-right', headerClassName: 'text-right', cell: (p) => <span className="tabular-nums"><Money value={p.revenue} /></span> },
                 { key: 'pc', header: 'Provider cost', className: 'text-right', headerClassName: 'text-right', cell: (p) => <span className="tabular-nums text-amber-700"><Money value={p.providerCost} />{p.costPerCredit && <span className="block text-[11px] text-slate-400">{fmtMoney(p.costPerCredit)} / credit</span>}</span> },
                 {
                   key: 'g',
-                  header: 'Gross margin',
+                  header: 'Gross profit',
                   className: 'text-right',
                   headerClassName: 'text-right',
                   cell: (p) => (
@@ -706,6 +709,18 @@ export function ProviderDetailPage() {
                   <span className="block min-w-[9rem]">
                     <span className="flex justify-between text-xs tabular-nums"><span>{fmtNumber(l.used)}</span><span className="font-medium">{fmtNumber(l.remaining)}</span></span>
                     <ProgressBar value={(l.used / l.quantity) * 100} tone={l.remaining === 0 ? 'red' : 'emerald'} className="mt-1" />
+                  </span>
+                ),
+              },
+              {
+                key: 'cc',
+                header: 'Consumed cost',
+                className: 'text-right',
+                headerClassName: 'text-right',
+                cell: (l) => (
+                  <span className="tabular-nums text-amber-700" title="Segments used by SMS (net of returned capacity), at this lot's own unit cost">
+                    {fmtMoney(l.consumedCost, p.currency)}
+                    <span className="block text-[11px] text-slate-500">{fmtNumber(l.consumed)} by SMS{l.writtenOff ? ` · ${fmtNumber(l.writtenOff)} written off` : ''}</span>
                   </span>
                 ),
               },
@@ -1702,9 +1717,24 @@ export function RoutingSimulatorPage() {
             )}
 
             <div className="grid gap-4 sm:grid-cols-3">
-              <StatCard label="Customer pays" icon={<Banknote />} value={s.estimate.revenue ? fmtMoney(s.estimate.revenue) : '—'} hint={s.estimate.revenuePerCredit ? `${fmtNumber(s.message.totalCredits)} credits × ${fmtMoney(s.estimate.revenuePerCredit)}` : 'no sales history yet'} />
+              <StatCard
+                label="Customer revenue"
+                icon={<Banknote />}
+                value={s.estimate.revenue ? fmtMoney(s.estimate.revenue) : '—'}
+                hint={s.estimate.revenuePerCredit ? `${fmtNumber(s.message.totalCredits)} credits × ${fmtMoney(s.estimate.revenuePerCredit)} (${s.estimate.priceSource === 'CUSTOMER_LOTS' ? "this customer's purchase price" : 'platform average price'})` : 'no sales history yet'}
+              />
               <StatCard label="Provider cost" icon={<CircleDollarSign />} tone="amber" value={fmtMoney(s.estimate.providerCost)} hint="from the capacity lots that would be used" />
-              <StatCard label="Gross margin" icon={<TrendingUp />} tone="emerald" value={s.estimate.grossMargin ? fmtMoney(s.estimate.grossMargin) : '—'} hint="customer pays − provider cost" />
+              <StatCard
+                label="Expected gross profit"
+                icon={<TrendingUp />}
+                tone={s.estimate.grossMargin && Number(s.estimate.grossMargin) < 0 ? 'red' : 'emerald'}
+                value={s.estimate.grossMargin ? fmtMoney(s.estimate.grossMargin) : '—'}
+                hint={
+                  s.estimate.grossMarginPercent != null
+                    ? `${s.estimate.grossMarginPercent}% gross margin · ${Number(s.estimate.grossProfitPerSegment) < 0 ? `loss of ${fmtMoney(String(Math.abs(Number(s.estimate.grossProfitPerSegment))))}` : fmtMoney(s.estimate.grossProfitPerSegment ?? '0')} per segment`
+                    : 'customer revenue − provider cost'
+                }
+              />
             </div>
           </div>
         )}
