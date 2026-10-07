@@ -77,14 +77,14 @@ function CheckoutModal({ payment, nextAction, simulation, onClose }: { payment: 
           </div>
           {nextAction && <p className="text-sm text-slate-600">{nextAction.message}</p>}
           {simulation ? (
-            <div className="rounded-2xl border border-amber-200 bg-gradient-to-b from-amber-50 to-white p-4">
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
               <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-amber-800"><FlaskConical className="h-4 w-4" /> Simulated payer device</p>
               <div className="mx-auto mt-3 max-w-[260px] rounded-[1.6rem] bg-slate-900 p-2 shadow-pop">
                 <div className="rounded-[1.2rem] bg-white p-4 text-center">
                   <Smartphone className="mx-auto h-6 w-6 text-slate-400" />
                   <p className="mt-2 text-xs text-slate-500">{titleCase(p.method)} request</p>
                   <p className="text-lg font-semibold text-slate-900">{fmtMoney(p.amount, p.currency)}</p>
-                  <p className="text-[11px] text-slate-500">to SMS Gateway · {p.payerPhone ?? 'card'}</p>
+                  <p className="text-xs text-slate-500">to SMS Gateway · {p.payerPhone ?? 'card'}</p>
                   {acted ? (
                     <p className="mt-4 flex items-center justify-center gap-2 text-xs text-slate-600"><Loader2 className="h-3.5 w-3.5 animate-spin" />Waiting for provider confirmation…</p>
                   ) : (
@@ -95,7 +95,7 @@ function CheckoutModal({ payment, nextAction, simulation, onClose }: { payment: 
                   )}
                 </div>
               </div>
-              <p className="mt-3 text-center text-[11px] text-amber-800">No real money moves. Credits are added only after the backend verifies the payment with the provider.</p>
+              <p className="mt-3 text-center text-xs text-amber-800">No real money moves. Credits are added only after the backend verifies the payment with the provider.</p>
             </div>
           ) : (
             <p className="flex items-center gap-2 text-sm text-slate-600"><Loader2 className="h-4 w-4 animate-spin" /> Waiting for payment confirmation…</p>
@@ -298,7 +298,7 @@ export function BuySmsPage() {
               <Button className="mt-4 w-full" size="lg" loading={create.isPending} disabled={!canPay} onClick={() => create.mutate(undefined)}>
                 {summary ? `Continue to payment · ${fmtMoney(summary.total, summary.currency)}` : 'Continue to payment'}
               </Button>
-              <p className="mt-2 text-center text-[11px] text-slate-500">Credits are added only after the payment is confirmed. The price is set by the server and an invoice is issued automatically.</p>
+              <p className="mt-2 text-center text-xs text-slate-500">Credits are added only after the payment is confirmed. The price is set by the server and an invoice is issued automatically.</p>
             </div>
           </Card>
         </>
@@ -365,7 +365,7 @@ export function TransactionsPage() {
             { key: 'desc', header: 'Description', cell: (t) => <span className="block max-w-sm truncate">{t.description}</span> },
             { key: 'amount', header: 'Credits', className: 'text-right', headerClassName: 'text-right', cell: (t) => <span className={cn('font-semibold tabular-nums', t.amount > 0 ? 'text-emerald-600' : 'text-slate-800')}>{t.amount > 0 ? '+' : ''}{fmtNumber(t.amount)}</span> },
             { key: 'bal', header: 'Balance after', className: 'text-right', headerClassName: 'text-right', cell: (t) => <span className="tabular-nums text-slate-600">{fmtNumber(t.balanceAfter)}</span> },
-            { key: 'ref', header: 'Reference', cell: (t) => <span className="font-mono text-[11px] text-slate-400">{t.reference.length > 28 ? `${t.reference.slice(0, 28)}…` : t.reference}</span> },
+            { key: 'ref', header: 'Reference', cell: (t) => <span className="font-mono text-xs text-slate-400">{t.reference.length > 28 ? `${t.reference.slice(0, 28)}…` : t.reference}</span> },
           ]}
           empty={<EmptyState icon={<Receipt />} title="No transactions yet" description="Purchases, SMS charges and refunds appear here." />}
         />

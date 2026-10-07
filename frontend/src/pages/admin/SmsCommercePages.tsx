@@ -251,7 +251,7 @@ export function CustomerFinanceReportPage() {
           error={q.error}
           columns={[
             { key: 'o', header: 'Customer', cell: (x) => <Link to={`/admin/organizations/${x.organization.id}`} className="link">{x.organization.name}</Link> },
-            { key: 'p', header: 'Credits sold', className: 'text-right', headerClassName: 'text-right', cell: (x) => <span className="tabular-nums">{fmtNumber(x.smsPurchased)}<span className="block text-[11px] text-slate-500">{fmtMoney(x.revenue)}</span></span> },
+            { key: 'p', header: 'Credits sold', className: 'text-right', headerClassName: 'text-right', cell: (x) => <span className="tabular-nums">{fmtNumber(x.smsPurchased)}<span className="block text-xs text-slate-500">{fmtMoney(x.revenue)}</span></span> },
             { key: 'u', header: 'Credits used', className: 'text-right', headerClassName: 'text-right', cell: (x) => <span className="tabular-nums">{fmtNumber(x.smsUsed)}</span> },
             { key: 'b', header: 'Credits remaining', className: 'text-right', headerClassName: 'text-right', cell: (x) => <span className="tabular-nums text-slate-600">{fmtNumber(x.currentBalance)}</span> },
             { key: 'r', header: 'Customer revenue', className: 'text-right', headerClassName: 'text-right', cell: (x) => <span className="font-medium tabular-nums">{fmtMoney(x.smsRevenue)}</span> },
@@ -276,7 +276,7 @@ export function CustomerFinanceReportPage() {
                     cell: (x: (typeof rows)[number]) => (
                       <span className={cn('font-semibold tabular-nums', Number(x.grossProfit) < 0 ? 'text-red-600' : 'text-emerald-700')}>
                         {fmtMoney(x.grossProfit)}
-                        {x.grossMarginPercent != null && <span className="block text-[11px] font-normal">{x.grossMarginPercent}%</span>}
+                        {x.grossMarginPercent != null && <span className="block text-xs font-normal">{x.grossMarginPercent}%</span>}
                       </span>
                     ),
                   },
@@ -353,7 +353,7 @@ function ProfitPlanner() {
               <span>
                 <span className={cn('font-medium tabular-nums', !t.isActive && 'text-slate-400')}>{t.maxQuantity === null ? `${fmtNumber(t.minQuantity)}+` : `${fmtNumber(t.minQuantity)} – ${fmtNumber(t.maxQuantity)}`}</span>
                 {!t.isActive && <Badge color="gray" className="ml-2">inactive</Badge>}
-                {t.warnings.map((w) => <span key={w} className="block text-[11px] font-medium text-red-600">{w}</span>)}
+                {t.warnings.map((w) => <span key={w} className="block text-xs font-medium text-red-600">{w}</span>)}
               </span>
             ),
           },
@@ -368,7 +368,7 @@ function ProfitPlanner() {
             cell: (t) => (
               <span className={cn('tabular-nums', tone(t.marginPercent))}>
                 <span className="font-semibold">{t.marginPerCredit ? fmtMoney(t.marginPerCredit) : '—'}</span>
-                {t.marginPercent != null && <span className="block text-[11px]">{t.marginPercent}% · worst {t.worstCaseMarginPercent}%</span>}
+                {t.marginPercent != null && <span className="block text-xs">{t.marginPercent}% · worst {t.worstCaseMarginPercent}%</span>}
               </span>
             ),
           },
@@ -380,7 +380,7 @@ function ProfitPlanner() {
             cell: (t) => (
               <span className="tabular-nums">
                 {fmtNumber(t.sales.credits)} credits
-                <span className="block text-[11px] text-slate-500">{fmtMoney(t.sales.revenue)} · {t.sales.purchases} purchase{t.sales.purchases === 1 ? '' : 's'}</span>
+                <span className="block text-xs text-slate-500">{fmtMoney(t.sales.revenue)} · {t.sales.purchases} purchase{t.sales.purchases === 1 ? '' : 's'}</span>
               </span>
             ),
           },

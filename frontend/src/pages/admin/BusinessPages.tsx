@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { Bar, CartesianGrid, ComposedChart, Legend, Line, ResponsiveContainer, Tooltip, XAxis, YAxis, Area, AreaChart } from 'recharts';
+import { AMBER, GREEN, GREY, INK, TrendChart } from '@/components/charts/Charts';
 import {
   AlertTriangle,
   ArrowDownLeft,
@@ -47,9 +47,6 @@ const FINANCE_RANGES = [
   { value: 'custom' as const, label: 'Custom' },
 ];
 
-const axis = { fontSize: 11, fill: '#94a3b8' };
-const short = (l: string) => (/T\d{2}:00$/.test(l) ? l.slice(11, 16) : /^\d{4}-\d{2}-\d{2}$/.test(l) ? l.slice(5) : l);
-const k = (v: number) => (Math.abs(v) >= 1_000_000 ? `${(v / 1_000_000).toFixed(1)}M` : Math.abs(v) >= 1000 ? `${Math.round(v / 1000)}k` : String(v));
 
 // ── Finance dashboard ──────────────────────────────────────────────────
 
@@ -167,18 +164,16 @@ export function FinancePage() {
                 {q.isLoading ? (
                   <Skeleton className="h-[280px]" />
                 ) : (
-                  <ResponsiveContainer width="100%" height={280}>
-                    <ComposedChart data={(d?.series ?? []).map((s) => ({ label: s.label, Revenue: Number(s.revenue), Costs: Number(s.costs), Profit: s.profit == null ? null : Number(s.profit) }))} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" vertical={false} />
-                      <XAxis dataKey="label" tickFormatter={short} tick={axis} axisLine={false} tickLine={false} minTickGap={16} />
-                      <YAxis tick={axis} axisLine={false} tickLine={false} tickFormatter={k} />
-                      <Tooltip formatter={(v) => `${cur} ${fmtNumber(Number(v))}`} labelFormatter={(l) => short(String(l))} />
-                      <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12 }} />
-                      <Bar dataKey="Revenue" fill="#10b981" radius={[3, 3, 0, 0]} maxBarSize={22} />
-                      <Bar dataKey="Costs" fill="#f59e0b" radius={[3, 3, 0, 0]} maxBarSize={22} />
-                      {d?.canViewProfit && <Line type="monotone" dataKey="Profit" stroke="#6366f1" strokeWidth={2} dot={false} />}
-                    </ComposedChart>
-                  </ResponsiveContainer>
+                  <TrendChart
+                    height={280}
+                    xKey="label"
+                    data={(d?.series ?? []).map((s) => ({ label: s.label, Revenue: Number(s.revenue), Costs: Number(s.costs), Profit: s.profit == null ? null : Number(s.profit) }))}
+                    series={[
+                      { key: 'Revenue', label: 'Revenue', color: GREEN, area: true, format: (v) => `${cur} ${fmtNumber(v)}` },
+                      { key: 'Costs', label: 'Costs', color: AMBER, format: (v) => `${cur} ${fmtNumber(v)}` },
+                      ...(d?.canViewProfit ? [{ key: 'Profit', label: 'Profit', color: INK, format: (v: number) => `${cur} ${fmtNumber(v)}` }] : []),
+                    ]}
+                  />
                 )}
               </div>
             </Card>
@@ -230,18 +225,16 @@ export function FinancePage() {
             <Card padded={false}>
               <CardHeader title="SMS inventory flow" description="Purchased vs sold vs used" />
               <div className="p-4">
-                <ResponsiveContainer width="100%" height={220}>
-                  <AreaChart data={d?.series ?? []} margin={{ top: 8, right: 8, left: -10, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" vertical={false} />
-                    <XAxis dataKey="label" tickFormatter={short} tick={axis} axisLine={false} tickLine={false} minTickGap={16} />
-                    <YAxis tick={axis} axisLine={false} tickLine={false} tickFormatter={k} />
-                    <Tooltip formatter={(v) => fmtNumber(Number(v))} labelFormatter={(l) => short(String(l))} />
-                    <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12 }} />
-                    <Area type="monotone" dataKey="smsPurchased" name="Purchased" stroke="#0ea5e9" fill="#0ea5e922" />
-                    <Area type="monotone" dataKey="smsSold" name="Sold" stroke="#10b981" fill="#10b98122" />
-                    <Area type="monotone" dataKey="smsUsed" name="Used" stroke="#8b5cf6" fill="#8b5cf622" />
-                  </AreaChart>
-                </ResponsiveContainer>
+                <TrendChart
+                  height={220}
+                  xKey="label"
+                  data={(d?.series ?? []) as never}
+                  series={[
+                    { key: 'smsPurchased', label: 'Purchased', color: GREY },
+                    { key: 'smsSold', label: 'Sold', color: GREEN, area: true },
+                    { key: 'smsUsed', label: 'Used', color: INK },
+                  ]}
+                />
               </div>
             </Card>
           </div>
@@ -394,7 +387,7 @@ export function ProviderPurchasesPage() {
           loading={q.isLoading}
           error={q.error}
           columns={[
-            { key: 'r', header: 'Purchase', cell: (p) => <span><span className="block font-mono text-xs font-medium">{p.reference}</span><span className="font-mono text-[11px] text-slate-400">{p.providerReference ?? '—'}</span></span> },
+            { key: 'r', header: 'Purchase', cell: (p) => <span><span className="block font-mono text-xs font-medium">{p.reference}</span><span className="font-mono text-xs text-slate-400">{p.providerReference ?? '—'}</span></span> },
             { key: 'p', header: 'Provider', cell: (p) => p.provider.name },
             { key: 'q', header: 'SMS', cell: (p) => <span className="tabular-nums">{fmtNumber(p.quantity)}</span> },
             { key: 'u', header: 'Unit cost', cell: (p) => <span className="tabular-nums">{p.unitCost}</span> },
@@ -486,7 +479,7 @@ export function CustomerSalesPage() {
                 <span className="block min-w-[9rem]">
                   <span className="flex justify-between text-xs tabular-nums"><span>{fmtNumber(s.usage.creditsUsed)} used</span><span className="font-medium">{fmtNumber(s.usage.creditsRemaining)} left</span></span>
                   <ProgressBar value={s.credits ? (s.usage.creditsUsed / s.credits) * 100 : 0} className="mt-1" />
-                  {s.usage.creditsOther > 0 && <span className="block text-[11px] text-slate-400">{fmtNumber(s.usage.creditsOther)} in progress, expired or reversed</span>}
+                  {s.usage.creditsOther > 0 && <span className="block text-xs text-slate-400">{fmtNumber(s.usage.creditsOther)} in progress, expired or reversed</span>}
                 </span>
               ),
             },
@@ -500,7 +493,7 @@ export function CustomerSalesPage() {
                     cell: (s: CustomerSale) => (
                       <span className={cn('font-medium tabular-nums', Number(s.usage.grossProfit) < 0 ? 'text-red-600' : 'text-emerald-600')}>
                         {fmtMoney(s.usage.grossProfit, s.currency)}
-                        {s.usage.creditsUsed > 0 && s.usage.grossMarginPercent != null && <span className="block text-[11px] font-normal">{s.usage.grossMarginPercent}%</span>}
+                        {s.usage.creditsUsed > 0 && s.usage.grossMarginPercent != null && <span className="block text-xs font-normal">{s.usage.grossMarginPercent}%</span>}
                       </span>
                     ),
                   },
@@ -675,7 +668,7 @@ export function AdminApiUsagePage() {
             { key: 's', header: 'Status', cell: (l) => <Badge color={l.statusCode < 400 ? 'green' : l.statusCode < 500 ? 'amber' : 'red'}>{l.statusCode}{l.errorCode ? ` · ${l.errorCode}` : ''}</Badge> },
             { key: 'd', header: 'Duration', cell: (l) => `${l.durationMs} ms` },
             { key: 'k', header: 'Key', cell: (l) => (l.apiKey ? <span className="font-mono text-xs">{l.apiKey.prefix}</span> : '—') },
-            { key: 'id', header: 'Request ID', cell: (l) => <span className="font-mono text-[11px] text-slate-400">{l.requestId?.slice(0, 12)}</span> },
+            { key: 'id', header: 'Request ID', cell: (l) => <span className="font-mono text-xs text-slate-400">{l.requestId?.slice(0, 12)}</span> },
           ]}
           empty={<EmptyState icon={<Activity />} title="No API requests" />}
         />
@@ -779,7 +772,7 @@ export function SmsFinancialsModal({ id, onClose }: { id: string | null; onClose
               <div key={label} className="rounded-lg bg-slate-50 p-3 ring-1 ring-inset ring-slate-100">
                 <p className="text-xs text-slate-500">{label}</p>
                 <p className={cn('mt-0.5 text-lg font-semibold tabular-nums', tone)}>{value}</p>
-                <p className="text-[11px] text-slate-500">{hint}</p>
+                <p className="text-xs text-slate-500">{hint}</p>
               </div>
             ))}
           </div>
@@ -791,7 +784,7 @@ export function SmsFinancialsModal({ id, onClose }: { id: string | null; onClose
                 {d.revenueLots.length ? (
                   d.revenueLots.map((l) => (
                     <li key={l.lotId} className="flex justify-between gap-3">
-                      <span className="text-slate-600">{fmtNumber(l.credits)} × {l.unitPrice ? m(l.unitPrice) : 'free credit'}<span className="block text-[11px] text-slate-400">{l.reference ?? l.source} {l.purchasedAt ? `· ${fmtDate(l.purchasedAt)}` : ''}</span></span>
+                      <span className="text-slate-600">{fmtNumber(l.credits)} × {l.unitPrice ? m(l.unitPrice) : 'free credit'}<span className="block text-xs text-slate-400">{l.reference ?? l.source} {l.purchasedAt ? `· ${fmtDate(l.purchasedAt)}` : ''}</span></span>
                       <span className="tabular-nums">{m((Number(l.unitPrice ?? 0) * l.credits).toFixed(4))}</span>
                     </li>
                   ))
@@ -806,7 +799,7 @@ export function SmsFinancialsModal({ id, onClose }: { id: string | null; onClose
                 {d.costLots.length ? (
                   d.costLots.map((l) => (
                     <li key={l.lotId} className="flex justify-between gap-3">
-                      <span className="text-slate-600">{fmtNumber(l.segments)} × {m(l.unitCost)}<span className="block text-[11px] text-slate-400">{l.reference} {l.purchasedAt ? `· bought ${fmtDate(l.purchasedAt)}` : ''}</span></span>
+                      <span className="text-slate-600">{fmtNumber(l.segments)} × {m(l.unitCost)}<span className="block text-xs text-slate-400">{l.reference} {l.purchasedAt ? `· bought ${fmtDate(l.purchasedAt)}` : ''}</span></span>
                       <span className="tabular-nums">{m(l.cost)}</span>
                     </li>
                   ))

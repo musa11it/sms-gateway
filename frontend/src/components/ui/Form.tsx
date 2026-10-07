@@ -11,7 +11,7 @@ export function Field({ label, error, hint, children, className, required, htmlF
         </label>
       )}
       {children}
-      {error ? <p className="mt-1.5 text-xs font-medium text-red-600">{error}</p> : hint ? <p className="mt-1.5 text-xs text-slate-500">{hint}</p> : null}
+      {error ? <p className="mt-1.5 text-[13px] font-medium text-red-600">{error}</p> : hint ? <p className="mt-1.5 text-[13px] text-slate-500">{hint}</p> : null}
     </div>
   );
 }
@@ -44,11 +44,11 @@ Select.displayName = 'Select';
 export function Checkbox({ label, description, className, ...rest }: InputHTMLAttributes<HTMLInputElement> & { label?: ReactNode; description?: ReactNode }) {
   return (
     <label className={cn('flex cursor-pointer items-start gap-2.5', rest.disabled && 'cursor-not-allowed opacity-60', className)}>
-      <input type="checkbox" className="mt-0.5 h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500/30" {...rest} />
+      <input type="checkbox" className="mt-0.5 h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-accent-500/30" {...rest} />
       {(label || description) && (
         <span className="text-sm">
           {label && <span className="font-medium text-slate-800">{label}</span>}
-          {description && <span className="block text-xs text-slate-500">{description}</span>}
+          {description && <span className="block text-[13px] text-slate-500">{description}</span>}
         </span>
       )}
     </label>
@@ -64,7 +64,7 @@ export function Switch({ checked, onChange, disabled, label }: { checked: boolea
       aria-label={label}
       disabled={disabled}
       onClick={() => onChange(!checked)}
-      className={cn('relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition disabled:opacity-50', checked ? 'bg-brand-600' : 'bg-slate-300')}
+      className={cn('relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition disabled:opacity-50', checked ? 'bg-accent-600' : 'bg-slate-300')}
     >
       <span className={cn('inline-block h-4 w-4 rounded-full bg-white shadow transition', checked ? 'translate-x-[18px]' : 'translate-x-0.5')} />
     </button>

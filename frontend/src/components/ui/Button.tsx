@@ -7,18 +7,18 @@ type Variant = 'primary' | 'secondary' | 'ghost' | 'danger' | 'success' | 'outli
 type Size = 'xs' | 'sm' | 'md' | 'lg';
 
 const variants: Record<Variant, string> = {
-  primary: 'bg-brand-600 text-white shadow-sm hover:bg-brand-700 focus-visible:ring-brand-500/30 bg-gradient-to-b from-brand-500 to-brand-600',
-  secondary: 'bg-white text-slate-700 ring-1 ring-inset ring-slate-300 shadow-sm hover:bg-slate-50 focus-visible:ring-slate-400/30',
-  outline: 'bg-transparent text-brand-700 ring-1 ring-inset ring-brand-200 hover:bg-brand-50',
+  primary: 'bg-slate-900 text-white hover:bg-slate-700 focus-visible:ring-accent-500/40',
+  secondary: 'bg-white text-slate-900 ring-1 ring-inset ring-slate-300 hover:bg-slate-50 focus-visible:ring-accent-500/40',
+  outline: 'bg-transparent text-slate-900 ring-1 ring-inset ring-slate-300 hover:bg-slate-50',
   ghost: 'text-slate-600 hover:bg-slate-100 hover:text-slate-900',
-  danger: 'bg-red-600 text-white shadow-sm hover:bg-red-700 focus-visible:ring-red-500/30',
-  success: 'bg-emerald-600 text-white shadow-sm hover:bg-emerald-700 focus-visible:ring-emerald-500/30',
+  danger: 'bg-red-600 text-white hover:bg-red-700 focus-visible:ring-red-500/30',
+  success: 'bg-accent-200 text-accent-700 hover:bg-accent-300 focus-visible:ring-accent-500/40',
 };
 const sizes: Record<Size, string> = {
-  xs: 'h-7 px-2 text-xs gap-1 rounded-md',
+  xs: 'h-7 px-2.5 text-xs gap-1 rounded-lg',
   sm: 'h-8 px-3 text-sm gap-1.5 rounded-lg',
-  md: 'h-9 px-4 text-sm gap-2 rounded-lg',
-  lg: 'h-11 px-5 text-[15px] gap-2 rounded-xl',
+  md: 'h-10 px-4 text-sm gap-2 rounded-lg',
+  lg: 'h-11 px-5 text-base gap-2 rounded-lg',
 };
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -30,7 +30,7 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 
 export const buttonClass = (variant: Variant = 'primary', size: Size = 'md', className?: string) =>
   cn(
-    'inline-flex items-center justify-center whitespace-nowrap font-medium transition-all focus:outline-none focus-visible:ring-4 disabled:pointer-events-none disabled:opacity-50 active:scale-[.98]',
+    'inline-flex items-center justify-center whitespace-nowrap font-medium transition duration-150 focus:outline-none focus-visible:ring-4 disabled:pointer-events-none disabled:opacity-50',
     variants[variant],
     sizes[size],
     className,

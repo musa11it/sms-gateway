@@ -63,7 +63,7 @@ function GroupedScopeList({ scopes, selected, onChange }: { scopes: ApiScope[]; 
                   <label key={s.key} title={s.description} className="flex items-center gap-2 text-sm text-slate-700">
                     <input type="checkbox" checked={selected.includes(s.key)} onChange={() => onChange(toggleIn(selected, s.key))} />
                     <code className="font-mono text-xs">{s.key}</code>
-                    {s.highRisk && <span className="rounded bg-red-50 px-1 text-[10px] font-medium text-red-700">high-risk</span>}
+                    {s.highRisk && <span className="rounded bg-red-50 px-1 text-xs font-medium text-red-700">high-risk</span>}
                   </label>
                 ))}
               </div>
@@ -117,7 +117,7 @@ export function IntegrationsPage() {
               header: 'Access',
               cell: (c) => (
                 <span className="flex flex-wrap items-center gap-1">
-                  {c.scopes.slice(0, 2).map((s) => <code key={s} className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px]">{s}</code>)}
+                  {c.scopes.slice(0, 2).map((s) => <code key={s} className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-xs">{s}</code>)}
                   {c.scopes.length > 2 && <button className="text-xs font-medium text-brand-600 hover:underline" onClick={() => setDetail(c)}>View all ({c.scopes.length})</button>}
                 </span>
               ),
@@ -279,7 +279,7 @@ function CredentialDetails({ client, scopes, canEdit, onClose, onEdit }: { clien
             <div key={group}>
               <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{group}</p>
               <div className="mt-1 flex flex-wrap gap-1.5">
-                {keys.map((k) => <code key={k} title={scopes.find((s) => s.key === k)?.description} className={`rounded px-1.5 py-0.5 font-mono text-[11px] ${scopes.find((s) => s.key === k)?.highRisk ? 'bg-red-50 text-red-700' : 'bg-slate-100'}`}>{k}</code>)}
+                {keys.map((k) => <code key={k} title={scopes.find((s) => s.key === k)?.description} className={`rounded px-1.5 py-0.5 font-mono text-xs ${scopes.find((s) => s.key === k)?.highRisk ? 'bg-red-50 text-red-700' : 'bg-slate-100'}`}>{k}</code>)}
               </div>
             </div>
           ))}

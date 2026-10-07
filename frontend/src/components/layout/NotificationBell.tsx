@@ -23,7 +23,7 @@ export function NotificationBell({ allLink }: { allLink: string }) {
         <button onClick={() => void refetch()} className="relative flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800" aria-label="Notifications">
           <Bell className="h-[18px] w-[18px]" />
           {unread > 0 && (
-            <span className="absolute right-1 top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white ring-2 ring-white">
+            <span className="absolute right-1 top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-xs font-bold text-white ring-2 ring-white">
               {unread > 9 ? '9+' : unread}
             </span>
           )}
@@ -68,7 +68,7 @@ export function NotificationBell({ allLink }: { allLink: string }) {
                   <span className="min-w-0">
                     <span className="block text-sm font-medium text-slate-900">{n.title}</span>
                     {n.body && <span className="mt-0.5 line-clamp-2 block text-xs text-slate-500">{n.body}</span>}
-                    <span className="mt-1 block text-[11px] text-slate-400">{fmtRelative(n.createdAt)}</span>
+                    <span className="mt-1 block text-xs text-slate-400">{fmtRelative(n.createdAt)}</span>
                   </span>
                 </button>
               ))

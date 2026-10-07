@@ -8,7 +8,7 @@ export function PageHeader({ title, description, actions, breadcrumbs, className
   return (
     <div className={cn('mb-6', className)}>
       {breadcrumbs && breadcrumbs.length > 0 && (
-        <nav className="mb-2 flex items-center gap-1 text-xs font-medium text-slate-500">
+        <nav className="mb-2 flex items-center gap-1 text-[13px] font-medium text-slate-500">
           {breadcrumbs.map((b, i) => (
             <span key={i} className="flex items-center gap-1">
               {i > 0 && <ChevronRight className="h-3 w-3 text-slate-300" />}
@@ -25,8 +25,8 @@ export function PageHeader({ title, description, actions, breadcrumbs, className
       )}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div className="min-w-0">
-          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">{title}</h1>
-          {description && <p className="mt-1 text-sm text-slate-500">{description}</p>}
+          <h1 className="text-[28px] font-semibold leading-tight tracking-tight text-slate-900">{title}</h1>
+          {description && <p className="mt-1.5 text-sm text-slate-500">{description}</p>}
         </div>
         {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
       </div>
@@ -43,12 +43,12 @@ export function Tabs<T extends string>({ tabs, value, onChange, className }: { t
           onClick={() => onChange(t.value)}
           className={cn(
             '-mb-px flex items-center gap-2 whitespace-nowrap border-b-2 px-3 py-2.5 text-sm font-medium transition',
-            value === t.value ? 'border-brand-600 text-brand-700' : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-800',
+            value === t.value ? 'border-slate-900 text-slate-900' : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-800',
           )}
         >
           {t.label}
           {t.count !== undefined && (
-            <span className={cn('rounded-full px-1.5 py-px text-[11px] tabular-nums', value === t.value ? 'bg-brand-100 text-brand-700' : 'bg-slate-100 text-slate-600')}>{t.count}</span>
+            <span className={cn('rounded-full px-1.5 py-px text-xs tabular-nums', value === t.value ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600')}>{t.count}</span>
           )}
         </button>
       ))}
@@ -63,7 +63,7 @@ export function SegmentedControl<T extends string>({ options, value, onChange }:
         <button
           key={o.value}
           onClick={() => onChange(o.value)}
-          className={cn('rounded-md px-3 py-1 text-xs font-medium transition', value === o.value ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800')}
+          className={cn('rounded-md px-3 py-1 text-[13px] font-medium transition', value === o.value ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800')}
         >
           {o.label}
         </button>
@@ -99,7 +99,7 @@ export function CodeBlock({ code, language, className }: { code: string; languag
   return (
     <div className={cn('group relative overflow-hidden rounded-xl bg-ink-950 ring-1 ring-white/10', className)}>
       <div className="flex items-center justify-between border-b border-white/10 px-4 py-2">
-        <span className="font-mono text-[11px] uppercase tracking-wider text-slate-400">{language}</span>
+        <span className="font-mono text-xs uppercase tracking-wider text-slate-400">{language}</span>
         <CopyButton value={code} className="text-slate-400 hover:bg-white/10 hover:text-white" />
       </div>
       <pre className="scrollbar-thin overflow-x-auto p-4 font-mono text-[12.5px] leading-relaxed text-slate-200">
@@ -110,8 +110,8 @@ export function CodeBlock({ code, language, className }: { code: string; languag
 }
 
 export function Avatar({ name, size = 'md', className }: { name: string; size?: 'sm' | 'md' | 'lg'; className?: string }) {
-  const s = { sm: 'h-7 w-7 text-[11px]', md: 'h-9 w-9 text-xs', lg: 'h-12 w-12 text-sm' }[size];
-  return <span className={cn('inline-flex shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-brand-500 to-violet-600 font-semibold text-white', s, className)}>{initials(name) || '?'}</span>;
+  const s = { sm: 'h-7 w-7 text-xs', md: 'h-9 w-9 text-xs', lg: 'h-12 w-12 text-sm' }[size];
+  return <span className={cn('inline-flex shrink-0 items-center justify-center rounded-full bg-slate-900 font-semibold text-white', s, className)}>{initials(name) || '?'}</span>;
 }
 
 /** Click-outside dropdown menu. */
@@ -161,7 +161,7 @@ export function DescriptionList({ items, className }: { items: { label: string; 
     <dl className={cn('grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2', className)}>
       {items.map((i) => (
         <div key={i.label} className="min-w-0">
-          <dt className="text-xs font-medium uppercase tracking-wide text-slate-500">{i.label}</dt>
+          <dt className="text-[13px] font-medium text-slate-500">{i.label}</dt>
           <dd className="mt-1 break-words text-sm text-slate-900">{i.value ?? '—'}</dd>
         </div>
       ))}
@@ -170,7 +170,7 @@ export function DescriptionList({ items, className }: { items: { label: string; 
 }
 
 export function ProgressBar({ value, className, tone = 'brand' }: { value: number; className?: string; tone?: 'brand' | 'emerald' | 'amber' | 'red' }) {
-  const c = { brand: 'bg-brand-600', emerald: 'bg-emerald-500', amber: 'bg-amber-500', red: 'bg-red-500' }[tone];
+  const c = { brand: 'bg-slate-900', emerald: 'bg-accent-500', amber: 'bg-amber-500', red: 'bg-red-500' }[tone];
   return (
     <div className={cn('h-1.5 w-full overflow-hidden rounded-full bg-slate-100', className)}>
       <div className={cn('h-full rounded-full transition-all', c)} style={{ width: `${Math.max(0, Math.min(100, value))}%` }} />

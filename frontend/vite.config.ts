@@ -16,7 +16,7 @@ export default defineConfig({
       output: {
         manualChunks: {
           react: ['react', 'react-dom', 'react-router-dom'],
-          charts: ['recharts'],
+          charts: ['@mui/x-charts', '@mui/material', '@emotion/react', '@emotion/styled'],
           vendor: ['@tanstack/react-query', 'axios', 'zod', 'react-hook-form', 'date-fns'],
         },
       },

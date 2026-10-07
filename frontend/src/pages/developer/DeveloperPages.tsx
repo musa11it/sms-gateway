@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Activity, AlertTriangle, KeyRound, MoreHorizontal, Play, Plus, Power, RefreshCw, RotateCw, Send, Trash2, Webhook as WebhookIcon } from 'lucide-react';
-import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { CountBarChart, INK, RED } from '@/components/charts/Charts';
 import type { ApiKey, Webhook } from '@/api/types';
 import { Badge, StatusBadge } from '@/components/ui/Badge';
 import { Button, IconButton, LinkButton } from '@/components/ui/Button';
@@ -157,16 +157,15 @@ export function ApiLogsPage() {
         <CardHeader title="Requests per day" description="Last 14 days" />
         <div className="p-4">
           {usage.data?.daily.length ? (
-            <ResponsiveContainer width="100%" height={200}>
-              <BarChart data={usage.data.daily} margin={{ left: -20, right: 8, top: 8 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" vertical={false} />
-                <XAxis dataKey="date" tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} tickFormatter={(d: string) => d.slice(5)} />
-                <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} allowDecimals={false} />
-                <Tooltip />
-                <Bar dataKey="requests" name="Requests" fill="#6366f1" radius={[3, 3, 0, 0]} maxBarSize={24} />
-                <Bar dataKey="errors" name="Errors" fill="#ef4444" radius={[3, 3, 0, 0]} maxBarSize={24} />
-              </BarChart>
-            </ResponsiveContainer>
+            <CountBarChart
+              data={usage.data.daily}
+              xKey="date"
+              xFormat={(d) => d.slice(5)}
+              series={[
+                { key: 'requests', label: 'Requests', color: INK },
+                { key: 'errors', label: 'Errors', color: RED },
+              ]}
+            />
           ) : (
             <p className="py-12 text-center text-sm text-slate-400">No API traffic yet</p>
           )}
@@ -198,7 +197,7 @@ export function ApiLogsPage() {
             { key: 'dur', header: 'Duration', cell: (l) => <span className="tabular-nums text-slate-500">{l.durationMs} ms</span> },
             { key: 'key', header: 'Key', cell: (l) => l.apiKey ? <span className="text-xs">{l.apiKey.name} <span className="font-mono text-slate-400">{l.apiKey.prefix}</span></span> : '—' },
             { key: 'ip', header: 'IP', cell: (l) => <span className="font-mono text-xs text-slate-500">{l.ipAddress}</span> },
-            { key: 'rid', header: 'Request ID', cell: (l) => <span className="font-mono text-[11px] text-slate-400" title={l.requestId ?? undefined}>{l.requestId?.slice(0, 13)}</span> },
+            { key: 'rid', header: 'Request ID', cell: (l) => <span className="font-mono text-xs text-slate-400" title={l.requestId ?? undefined}>{l.requestId?.slice(0, 13)}</span> },
           ]}
           empty={<EmptyState icon={<Activity />} title="No API requests yet" description="Make your first request using the examples in the documentation." action={<LinkButton to="/app/developer/docs" variant="secondary">Open docs</LinkButton>} />}
         />
@@ -227,7 +226,7 @@ function DeliveriesDrawer({ hook, onClose }: { hook: Webhook | null; onClose: ()
                 <div className="space-y-3 border-t border-slate-100 p-4 text-xs">
                   {d.lastError && <p className="text-red-600">Last error: {d.lastError}</p>}
                   {d.nextAttemptAt && <p className="text-slate-500">Next retry: {fmtDateTime(d.nextAttemptAt)}</p>}
-                  <pre className="scrollbar-thin max-h-60 overflow-auto rounded-lg bg-ink-950 p-3 font-mono text-[11px] text-slate-200">{JSON.stringify(d.payload, null, 2)}</pre>
+                  <pre className="scrollbar-thin max-h-60 overflow-auto rounded-lg bg-ink-950 p-3 font-mono text-xs text-slate-200">{JSON.stringify(d.payload, null, 2)}</pre>
                   {d.status !== 'SUCCESS' && <Button size="xs" variant="secondary" icon={<RefreshCw className="h-3 w-3" />} onClick={() => redeliver.mutate(d.id)}>Redeliver</Button>}
                 </div>
               )}

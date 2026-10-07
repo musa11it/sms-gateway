@@ -34,26 +34,24 @@ function GettingStarted() {
   if (done === steps.length) return null;
   return (
     <Card className="overflow-hidden p-0">
-      <div className="flex flex-col gap-4 bg-gradient-to-r from-brand-600 to-violet-600 px-6 py-5 text-white sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-4 border-b border-slate-100 px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <p className="text-base font-semibold">Get set up to send</p>
-          <p className="text-sm text-brand-100">
+          <p className="text-base font-semibold text-slate-900">Get set up to send</p>
+          <p className="text-sm text-slate-500">
             {done} of {steps.length} steps complete
           </p>
         </div>
         <div className="w-full sm:w-48">
-          <div className="h-2 overflow-hidden rounded-full bg-white/20">
-            <div className="h-full rounded-full bg-white" style={{ width: `${(done / steps.length) * 100}%` }} />
-          </div>
+          <ProgressBar value={(done / steps.length) * 100} tone="emerald" />
         </div>
       </div>
       <div className="grid divide-y divide-slate-100 sm:grid-cols-5 sm:divide-x sm:divide-y-0">
         {steps.map((s) => (
           <Link key={s.title} to={s.to} className={cn('group flex gap-3 p-4 transition hover:bg-slate-50', s.done && 'opacity-60')}>
-            {s.done ? <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-500" /> : <Circle className="h-5 w-5 shrink-0 text-slate-300 group-hover:text-brand-500" />}
+            {s.done ? <CheckCircle2 className="h-5 w-5 shrink-0 text-accent-600" /> : <Circle className="h-5 w-5 shrink-0 text-slate-300 group-hover:text-slate-900" />}
             <span>
               <span className={cn('block text-sm font-medium', s.done ? 'text-slate-500 line-through' : 'text-slate-900')}>{s.title}</span>
-              <span className="block text-xs text-slate-500">{s.desc}</span>
+              <span className="block text-[13px] text-slate-500">{s.desc}</span>
             </span>
           </Link>
         ))}
@@ -73,20 +71,20 @@ export function DashboardPage() {
   const low = d && d.balance < d.lowBalanceThreshold;
 
   const actions = [
-    { label: 'Send SMS', to: '/app/sms/send', icon: Send, perm: 'sms.send', tone: 'from-brand-500 to-brand-600' },
-    { label: 'Create campaign', to: '/app/campaigns/new', icon: Megaphone, perm: 'campaigns.create', tone: 'from-violet-500 to-violet-600' },
-    { label: 'Buy SMS', to: '/app/wallet/buy', icon: ShoppingCart, perm: 'wallet.purchase', tone: 'from-emerald-500 to-emerald-600' },
-    { label: 'Add contacts', to: '/app/contacts', icon: Contact, perm: 'contacts.create', tone: 'from-amber-500 to-orange-500' },
+    { label: 'Send SMS', to: '/app/sms/send', icon: Send, perm: 'sms.send' },
+    { label: 'Create campaign', to: '/app/campaigns/new', icon: Megaphone, perm: 'campaigns.create' },
+    { label: 'Buy SMS', to: '/app/wallet/buy', icon: ShoppingCart, perm: 'wallet.purchase' },
+    { label: 'Add contacts', to: '/app/contacts', icon: Contact, perm: 'contacts.create' },
   ].filter((a) => can(a.perm));
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">
-            {greeting()}, {me?.user.fullName.split(' ')[0]} 👋
+          <h1 className="text-[28px] font-semibold leading-tight tracking-tight text-slate-900">
+            {greeting()}, {me?.user.fullName.split(' ')[0]}
           </h1>
-          <p className="mt-1 text-sm text-slate-500">Here’s what’s happening with {me?.organization?.name} today.</p>
+          <p className="mt-1.5 text-sm text-slate-500">Your SMS service at {me?.organization?.name}: usage, delivery and balance.</p>
         </div>
         {can('sms.send') && (
           <LinkButton to="/app/sms/send" icon={<Send className="h-4 w-4" />}>
@@ -101,13 +99,13 @@ export function DashboardPage() {
         <StatCard
           label="SMS balance"
           icon={<Wallet />}
-          tone={low ? 'amber' : 'brand'}
+          tone={low ? 'amber' : 'slate'}
           loading={dash.isLoading}
           value={fmtNumber(d?.balance)}
           hint={low ? <span className="font-medium text-amber-700">Below your alert of {fmtNumber(d?.lowBalanceThreshold)}</span> : 'credits available'}
         />
-        <StatCard label="Today’s usage" icon={<Send />} tone="violet" loading={dash.isLoading} value={fmtNumber(d?.today.total)} hint={`${fmtNumber(d?.today.pending)} pending`} />
-        <StatCard label="This month" icon={<TrendingUp />} tone="sky" loading={dash.isLoading} value={fmtNumber(d?.month.total)} hint={`${fmtNumber(d?.month.delivered)} delivered`} />
+        <StatCard label="Today’s usage" icon={<Send />} tone="slate" loading={dash.isLoading} value={fmtNumber(d?.today.total)} hint={`${fmtNumber(d?.today.pending)} pending`} />
+        <StatCard label="This month" icon={<TrendingUp />} tone="slate" loading={dash.isLoading} value={fmtNumber(d?.month.total)} hint={`${fmtNumber(d?.month.delivered)} delivered`} />
         <StatCard
           label="Delivery rate"
           icon={<Gauge />}
@@ -121,12 +119,12 @@ export function DashboardPage() {
       {actions.length > 0 && (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {actions.map((a) => (
-            <Link key={a.to} to={a.to} className="card group flex items-center gap-3 p-4 transition hover:-translate-y-0.5 hover:shadow-pop">
-              <span className={cn('flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br text-white shadow-sm', a.tone)}>
-                <a.icon className="h-5 w-5" />
+            <Link key={a.to} to={a.to} className="card group flex items-center gap-3 p-4 transition duration-150 hover:border-slate-300 hover:shadow-pop">
+              <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-slate-100 text-slate-700 group-hover:bg-slate-900 group-hover:text-white">
+                <a.icon className="h-[18px] w-[18px]" />
               </span>
-              <span className="flex-1 text-sm font-semibold text-slate-800">{a.label}</span>
-              <ArrowRight className="h-4 w-4 text-slate-300 transition group-hover:translate-x-0.5 group-hover:text-slate-500" />
+              <span className="flex-1 text-sm font-semibold text-slate-900">{a.label}</span>
+              <ArrowRight className="h-4 w-4 text-slate-300 transition group-hover:translate-x-0.5 group-hover:text-slate-600" />
             </Link>
           ))}
         </div>
@@ -149,14 +147,14 @@ export function DashboardPage() {
                   {[
                     ['Delivered', d?.month.delivered ?? 0, 'emerald'],
                     ['Failed', d?.month.failed ?? 0, 'red'],
-                    ['Pending', d?.month.pending ?? 0, 'brand'],
+                    ['Pending', d?.month.pending ?? 0, 'amber'],
                   ].map(([l, v, t]) => (
                     <div key={l as string}>
                       <div className="mb-1 flex justify-between text-xs">
                         <span className="text-slate-600">{l}</span>
                         <span className="font-medium tabular-nums text-slate-900">{fmtNumber(v as number)}</span>
                       </div>
-                      <ProgressBar value={d?.month.total ? ((v as number) / d.month.total) * 100 : 0} tone={t as 'emerald' | 'red' | 'brand'} />
+                      <ProgressBar value={d?.month.total ? ((v as number) / d.month.total) * 100 : 0} tone={t as 'emerald' | 'red' | 'amber'} />
                     </div>
                   ))}
                 </div>
@@ -204,7 +202,7 @@ export function DashboardPage() {
                     </span>
                     <span className="flex shrink-0 flex-col items-end gap-1">
                       <StatusBadge status={m.status} />
-                      <span className="text-[11px] text-slate-400">{fmtRelative(m.createdAt)}</span>
+                      <span className="text-xs text-slate-400">{fmtRelative(m.createdAt)}</span>
                     </span>
                   </li>
                 ))}
@@ -225,7 +223,7 @@ export function DashboardPage() {
                       <span className="block truncate text-sm text-slate-800">{t.description}</span>
                       <span className="text-xs text-slate-500">{fmtRelative(t.createdAt)}</span>
                     </span>
-                    <span className={cn('shrink-0 font-semibold tabular-nums', t.amount > 0 ? 'text-emerald-600' : 'text-slate-700')}>
+                    <span className={cn('shrink-0 font-semibold tabular-nums', t.amount > 0 ? 'text-accent-700' : 'text-slate-700')}>
                       {t.amount > 0 ? '+' : ''}
                       {fmtNumber(t.amount)}
                     </span>

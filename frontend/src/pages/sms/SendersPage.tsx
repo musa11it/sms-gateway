@@ -135,7 +135,7 @@ export function SendersPage() {
             <Card key={s.id} className="flex flex-col">
               <div className="flex items-start justify-between gap-3">
                 <div className="flex items-center gap-3">
-                  <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-slate-800 to-slate-900 font-mono text-xs font-bold text-white">{s.name.slice(0, 3).toUpperCase()}</span>
+                  <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-slate-900 font-mono text-xs font-bold text-white">{s.name.slice(0, 3).toUpperCase()}</span>
                   <div>
                     <p className="flex items-center gap-1.5 font-mono text-[15px] font-semibold text-slate-900">
                       {s.name} {s.status === 'APPROVED' && <BadgeCheck className="h-4 w-4 text-emerald-500" />}
@@ -197,9 +197,9 @@ function AllocationBlock({ allocation, canManage, onManage }: { allocation?: Sen
   return (
     <div className="mt-4 rounded-lg bg-slate-50 p-3 ring-1 ring-inset ring-slate-100">
       <dl className="grid grid-cols-3 gap-2 text-center">
-        <div><dt className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Allocated</dt><dd className="font-semibold tabular-nums text-slate-900">{fmtNumber(allocation.allocated)}</dd></div>
-        <div><dt className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Used</dt><dd className="font-semibold tabular-nums text-slate-900">{fmtNumber(allocation.used)}</dd></div>
-        <div><dt className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Remaining</dt><dd className="font-semibold tabular-nums text-slate-900">{fmtNumber(allocation.remaining)}</dd></div>
+        <div><dt className="text-xs font-medium uppercase tracking-wide text-slate-500">Allocated</dt><dd className="font-semibold tabular-nums text-slate-900">{fmtNumber(allocation.allocated)}</dd></div>
+        <div><dt className="text-xs font-medium uppercase tracking-wide text-slate-500">Used</dt><dd className="font-semibold tabular-nums text-slate-900">{fmtNumber(allocation.used)}</dd></div>
+        <div><dt className="text-xs font-medium uppercase tracking-wide text-slate-500">Remaining</dt><dd className="font-semibold tabular-nums text-slate-900">{fmtNumber(allocation.remaining)}</dd></div>
       </dl>
       <div className="mt-3 flex items-center gap-2" aria-label={`${allocation.usagePercent}% used`}>
         <ProgressBar value={allocation.usagePercent} tone={allocationTone(allocation)} className="flex-1" />
@@ -256,9 +256,9 @@ function AllocationModal({ sender, allocation, overview, onClose }: { sender: Se
           </p>
           {overview && (
             <dl className="grid grid-cols-3 gap-3 rounded-lg bg-slate-50 p-3 text-center ring-1 ring-inset ring-slate-100">
-              <div><dt className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Wallet</dt><dd className="font-semibold tabular-nums">{fmtNumber(overview.balance)}</dd></div>
-              <div><dt className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Already used</dt><dd className="font-semibold tabular-nums">{fmtNumber(used)}</dd></div>
-              <div><dt className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Max allocation</dt><dd className="font-semibold tabular-nums">{max !== undefined ? fmtNumber(max) : '—'}</dd></div>
+              <div><dt className="text-xs font-medium uppercase tracking-wide text-slate-500">Wallet</dt><dd className="font-semibold tabular-nums">{fmtNumber(overview.balance)}</dd></div>
+              <div><dt className="text-xs font-medium uppercase tracking-wide text-slate-500">Already used</dt><dd className="font-semibold tabular-nums">{fmtNumber(used)}</dd></div>
+              <div><dt className="text-xs font-medium uppercase tracking-wide text-slate-500">Max allocation</dt><dd className="font-semibold tabular-nums">{max !== undefined ? fmtNumber(max) : '—'}</dd></div>
             </dl>
           )}
           <Field label="Allocated credits" required error={amountError} hint="Total credits for this sender ID, including those already used.">

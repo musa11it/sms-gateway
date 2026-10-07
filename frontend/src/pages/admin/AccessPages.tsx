@@ -230,7 +230,7 @@ export function SystemSettingsPage() {
                   <div key={a.id} className="rounded-lg bg-slate-50 p-3">
                     <p className="text-xs text-slate-500">{a.name}</p>
                     <p className="text-lg font-semibold tabular-nums">{fmtNumber(a.capacityBalance)}</p>
-                    <p className="text-[11px] text-slate-400">SMS capacity</p>
+                    <p className="text-xs text-slate-400">SMS capacity</p>
                   </div>
                 ))}
               </div>

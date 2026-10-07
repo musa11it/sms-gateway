@@ -31,7 +31,7 @@ function Progress({ c }: { c: Campaign }) {
   return (
     <div className="w-32">
       <ProgressBar value={pct} tone={s.failed > s.delivered ? 'red' : 'emerald'} />
-      <p className="mt-1 text-[11px] text-slate-500 tabular-nums">
+      <p className="mt-1 text-xs text-slate-500 tabular-nums">
         {fmtNumber(s.delivered)} delivered · {fmtNumber(s.failed)} failed
       </p>
     </div>
@@ -80,7 +80,7 @@ export function CampaignsPage() {
             { key: 'progress', header: 'Delivery', cell: (c) => <Progress c={c} /> },
             { key: 'pending', header: 'Pending', cell: (c) => <span className="tabular-nums">{fmtNumber(c.stats.pending)}</span> },
             { key: 'credits', header: 'Credits used', cell: (c) => <span className="tabular-nums">{fmtNumber(c.stats.creditsUsed)}</span> },
-            { key: 'when', header: 'Created', cell: (c) => <span className="text-slate-500">{c.scheduledAt && c.status === 'SCHEDULED' ? <span className="flex items-center gap-1 text-violet-700"><CalendarClock className="h-3.5 w-3.5" />{fmtDateTime(c.scheduledAt)}</span> : fmtRelative(c.createdAt)}</span> },
+            { key: 'when', header: 'Created', cell: (c) => <span className="text-slate-500">{c.scheduledAt && c.status === 'SCHEDULED' ? <span className="flex items-center gap-1 text-slate-700"><CalendarClock className="h-3.5 w-3.5" />{fmtDateTime(c.scheduledAt)}</span> : fmtRelative(c.createdAt)}</span> },
           ]}
           empty={<EmptyState icon={<Megaphone />} title="No campaigns yet" description="Create a campaign to message a contact group, e.g. a promotion to your VIP customers." action={can('campaigns.create') && <LinkButton to="/app/campaigns/new">Create campaign</LinkButton>} />}
         />

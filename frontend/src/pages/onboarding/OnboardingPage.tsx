@@ -483,7 +483,7 @@ function StatusStep({ overview }: { overview: VerificationOverview }) {
   if (status === 'APPROVED')
     return (
       <div className="py-6 text-center">
-        <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-400 to-emerald-600 text-white shadow-lg shadow-emerald-500/30">
+        <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-accent-200 text-accent-700">
           <PartyPopper className="h-8 w-8" />
         </div>
         <h2 className="mt-5 text-xl font-semibold text-slate-900">You’re approved!</h2>
@@ -495,7 +495,7 @@ function StatusStep({ overview }: { overview: VerificationOverview }) {
     );
   return (
     <div className="py-6 text-center">
-      <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-brand-500 to-violet-600 text-white shadow-lg shadow-brand-500/30">
+      <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-slate-900 text-white">
         {status === 'UNDER_REVIEW' ? <Hourglass className="h-8 w-8" /> : <Clock3 className="h-8 w-8" />}
       </div>
       <h2 className="mt-5 text-xl font-semibold text-slate-900">{status === 'UNDER_REVIEW' ? 'Your application is being reviewed' : 'Application submitted'}</h2>
@@ -539,8 +539,8 @@ export function OnboardingPage() {
   if (meLoading || (hasOrg && (isLoading || !org))) return <PageLoader />;
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-white to-slate-50">
-      <header className="border-b border-slate-200/70 bg-white/80 backdrop-blur">
+    <div className="min-h-screen bg-slate-50">
+      <header className="border-b border-slate-200/70 bg-white">
         <div className="mx-auto flex h-16 max-w-4xl items-center justify-between px-4 sm:px-6">
           <span className="flex items-center gap-2.5 text-[15px] font-semibold text-slate-900">
             <LogoMark /> Account setup

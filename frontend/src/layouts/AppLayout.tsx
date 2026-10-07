@@ -28,7 +28,7 @@ function OrgSwitcher() {
   const single = me.memberships.length <= 1;
   const label = (
     <span className="flex min-w-0 items-center gap-2.5">
-      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-slate-100 to-slate-200 text-xs font-bold text-slate-700 ring-1 ring-slate-200">
+      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-xs font-semibold text-white">
         {org.name.slice(0, 2).toUpperCase()}
       </span>
       <span className="min-w-0 text-left">
@@ -98,9 +98,10 @@ function Banners() {
 export function AppLayout() {
   const { can } = usePermissions();
   const nav: NavItem[] = [
-    { label: 'Dashboard', to: '/app', icon: LayoutDashboard, end: true },
+    { label: 'Overview', to: '/app', icon: LayoutDashboard, end: true },
     {
       label: 'Messaging',
+      section: 'Workspace',
       to: '/app/sms',
       icon: MessageSquareText,
       children: [
@@ -123,6 +124,7 @@ export function AppLayout() {
     { label: 'Sender IDs', to: '/app/senders', icon: ShieldCheck, visible: can('senders.view') },
     {
       label: 'Wallet',
+      section: 'Finance',
       to: '/app/wallet',
       icon: Wallet,
       children: [
@@ -134,6 +136,7 @@ export function AppLayout() {
     },
     {
       label: 'Developer',
+      section: 'Developer',
       to: '/app/developer',
       icon: Code2,
       children: [
@@ -143,7 +146,7 @@ export function AppLayout() {
         { label: 'Documentation', to: '/app/developer/docs' },
       ],
     },
-    { label: 'Reports', to: '/app/reports', icon: BarChart3, visible: can('reports.view') },
+    { label: 'Reports', section: 'Organization', to: '/app/reports', icon: BarChart3, visible: can('reports.view') },
     { label: 'Organization', to: '/app/organization', icon: Building2, visible: can('organizations.view') },
     { label: 'Settings', to: '/app/settings', icon: Settings },
   ];

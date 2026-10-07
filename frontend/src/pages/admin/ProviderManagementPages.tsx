@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { CountBarChart } from '@/components/charts/Charts';
 import {
   Activity,
   ArrowDown,
@@ -446,7 +446,7 @@ export function ProvidersPage() {
             <StatCard label="Average provider cost" icon={<CircleDollarSign />} tone="amber" loading={q.isLoading} value={d?.capacity.averageRemainingCost ? fmtMoney(d.capacity.averageRemainingCost) : '—'} hint="per segment, across remaining lots" />
           </div>
 
-          <Card className="bg-gradient-to-br from-slate-50 to-white">
+          <Card>
             <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
               <p className="flex items-center gap-2 text-sm font-semibold text-slate-900"><TrendingUp className="h-4 w-4 text-emerald-600" /> Provider profitability</p>
               <span className="text-xs text-slate-500">{d ? `${fmtDate(d.range.from)} – ${fmtDate(d.range.to)} · ${fmtNumber(d.economics.messages)} messages` : ''}</span>
@@ -478,7 +478,7 @@ export function ProvidersPage() {
                 },
                 { key: 'm', header: 'Messages', className: 'text-right', headerClassName: 'text-right', cell: (p) => <span className="tabular-nums text-slate-600">{fmtNumber(p.messages)}</span> },
                 { key: 'r', header: 'Customer revenue', className: 'text-right', headerClassName: 'text-right', cell: (p) => <span className="tabular-nums"><Money value={p.revenue} /></span> },
-                { key: 'pc', header: 'Provider cost', className: 'text-right', headerClassName: 'text-right', cell: (p) => <span className="tabular-nums text-amber-700"><Money value={p.providerCost} />{p.costPerCredit && <span className="block text-[11px] text-slate-400">{fmtMoney(p.costPerCredit)} / credit</span>}</span> },
+                { key: 'pc', header: 'Provider cost', className: 'text-right', headerClassName: 'text-right', cell: (p) => <span className="tabular-nums text-amber-700"><Money value={p.providerCost} />{p.costPerCredit && <span className="block text-xs text-slate-400">{fmtMoney(p.costPerCredit)} / credit</span>}</span> },
                 {
                   key: 'g',
                   header: 'Gross profit',
@@ -487,7 +487,7 @@ export function ProvidersPage() {
                   cell: (p) => (
                     <span className={cn('font-semibold tabular-nums', p.grossMargin && Number(p.grossMargin) < 0 ? 'text-red-600' : 'text-emerald-700')}>
                       <Money value={p.grossMargin} />
-                      {p.marginPercent != null && <span className="block text-[11px] font-normal">{p.marginPercent}%</span>}
+                      {p.marginPercent != null && <span className="block text-xs font-normal">{p.marginPercent}%</span>}
                     </span>
                   ),
                 },
@@ -510,7 +510,7 @@ export function ProvidersPage() {
                     header: 'Provider',
                     cell: (p) => (
                       <span className="flex items-center gap-3">
-                        <span className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-lg font-mono text-[11px] font-bold text-white', p.routable ? 'bg-gradient-to-br from-brand-600 to-violet-600' : 'bg-slate-400')}>{p.code.slice(0, 3)}</span>
+                        <span className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-lg font-mono text-xs font-bold text-white', p.routable ? 'bg-slate-900' : 'bg-slate-400')}>{p.code.slice(0, 3)}</span>
                         <span className="min-w-0">
                           <span className="block font-medium text-slate-900">{p.name}</span>
                           <span className="block truncate text-xs text-slate-500">{[...p.countries.map((c) => c.name), ...p.networks.map((n) => n.name)].join(', ') || 'No destinations — never routed'}</span>
@@ -532,7 +532,7 @@ export function ProvidersPage() {
                     cell: (p) => (
                       <span className={cn('font-semibold tabular-nums', p.capacityState === 'EMPTY' ? 'text-red-600' : p.capacityState === 'LOW' ? 'text-amber-600' : 'text-slate-900')}>
                         {fmtNumber(p.capacityBalance)}
-                        {p.minimumCapacity > 0 && <span className="block text-[11px] font-normal text-slate-400">reserve {fmtNumber(p.minimumCapacity)}</span>}
+                        {p.minimumCapacity > 0 && <span className="block text-xs font-normal text-slate-400">reserve {fmtNumber(p.minimumCapacity)}</span>}
                       </span>
                     ),
                   },
@@ -697,7 +697,7 @@ export function ProviderDetailPage() {
           <DataTable
             rows={p.lots}
             columns={[
-              { key: 'r', header: 'Lot', cell: (l) => <span><span className="block font-mono text-xs font-medium">{l.reference}</span><span className="text-[11px] text-slate-400">{titleCase(l.source)}{l.providerReference ? ` · ${l.providerReference}` : ''}</span></span> },
+              { key: 'r', header: 'Lot', cell: (l) => <span><span className="block font-mono text-xs font-medium">{l.reference}</span><span className="text-xs text-slate-400">{titleCase(l.source)}{l.providerReference ? ` · ${l.providerReference}` : ''}</span></span> },
               { key: 'd', header: 'Date', cell: (l) => <span className="text-xs text-slate-500">{fmtDateTime(l.createdAt)}</span> },
               { key: 'q', header: 'Quantity', className: 'text-right', headerClassName: 'text-right', cell: (l) => <span className="tabular-nums">{fmtNumber(l.quantity)}</span> },
               { key: 'c', header: 'Cost / segment', className: 'text-right', headerClassName: 'text-right', cell: (l) => <span className="tabular-nums">{fmtMoney(l.unitCost, p.currency)}</span> },
@@ -720,7 +720,7 @@ export function ProviderDetailPage() {
                 cell: (l) => (
                   <span className="tabular-nums text-amber-700" title="Segments used by SMS (net of returned capacity), at this lot's own unit cost">
                     {fmtMoney(l.consumedCost, p.currency)}
-                    <span className="block text-[11px] text-slate-500">{fmtNumber(l.consumed)} by SMS{l.writtenOff ? ` · ${fmtNumber(l.writtenOff)} written off` : ''}</span>
+                    <span className="block text-xs text-slate-500">{fmtNumber(l.consumed)} by SMS{l.writtenOff ? ` · ${fmtNumber(l.writtenOff)} written off` : ''}</span>
                   </span>
                 ),
               },
@@ -771,15 +771,7 @@ export function ProviderDetailPage() {
           <CardHeader title="Segments used per day" description="Usage net of released capacity (rejected or cancelled messages)." />
           <div className="p-4">
             {p.usage.length ? (
-              <ResponsiveContainer width="100%" height={260}>
-                <BarChart data={p.usage}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                  <XAxis dataKey="date" tick={{ fontSize: 11, fill: '#94a3b8' }} tickFormatter={(v: string) => v.slice(5)} />
-                  <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} width={48} />
-                  <Tooltip formatter={(v: number) => [fmtNumber(v), 'Segments']} />
-                  <Bar dataKey="segments" fill="#4f46e5" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
+              <CountBarChart data={p.usage} xKey="date" xFormat={(v) => v.slice(5)} height={260} series={[{ key: 'segments', label: 'Segments' }]} />
             ) : (
               <EmptyState icon={<Gauge />} title="No usage in this period" />
             )}
@@ -1380,7 +1372,7 @@ export function RoutingRulesPage() {
                 cell: (r) => (
                   <span className="block max-w-[14rem]">
                     <span className="font-medium text-slate-900">{r.name}</span>
-                    {r.shadowedBy && <span className="block text-[11px] font-medium text-amber-700">Never reached — "{r.shadowedBy.name}" matches first</span>}
+                    {r.shadowedBy && <span className="block text-xs font-medium text-amber-700">Never reached — "{r.shadowedBy.name}" matches first</span>}
                     {r.description && <span className="block truncate text-xs text-slate-500">{r.description}</span>}
                   </span>
                 ),
@@ -1390,7 +1382,7 @@ export function RoutingRulesPage() {
               { key: 'p', header: 'Providers / order', cell: (r) => <span className="block max-w-[16rem] text-xs text-slate-700">{providersInOrder(r)}</span> },
               { key: 'c', header: 'Max cost', className: 'text-right', headerClassName: 'text-right', cell: (r) => <span className="tabular-nums">{r.maxCostPerSegment ? fmtMoney(r.maxCostPerSegment) : '—'}</span> },
               { key: 'm', header: 'Min capacity', className: 'text-right', headerClassName: 'text-right', cell: (r) => <span className="tabular-nums">{r.minProviderCapacity ? fmtNumber(r.minProviderCapacity) : '—'}</span> },
-              { key: 'now', header: 'Uses now', cell: (r) => <span className="block max-w-[15rem]"><span className="text-[11px] text-slate-400">{r.preview.destination}</span><RouteDecision s={r.preview} compact /></span> },
+              { key: 'now', header: 'Uses now', cell: (r) => <span className="block max-w-[15rem]"><span className="text-xs text-slate-400">{r.preview.destination}</span><RouteDecision s={r.preview} compact /></span> },
               { key: 'a', header: 'Status', cell: (r) => <StatusBadge status={r.isActive ? 'ACTIVE' : 'INACTIVE'} /> },
               {
                 key: 'x',
@@ -1464,7 +1456,7 @@ export function RoutingRulesPage() {
           error={networks.error}
           rowClassName={(n) => (!n.isActive ? 'opacity-60' : '')}
           columns={[
-            { key: 'n', header: 'Network', cell: (n) => <span><span className="font-medium">{n.name}</span><span className="block font-mono text-[11px] text-slate-400">{n.code}</span></span> },
+            { key: 'n', header: 'Network', cell: (n) => <span><span className="font-medium">{n.name}</span><span className="block font-mono text-xs text-slate-400">{n.code}</span></span> },
             { key: 'c', header: 'Country', cell: (n) => n.countryName },
             { key: 'i', header: 'ISO', cell: (n) => <span className="font-mono text-xs">{n.countryCode}</span> },
             { key: 'p', header: 'Prefixes', cell: (n) => <span className="font-mono text-xs">{n.prefixes.join(', ')}</span> },

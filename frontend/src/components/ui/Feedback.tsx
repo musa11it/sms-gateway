@@ -5,7 +5,7 @@ import { cn } from '@/utils/format';
 import { Button } from './Button';
 
 export function Spinner({ className }: { className?: string }) {
-  return <Loader2 className={cn('h-5 w-5 animate-spin text-brand-600', className)} />;
+  return <Loader2 className={cn('h-5 w-5 animate-spin text-slate-900', className)} />;
 }
 
 export function PageLoader() {
@@ -38,14 +38,11 @@ export function EmptyState({ icon, title, description, action, className }: { ic
   return (
     <div className={cn('flex flex-col items-center justify-center px-6 py-14 text-center', className)}>
       {icon && (
-        <div className="relative mb-4">
-          <div className="absolute inset-0 -m-3 rounded-full bg-brand-100/50 blur-xl" />
-          <div className="relative flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br from-brand-50 to-violet-50 text-brand-600 ring-1 ring-brand-100 [&>svg]:h-6 [&>svg]:w-6">
-            {icon}
-          </div>
+        <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-slate-100 text-slate-500 ring-1 ring-inset ring-slate-200 [&>svg]:h-5 [&>svg]:w-5">
+          {icon}
         </div>
       )}
-      <h3 className="text-[15px] font-semibold text-slate-900">{title}</h3>
+      <h3 className="text-base font-semibold text-slate-900">{title}</h3>
       {description && <p className="mt-1 max-w-sm text-sm text-slate-500">{description}</p>}
       {action && <div className="mt-5 flex flex-wrap justify-center gap-2">{action}</div>}
     </div>
@@ -70,8 +67,8 @@ export function ErrorState({ error, onRetry, className }: { error: unknown; onRe
 }
 
 const alertTones = {
-  info: { cls: 'bg-brand-50/70 text-brand-900 ring-brand-200/70', icon: Info, iconCls: 'text-brand-600' },
-  success: { cls: 'bg-emerald-50 text-emerald-900 ring-emerald-200/70', icon: CheckCircle2, iconCls: 'text-emerald-600' },
+  info: { cls: 'bg-slate-50 text-slate-900 ring-slate-200', icon: Info, iconCls: 'text-slate-500' },
+  success: { cls: 'bg-accent-50 text-accent-800 ring-accent-200', icon: CheckCircle2, iconCls: 'text-accent-600' },
   warning: { cls: 'bg-amber-50 text-amber-900 ring-amber-200/80', icon: TriangleAlert, iconCls: 'text-amber-600' },
   danger: { cls: 'bg-red-50 text-red-900 ring-red-200/70', icon: AlertCircle, iconCls: 'text-red-600' },
 };

@@ -53,7 +53,7 @@ function SiteHeader() {
   const [open, setOpen] = useState(false);
   const loggedIn = !!useAuthStore((s) => s.accessToken);
   return (
-    <header className="sticky top-0 z-30 border-b border-slate-200/70 bg-white/85 backdrop-blur-md">
+    <header className="sticky top-0 z-30 border-b border-slate-200/70 bg-white">
       <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6">
         <Link to="/"><Logo /></Link>
         <nav className="hidden items-center gap-7 text-sm font-medium text-slate-600 lg:flex">
@@ -132,7 +132,7 @@ function Section({ id, eyebrow, title, subtitle, children, className }: { id?: s
 function HeroMock() {
   return (
     <div className="relative mx-auto w-full max-w-xl">
-      <div className="absolute -inset-6 rounded-[2rem] bg-gradient-to-tr from-brand-500/20 via-violet-500/10 to-transparent blur-2xl" />
+      <div className="hidden" />
       <div className="relative overflow-hidden rounded-2xl bg-white shadow-pop ring-1 ring-slate-200">
         <div className="flex items-center gap-1.5 border-b border-slate-100 bg-slate-50 px-4 py-2.5">
           <span className="h-2.5 w-2.5 rounded-full bg-red-300" /><span className="h-2.5 w-2.5 rounded-full bg-amber-300" /><span className="h-2.5 w-2.5 rounded-full bg-emerald-300" />
@@ -140,16 +140,16 @@ function HeroMock() {
         </div>
         <div className="grid gap-4 p-5 sm:grid-cols-[1fr_180px]">
           <div className="space-y-3">
-            <div><p className="text-[11px] font-medium text-slate-500">Sender ID</p><div className="mt-1 rounded-lg border border-slate-200 px-3 py-2 font-mono text-sm">YOURBRAND</div></div>
-            <div><p className="text-[11px] font-medium text-slate-500">Audience</p><div className="mt-1 flex flex-wrap gap-1.5">{['Customers', 'VIP', 'Subscribers'].map((g) => <span key={g} className="rounded-full bg-brand-50 px-2.5 py-1 text-xs font-medium text-brand-700 ring-1 ring-brand-100">{g}</span>)}</div></div>
-            <div><p className="text-[11px] font-medium text-slate-500">Message</p><div className="mt-1 rounded-lg border border-slate-200 p-3 text-sm text-slate-700">Hi! Your order is ready for pickup. Show this SMS at the counter. Thank you!</div><p className="mt-1 text-right text-[11px] text-slate-400">76 chars · 1 segment</p></div>
-            <div className="flex gap-2"><span className="flex-1 rounded-lg bg-gradient-to-b from-brand-500 to-brand-600 py-2 text-center text-sm font-medium text-white">Send now</span><span className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-600">Schedule</span></div>
+            <div><p className="text-xs font-medium text-slate-500">Sender ID</p><div className="mt-1 rounded-lg border border-slate-200 px-3 py-2 font-mono text-sm">YOURBRAND</div></div>
+            <div><p className="text-xs font-medium text-slate-500">Audience</p><div className="mt-1 flex flex-wrap gap-1.5">{['Customers', 'VIP', 'Subscribers'].map((g) => <span key={g} className="rounded-full bg-brand-50 px-2.5 py-1 text-xs font-medium text-brand-700 ring-1 ring-brand-100">{g}</span>)}</div></div>
+            <div><p className="text-xs font-medium text-slate-500">Message</p><div className="mt-1 rounded-lg border border-slate-200 p-3 text-sm text-slate-700">Hi! Your order is ready for pickup. Show this SMS at the counter. Thank you!</div><p className="mt-1 text-right text-xs text-slate-400">76 chars · 1 segment</p></div>
+            <div className="flex gap-2"><span className="flex-1 rounded-lg bg-slate-900 py-2 text-center text-sm font-medium text-white">Send now</span><span className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-600">Schedule</span></div>
           </div>
           <div className="hidden rounded-[1.4rem] bg-slate-900 p-1.5 sm:block">
             <div className="h-full rounded-[1.1rem] bg-slate-50 p-2.5">
-              <p className="text-center text-[10px] font-medium text-slate-500">YOURBRAND</p>
-              <div className="mt-3 rounded-xl rounded-bl-sm bg-white p-2 text-[11px] leading-snug text-slate-700 shadow-sm">Hi! Your order is ready for pickup. Show this SMS at the counter. Thank you!</div>
-              <p className="mt-2 flex items-center gap-1 text-[10px] text-emerald-600"><Check className="h-3 w-3" /> Delivered</p>
+              <p className="text-center text-xs font-medium text-slate-500">YOURBRAND</p>
+              <div className="mt-3 rounded-xl rounded-bl-sm bg-white p-2 text-xs leading-snug text-slate-700 shadow-sm">Hi! Your order is ready for pickup. Show this SMS at the counter. Thank you!</div>
+              <p className="mt-2 flex items-center gap-1 text-xs text-emerald-600"><Check className="h-3 w-3" /> Delivered</p>
             </div>
           </div>
         </div>
@@ -201,7 +201,7 @@ function Pricing() {
         const top = t.id === best.id && q.data.length > 1;
         return (
           <div key={t.id} className={cn('relative flex flex-col rounded-2xl bg-white p-6 ring-1', top ? 'shadow-pop ring-2 ring-brand-500' : 'ring-slate-200')}>
-            {top && <span className="absolute -top-3 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-full bg-gradient-to-r from-brand-600 to-violet-600 px-3 py-1 text-xs font-semibold text-white"><Sparkles className="h-3 w-3" /> Lowest rate</span>}
+            {top && <span className="absolute -top-3 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-full bg-slate-900 px-3 py-1 text-xs font-semibold text-white"><Sparkles className="h-3 w-3" /> Lowest rate</span>}
             <p className="text-sm font-semibold text-slate-500">{t.name ?? 'SMS credits'}</p>
             <p className="mt-3 text-2xl font-bold tracking-tight text-slate-900 tabular-nums">{t.maxQuantity === null ? `${fmtNumber(t.minQuantity)}+` : `${fmtNumber(t.minQuantity)} – ${fmtNumber(t.maxQuantity)}`}</p>
             <p className="text-xs font-medium uppercase tracking-wide text-slate-400">SMS credits per purchase</p>
@@ -264,7 +264,7 @@ export function LandingPage() {
           <div>
             <p className="inline-flex items-center gap-2 rounded-full bg-brand-50 px-3 py-1 text-xs font-semibold text-brand-700 ring-1 ring-brand-100"><MessagesSquare className="h-3.5 w-3.5" /> Powerful SMS management system</p>
             <h1 className="mt-6 text-4xl font-semibold leading-[1.1] tracking-tight text-slate-900 sm:text-5xl lg:text-[56px]">
-              Reach every customer with <span className="bg-gradient-to-r from-brand-600 to-violet-600 bg-clip-text text-transparent">SMS that works</span>
+              Reach every customer with <span className="bg-slate-900 bg-clip-text text-transparent">SMS that works</span>
             </h1>
             <p className="mt-6 max-w-xl text-lg leading-relaxed text-slate-600">
               Send mass messages, run marketing campaigns, and deliver notifications, alerts and reminders — from one platform built for businesses, organizations and developers. Pay only for what you send, track every message, and integrate with a simple API.
@@ -286,7 +286,7 @@ export function LandingPage() {
         <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
           {FEATURES.map(([Icon, title, text]) => (
             <div key={title} className="rounded-2xl bg-white p-6 ring-1 ring-slate-200 transition hover:-translate-y-0.5 hover:shadow-pop">
-              <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-brand-50 to-violet-50 text-brand-600 ring-1 ring-brand-100"><Icon className="h-5 w-5" /></span>
+              <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-slate-900 text-brand-600 ring-1 ring-brand-100"><Icon className="h-5 w-5" /></span>
               <p className="mt-4 font-semibold text-slate-900">{title}</p>
               <p className="mt-2 text-sm leading-relaxed text-slate-600">{text}</p>
             </div>
@@ -327,7 +327,7 @@ export function LandingPage() {
       <section id="developers" className="scroll-mt-20 bg-ink-950 py-20 sm:py-24">
         <div className="mx-auto grid max-w-7xl items-center gap-12 px-4 sm:px-6 lg:grid-cols-2">
           <div>
-            <p className="text-sm font-semibold uppercase tracking-wider text-violet-300">Developer API</p>
+            <p className="text-sm font-semibold uppercase tracking-wider text-accent-200">Developer API</p>
             <h2 className="mt-2 text-3xl font-semibold tracking-tight text-white sm:text-4xl">Integrate SMS directly into your software</h2>
             <p className="mt-4 text-base leading-relaxed text-slate-300">Send messages with one HTTP request. Every API call goes through the same verification, sender approval and billing rules as the dashboard.</p>
             <ul className="mt-8 space-y-3">
@@ -338,7 +338,7 @@ export function LandingPage() {
                 [Lock, 'Rate limits and detailed request logs'],
               ].map(([Icon, t]) => {
                 const I = Icon as typeof KeyRound;
-                return <li key={t as string} className="flex items-center gap-3 text-sm text-slate-200"><I className="h-5 w-5 text-violet-300" />{t as string}</li>;
+                return <li key={t as string} className="flex items-center gap-3 text-sm text-slate-200"><I className="h-5 w-5 text-accent-200" />{t as string}</li>;
               })}
             </ul>
           </div>
@@ -393,7 +393,7 @@ export function LandingPage() {
       </Section>
 
       <section className="px-4 sm:px-6">
-        <div className="mx-auto max-w-7xl overflow-hidden rounded-3xl bg-gradient-to-br from-brand-600 via-brand-700 to-violet-700 px-6 py-16 text-center sm:px-12">
+        <div className="mx-auto max-w-7xl overflow-hidden rounded-3xl bg-slate-900 px-6 py-16 text-center sm:px-12">
           <h2 className="text-3xl font-semibold tracking-tight text-white sm:text-4xl">Ready to communicate with your customers?</h2>
           <p className="mx-auto mt-4 max-w-2xl text-brand-100">Create your business account and manage all your SMS communication from one platform.</p>
           <div className="mt-8 flex flex-wrap justify-center gap-3">

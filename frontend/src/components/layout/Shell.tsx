@@ -16,6 +16,8 @@ export interface NavItem {
   visible?: boolean;
   end?: boolean;
   children?: NavItem[];
+  /** Caption shown above this item when it starts a new group of the sidebar. */
+  section?: string;
 }
 
 function NavGroup({ item }: { item: NavItem }) {
@@ -32,7 +34,7 @@ function NavGroup({ item }: { item: NavItem }) {
     <div>
       <button
         onClick={() => setOpen((o) => !o)}
-        className={cn('flex w-full items-center gap-3 rounded-lg px-3 py-2 text-[13.5px] font-medium transition', active ? 'text-white' : 'text-slate-400 hover:bg-white/5 hover:text-slate-100')}
+        className={cn('flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition duration-150', active ? 'text-white' : 'text-slate-400 hover:bg-white/5 hover:text-white')}
       >
         {Icon && <Icon className="h-[18px] w-[18px] shrink-0" />}
         <span className="flex-1 text-left">{item.label}</span>
@@ -46,7 +48,7 @@ function NavGroup({ item }: { item: NavItem }) {
               to={c.to}
               end={c.end}
               className={({ isActive }) =>
-                cn('block rounded-md px-3 py-1.5 text-[13px] transition', isActive ? 'bg-white/10 font-medium text-white' : 'text-slate-400 hover:bg-white/5 hover:text-slate-100')
+                cn('block rounded-md px-3 py-1.5 text-[13px] transition duration-150', isActive ? 'bg-accent-200/10 font-medium text-white' : 'text-slate-400 hover:bg-white/5 hover:text-white')
               }
             >
               {c.label}
@@ -60,33 +62,37 @@ function NavGroup({ item }: { item: NavItem }) {
 
 function Sidebar({ nav, suffix, footer, onNavigate }: { nav: NavItem[]; suffix?: string; footer?: ReactNode; onNavigate?: () => void }) {
   return (
-    <div className="flex h-full flex-col bg-ink-950 bg-[radial-gradient(ellipse_at_top_left,rgba(99,102,241,0.18),transparent_55%)]">
+    <div className="flex h-full flex-col bg-ink-900">
       <div className="flex h-16 shrink-0 items-center px-5">
         <Logo dark suffix={suffix} />
       </div>
       <nav className="scrollbar-thin flex-1 space-y-1 overflow-y-auto px-3 pb-4" onClick={(e) => (e.target as HTMLElement).closest('a') && onNavigate?.()}>
         {nav
           .filter((i) => i.visible !== false)
-          .map((item) =>
-            item.children ? (
-              <NavGroup key={item.label} item={item} />
-            ) : (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                end={item.end}
-                className={({ isActive }) =>
-                  cn(
-                    'flex items-center gap-3 rounded-lg px-3 py-2 text-[13.5px] font-medium transition',
-                    isActive ? 'bg-gradient-to-r from-brand-600/90 to-violet-600/70 text-white shadow-lg shadow-brand-900/30' : 'text-slate-400 hover:bg-white/5 hover:text-slate-100',
-                  )
-                }
-              >
-                {item.icon && <item.icon className="h-[18px] w-[18px] shrink-0" />}
-                {item.label}
-              </NavLink>
-            ),
-          )}
+          .map((item) => (
+            <div key={item.label}>
+              {item.section && <p className="px-3 pb-1.5 pt-5 text-xs font-medium uppercase tracking-wider text-slate-500">{item.section}</p>}
+              {item.children ? (
+                <NavGroup item={item} />
+              ) : (
+                <NavLink
+                  to={item.to}
+                  end={item.end}
+                  className={({ isActive }) =>
+                    cn(
+                      'relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition duration-150',
+                      isActive
+                        ? 'bg-accent-200/10 text-white before:absolute before:-left-3 before:top-1/2 before:h-4 before:w-[3px] before:-translate-y-1/2 before:rounded-r-full before:bg-accent-200'
+                        : 'text-slate-400 hover:bg-white/5 hover:text-white',
+                    )
+                  }
+                >
+                  {item.icon && <item.icon className="h-[18px] w-[18px] shrink-0" />}
+                  {item.label}
+                </NavLink>
+              )}
+            </div>
+          ))}
       </nav>
       {footer && <div className="border-t border-white/10 p-3">{footer}</div>}
     </div>
@@ -149,7 +155,7 @@ export function Shell({
       )}
 
       <div className="lg:pl-64">
-        <header className="sticky top-0 z-20 flex h-16 items-center gap-3 border-b border-slate-200/70 bg-white/80 px-4 backdrop-blur-md sm:px-6">
+        <header className="sticky top-0 z-20 flex h-16 items-center gap-3 border-b border-slate-200 bg-white px-4 sm:px-6">
           <button className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 lg:hidden" onClick={() => setSidebarOpen(true)} aria-label="Open menu">
             <Menu className="h-5 w-5" />
           </button>

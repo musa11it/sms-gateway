@@ -30,7 +30,7 @@ function parseNumbers(text: string) {
 function PhonePreview({ sender, message }: { sender: string; message: string }) {
   return (
     <div className="mx-auto w-full max-w-[280px] rounded-[2.2rem] bg-slate-900 p-2.5 shadow-pop">
-      <div className="overflow-hidden rounded-[1.8rem] bg-gradient-to-b from-slate-50 to-slate-100">
+      <div className="overflow-hidden rounded-[1.8rem] bg-slate-100">
         <div className="flex flex-col items-center border-b border-slate-200 bg-white/80 px-4 pb-3 pt-6">
           <span className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-300 text-xs font-semibold text-white">{(sender || '?').slice(0, 2).toUpperCase()}</span>
           <span className="mt-1 text-xs font-medium text-slate-800">{sender || 'Sender ID'}</span>

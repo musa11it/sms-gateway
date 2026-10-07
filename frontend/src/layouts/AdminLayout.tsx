@@ -25,10 +25,22 @@ import { usePermissions } from '@/hooks/useAuth';
 export function AdminLayout() {
   const { canAdmin } = usePermissions();
   const nav: NavItem[] = [
-    { label: 'Dashboard', to: '/admin', icon: LayoutDashboard, end: true, visible: canAdmin('dashboard.view') },
-    { label: 'Businesses', to: '/admin/organizations', icon: Building2, visible: canAdmin('organizations.view') },
+    { label: 'Overview', to: '/admin', icon: LayoutDashboard, end: true, visible: canAdmin('dashboard.view') },
+    { label: 'Businesses', section: 'Customers', to: '/admin/organizations', icon: Building2, visible: canAdmin('organizations.view') },
     { label: 'Business verification', to: '/admin/verification', icon: FileCheck2, visible: canAdmin('verification.view') },
     { label: 'Sender IDs', to: '/admin/senders', icon: ShieldCheck, visible: canAdmin('senders.view') },
+    { label: 'Users', to: '/admin/users', icon: Users, visible: canAdmin('users.view') },
+    { label: 'Inquiries', to: '/admin/inquiries', icon: Inbox, visible: canAdmin('inquiries.view') },
+    {
+      label: 'Messaging',
+      section: 'Operations',
+      to: '/admin/messaging',
+      icon: MessagesSquare,
+      children: [
+        { label: 'SMS traffic', to: '/admin/messaging/sms', visible: canAdmin('sms.view') },
+        { label: 'Campaigns', to: '/admin/messaging/campaigns', visible: canAdmin('campaigns.view') },
+      ],
+    },
     {
       label: 'SMS providers',
       to: '/admin/providers-group',
@@ -41,8 +53,10 @@ export function AdminLayout() {
         { label: 'Provider wallets', to: '/admin/provider-wallets', visible: canAdmin('providers.view') },
       ],
     },
+    { label: 'SMS pricing', to: '/admin/pricing', icon: Layers, visible: canAdmin('packages.view') },
     {
       label: 'Finance',
+      section: 'Finance',
       to: '/admin/finance-group',
       icon: Banknote,
       children: [
@@ -50,15 +64,6 @@ export function AdminLayout() {
         { label: 'Customer SMS sales', to: '/admin/sales', visible: canAdmin('finance.view') },
         { label: 'Customer report', to: '/admin/customer-report', visible: canAdmin('finance.view') },
         { label: 'Expenses', to: '/admin/expenses', visible: canAdmin('expenses.view') },
-      ],
-    },
-    {
-      label: 'Messaging',
-      to: '/admin/messaging',
-      icon: MessagesSquare,
-      children: [
-        { label: 'SMS traffic', to: '/admin/messaging/sms', visible: canAdmin('sms.view') },
-        { label: 'Campaigns', to: '/admin/messaging/campaigns', visible: canAdmin('campaigns.view') },
       ],
     },
     {
@@ -71,9 +76,9 @@ export function AdminLayout() {
       ],
     },
     { label: 'Wallet transactions', to: '/admin/wallets', icon: Wallet, visible: canAdmin('wallet.view') },
-    { label: 'SMS pricing', to: '/admin/pricing', icon: Layers, visible: canAdmin('packages.view') },
     {
       label: 'Developer',
+      section: 'Developer',
       to: '/admin/developer',
       icon: Code2,
       children: [
@@ -83,9 +88,7 @@ export function AdminLayout() {
         { label: 'Integrations', to: '/admin/integrations', visible: canAdmin('integrations.view') },
       ],
     },
-    { label: 'Reports', to: '/admin/reports', icon: BarChart3, visible: canAdmin('reports.view') },
-    { label: 'Inquiries', to: '/admin/inquiries', icon: Inbox, visible: canAdmin('inquiries.view') },
-    { label: 'Users', to: '/admin/users', icon: Users, visible: canAdmin('users.view') },
+    { label: 'Reports', section: 'Platform', to: '/admin/reports', icon: BarChart3, visible: canAdmin('reports.view') },
     { label: 'Roles & permissions', to: '/admin/roles', icon: Lock, visible: canAdmin('roles.view') },
     { label: 'Audit logs', to: '/admin/audit-logs', icon: ScrollText, visible: canAdmin('audit_logs.view') },
     { label: 'SMS configuration', to: '/admin/sms-configuration', icon: Ruler, visible: canAdmin('settings.view') },

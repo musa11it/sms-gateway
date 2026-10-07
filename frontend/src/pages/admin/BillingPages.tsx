@@ -56,7 +56,7 @@ export function AdminPaymentsPage() {
           loading={q.isLoading}
           error={q.error}
           columns={[
-            { key: 'ref', header: 'Reference', cell: (p) => <span><span className="block font-mono text-xs">{p.reference}</span><span className="font-mono text-[11px] text-slate-400">{p.provider} · {p.providerReference ?? '—'}</span></span> },
+            { key: 'ref', header: 'Reference', cell: (p) => <span><span className="block font-mono text-xs">{p.reference}</span><span className="font-mono text-xs text-slate-400">{p.provider} · {p.providerReference ?? '—'}</span></span> },
             { key: 'org', header: 'Organization', cell: (p) => <Link to={`/admin/organizations/${p.organization?.id}`} className="link">{p.organization?.name}</Link> },
             { key: 'pkg', header: 'Package', cell: (p) => <span>{p.packageName}<span className="block text-xs text-slate-500">{fmtNumber(p.credits)} credits</span></span> },
             { key: 'amt', header: 'Amount', cell: (p) => <span className="font-medium tabular-nums">{fmtMoney(p.amount, p.currency)}</span> },

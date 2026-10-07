@@ -41,9 +41,9 @@ export function DataTable<T extends { id: string }>({
     <div className="scrollbar-thin overflow-x-auto">
       <table className="min-w-full text-sm">
         <thead>
-          <tr className="border-b border-slate-200/80 bg-slate-50/70">
+          <tr className="border-b border-slate-200 bg-slate-50">
             {columns.map((c) => (
-              <th key={c.key} className={cn('whitespace-nowrap px-5 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-500', c.headerClassName)}>
+              <th key={c.key} className={cn('whitespace-nowrap px-5 py-3 text-left text-xs font-medium text-slate-500', c.headerClassName)}>
                 {c.header}
               </th>
             ))}
@@ -54,10 +54,10 @@ export function DataTable<T extends { id: string }>({
             <tr
               key={row.id}
               onClick={onRowClick ? () => onRowClick(row) : undefined}
-              className={cn('transition-colors', onRowClick && 'cursor-pointer hover:bg-slate-50/80', rowClassName?.(row))}
+              className={cn('transition-colors', onRowClick && 'cursor-pointer hover:bg-slate-50', rowClassName?.(row))}
             >
               {columns.map((c) => (
-                <td key={c.key} className={cn('whitespace-nowrap px-5 py-3 text-slate-700', c.className)}>
+                <td key={c.key} className={cn('whitespace-nowrap px-5 py-3.5 text-slate-700', c.className)}>
                   {c.cell(row)}
                 </td>
               ))}

@@ -260,8 +260,8 @@ export function PermissionMatrix({ roles, permissions, onToggle, canEdit }: { ro
             {roles.map((r) => (
               <th key={r.id} className="whitespace-nowrap px-3 py-3 text-center text-xs font-semibold text-slate-700">
                 {r.name}
-                {r.fullAccess && <span className="block text-[10px] font-normal text-violet-600">full access</span>}
-                {r.isCustom && <span className="block text-[10px] font-normal text-slate-400">custom</span>}
+                {r.fullAccess && <span className="block text-xs font-normal text-slate-500">full access</span>}
+                {r.isCustom && <span className="block text-xs font-normal text-slate-400">custom</span>}
               </th>
             ))}
           </tr>
@@ -279,7 +279,7 @@ export function PermissionMatrix({ roles, permissions, onToggle, canEdit }: { ro
 function GroupRows({ group, perms, roles, onToggle, canEdit }: { group: string; perms: PermissionDef[]; roles: Role[]; onToggle?: (role: Role, key: string, on: boolean) => void; canEdit?: (role: Role) => boolean }) {
   return (
     <>
-      <tr className="bg-slate-50/50"><td colSpan={roles.length + 1} className="sticky left-0 px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">{group}</td></tr>
+      <tr className="bg-slate-50/50"><td colSpan={roles.length + 1} className="sticky left-0 px-4 py-1.5 text-xs font-semibold uppercase tracking-wider text-slate-400">{group}</td></tr>
       {perms.map((p) => (
         <tr key={p.key} className="border-b border-slate-100 hover:bg-slate-50/60">
           <td className="sticky left-0 bg-white px-4 py-2">
@@ -294,7 +294,7 @@ function GroupRows({ group, perms, roles, onToggle, canEdit }: { group: string; 
                 {editable ? (
                   <input type="checkbox" checked={on} onChange={(e) => onToggle!(r, p.key, e.target.checked)} className="h-4 w-4 cursor-pointer rounded border-slate-300 text-brand-600 focus:ring-brand-500/30" />
                 ) : (
-                  <span className={cn('inline-flex h-5 w-5 items-center justify-center rounded-full text-[11px]', on ? 'bg-emerald-100 text-emerald-700' : 'text-slate-300')}>{on ? '✓' : '–'}</span>
+                  <span className={cn('inline-flex h-5 w-5 items-center justify-center rounded-full text-xs', on ? 'bg-emerald-100 text-emerald-700' : 'text-slate-300')}>{on ? '✓' : '–'}</span>
                 )}
               </td>
             );

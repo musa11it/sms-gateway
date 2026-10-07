@@ -12,9 +12,8 @@ const highlights = [
 export function AuthLayout({ title, subtitle, children, footer }: { title: string; subtitle?: ReactNode; children: ReactNode; footer?: ReactNode }) {
   return (
     <div className="grid min-h-screen lg:grid-cols-[1fr_minmax(0,560px)] xl:grid-cols-[1fr_minmax(0,620px)]">
-      <div className="relative hidden overflow-hidden bg-ink-950 lg:block">
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_20%_10%,rgba(99,102,241,0.45),transparent_50%),radial-gradient(ellipse_at_80%_90%,rgba(124,58,237,0.35),transparent_50%)]" />
-        <div className="bg-grid absolute inset-0 opacity-[0.15]" />
+      <div className="relative hidden overflow-hidden bg-ink-900 lg:block">
+        <div className="bg-grid absolute inset-0 opacity-[0.08]" />
         <div className="relative flex h-full flex-col justify-between p-12">
           <Logo dark />
           <div className="max-w-md">
@@ -25,13 +24,13 @@ export function AuthLayout({ title, subtitle, children, footer }: { title: strin
             <ul className="mt-8 space-y-3">
               {highlights.map((h) => (
                 <li key={h} className="flex items-center gap-3 text-sm text-slate-200">
-                  <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-400" />
+                  <CheckCircle2 className="h-5 w-5 shrink-0 text-accent-200" />
                   {h}
                 </li>
               ))}
             </ul>
           </div>
-          <div className="grid max-w-md grid-cols-3 gap-4 rounded-2xl bg-white/5 p-5 ring-1 ring-white/10 backdrop-blur">
+          <div className="grid max-w-md grid-cols-3 gap-4 rounded-xl bg-white/5 p-5 ring-1 ring-white/10">
             {[
               ['Unicode', 'Segment-aware pricing'],
               ['REST API', 'Keys & webhooks'],
@@ -51,7 +50,7 @@ export function AuthLayout({ title, subtitle, children, footer }: { title: strin
             <div className="mb-8 lg:hidden">
               <Logo />
             </div>
-            <h1 className="text-2xl font-semibold tracking-tight text-slate-900">{title}</h1>
+            <h1 className="text-[28px] font-semibold leading-tight tracking-tight text-slate-900">{title}</h1>
             {subtitle && <p className="mt-2 text-sm text-slate-500">{subtitle}</p>}
             <div className="mt-8">{children}</div>
             {footer && <div className="mt-8 text-center text-sm text-slate-500">{footer}</div>}
