@@ -7,7 +7,9 @@ import { audit } from '../audit-logs/audit.service';
 import { getSetting } from '../settings/settings.service';
 import { analyzeMessage } from '../sms/segmentation.service';
 import { serializeProvider } from './provider.service';
-import { loadRoutingContext, planRoute, resolveDestination, type CandidateEvaluation, type Destination } from './routing.service';
+import { normalizePhone } from '../../utils/phone';
+import { checkDestination, countryName, destinationFor } from './destination.service';
+import { loadRoutingContext, planRoute, type CandidateEvaluation, type Destination } from './routing.service';
 
 /**
  * Super Admin views of the supply side: provider overview, detail, configuration changes
@@ -32,8 +34,9 @@ export const providerConfig = z.object({
   minimumCapacity: z.coerce.number().int().min(0).max(100_000_000),
   lowCapacityThreshold: z.coerce.number().int().min(0).max(100_000_000),
   supportsSenderId: z.boolean(),
-  servesAllDestinations: z.boolean(),
-  networkIds: z.array(z.string().uuid()).max(200),
+  // Explicit destination capability: whole countries and/or specific networks.
+  countryIds: z.array(z.string().uuid()).max(300),
+  networkIds: z.array(z.string().uuid()).max(500),
   notes: z.string().trim().max(1000).nullable(),
 });
 
@@ -49,7 +52,7 @@ export const providerCreateBody = providerConfig
     minimumCapacity: providerConfig.shape.minimumCapacity.default(0),
     lowCapacityThreshold: providerConfig.shape.lowCapacityThreshold.default(10_000),
     supportsSenderId: z.boolean().default(true),
-    servesAllDestinations: z.boolean().default(false),
+    countryIds: providerConfig.shape.countryIds.default([]),
     networkIds: providerConfig.shape.networkIds.default([]),
     notes: providerConfig.shape.notes.optional(),
     reason: z.string().trim().max(500).optional(),
@@ -57,6 +60,14 @@ export const providerCreateBody = providerConfig
   .strict();
 
 export const providerUpdateBody = providerConfig.partial().extend({ reason: z.string().trim().max(500).optional() }).strict();
+
+async function assertCountries(ids: string[]) {
+  const unique = [...new Set(ids)];
+  if (!unique.length) return unique;
+  const found = await prisma.smsCountry.count({ where: { id: { in: unique } } });
+  if (found !== unique.length) throw AppError.unprocessable('One or more selected countries do not exist', 'UNKNOWN_COUNTRY', [{ field: 'countryIds', message: 'Unknown country' }]);
+  return unique;
+}
 
 async function assertNetworks(ids: string[]) {
   const unique = [...new Set(ids)];
@@ -74,7 +85,9 @@ async function lotTotals() {
   return new Map(rows.map((r) => [r.providerId, { remaining: Number(r.remaining ?? 0), value: D(String(r.value ?? 0)), openLots: Number(r.lots) }]));
 }
 
-export async function serializeProviderRow(p: SmsProvider, extra?: { remainingValue: Prisma.Decimal; openLots: number; networks: { id: string; code: string; name: string }[] }) {
+type CapabilityRefs = { networks: { id: string; code: string; name: string }[]; countries: { id: string; isoCode: string; name: string }[] };
+
+export async function serializeProviderRow(p: SmsProvider, extra?: { remainingValue: Prisma.Decimal; openLots: number } & CapabilityRefs) {
   const usagePercent = p.totalPurchased > 0 ? Math.round((p.totalUsed / p.totalPurchased) * 1000) / 10 : 0;
   const value = extra?.remainingValue ?? ZERO;
   return {
@@ -84,15 +97,17 @@ export async function serializeProviderRow(p: SmsProvider, extra?: { remainingVa
     averageRemainingCost: p.capacityBalance > 0 ? value.div(p.capacityBalance).toFixed(4) : null,
     openLots: extra?.openLots ?? 0,
     networks: extra?.networks ?? [],
+    countries: extra?.countries ?? [],
     routable: p.status === 'ACTIVE' && p.health !== 'DOWN' && serializeProvider(p).adapterInstalled,
   };
 }
 
 export async function listProviders() {
-  const [providers, totals, links] = await Promise.all([
+  const [providers, totals, links, countryLinks] = await Promise.all([
     prisma.smsProvider.findMany({ orderBy: [{ priority: 'asc' }, { name: 'asc' }] }),
     lotTotals(),
     prisma.smsProviderNetwork.findMany({ include: { network: { select: { id: true, code: true, name: true } } } }),
+    prisma.smsProviderCountry.findMany({ include: { country: { select: { id: true, isoCode: true, name: true } } } }),
   ]);
   const last = await prisma.providerPurchase.groupBy({ by: ['providerId'], _max: { createdAt: true } });
   return Promise.all(
@@ -101,6 +116,7 @@ export async function listProviders() {
         remainingValue: totals.get(p.id)?.value ?? ZERO,
         openLots: totals.get(p.id)?.openLots ?? 0,
         networks: links.filter((l) => l.providerId === p.id).map((l) => l.network),
+        countries: countryLinks.filter((l) => l.providerId === p.id).map((l) => l.country),
       })),
       lastPurchaseAt: last.find((l) => l.providerId === p.id)?._max.createdAt ?? null,
     })),
@@ -204,9 +220,10 @@ export async function providersOverview(from: Date, to: Date) {
 export async function providerDetail(id: string, from: Date, to: Date) {
   const p = await prisma.smsProvider.findUnique({ where: { id } });
   if (!p) throw AppError.notFound('Provider');
-  const [lots, links, rules, recent, costChanges, usage, economics] = await Promise.all([
+  const [lots, links, countryLinks, rules, recent, costChanges, usage, economics] = await Promise.all([
     prisma.providerCapacityLot.findMany({ where: { providerId: id }, orderBy: { createdAt: 'desc' }, include: { purchase: { select: { reference: true, status: true, providerReference: true, createdById: true } } } }),
     prisma.smsProviderNetwork.findMany({ where: { providerId: id }, include: { network: true } }),
+    prisma.smsProviderCountry.findMany({ where: { providerId: id }, include: { country: { select: { id: true, isoCode: true, name: true } } } }),
     prisma.smsRoutingRule.findMany({ orderBy: { priority: 'asc' }, include: { network: { select: { name: true } } } }),
     prisma.providerCapacityLedger.findMany({ where: { providerId: id }, orderBy: { createdAt: 'desc' }, take: 15 }),
     prisma.auditLog.findMany({
@@ -231,7 +248,7 @@ export async function providerDetail(id: string, from: Date, to: Date) {
     })
     .filter(Boolean);
   return {
-    ...(await serializeProviderRow(p, { remainingValue: value, openLots: lots.filter((l) => l.remaining > 0).length, networks: links.map((l) => ({ id: l.network.id, code: l.network.code, name: l.network.name })) })),
+    ...(await serializeProviderRow(p, { remainingValue: value, openLots: lots.filter((l) => l.remaining > 0).length, networks: links.map((l) => ({ id: l.network.id, code: l.network.code, name: l.network.name })), countries: countryLinks.map((l) => l.country) })),
     lots: lots.map((l) => ({
       id: l.id,
       source: l.source,
@@ -257,7 +274,7 @@ export async function providerDetail(id: string, from: Date, to: Date) {
   };
 }
 
-const AUDITED_FIELDS = ['name', 'status', 'mode', 'currency', 'costPerSms', 'priority', 'health', 'healthNote', 'minimumCapacity', 'lowCapacityThreshold', 'supportsSenderId', 'servesAllDestinations', 'notes'] as const;
+const AUDITED_FIELDS = ['name', 'status', 'mode', 'currency', 'costPerSms', 'priority', 'health', 'healthNote', 'minimumCapacity', 'lowCapacityThreshold', 'supportsSenderId', 'notes'] as const;
 
 function fieldValue(p: SmsProvider, k: (typeof AUDITED_FIELDS)[number]) {
   const v = p[k];
@@ -265,11 +282,20 @@ function fieldValue(p: SmsProvider, k: (typeof AUDITED_FIELDS)[number]) {
 }
 
 export async function createProvider(input: z.infer<typeof providerCreateBody>, actor: Actor, meta?: RequestMeta) {
-  const { networkIds, reason, ...data } = input;
+  const { networkIds, countryIds, reason, ...data } = input;
   const networks = await assertNetworks(networkIds);
+  const countries = await assertCountries(countryIds);
   const p = await prisma.$transaction(async (tx) => {
     const row = await tx.smsProvider.create({
-      data: { ...data, routePrefixes: [], healthNote: data.healthNote ?? null, notes: data.notes ?? null, costPerSms: D(data.costPerSms), networks: { create: networks.map((networkId) => ({ networkId })) } },
+      data: {
+        ...data,
+        routePrefixes: [],
+        healthNote: data.healthNote ?? null,
+        notes: data.notes ?? null,
+        costPerSms: D(data.costPerSms),
+        networks: { create: networks.map((networkId) => ({ networkId })) },
+        countries: { create: countries.map((countryId) => ({ countryId })) },
+      },
     });
     await audit(
       {
@@ -277,7 +303,7 @@ export async function createProvider(input: z.infer<typeof providerCreateBody>, 
         action: 'PROVIDER_CREATED',
         resource: 'sms_provider',
         resourceId: row.id,
-        metadata: { code: row.code, name: row.name, type: row.type, costPerSms: D(row.costPerSms).toFixed(4), status: row.status, priority: row.priority, networkIds: networks, servesAllDestinations: row.servesAllDestinations, reason },
+        metadata: { code: row.code, name: row.name, type: row.type, costPerSms: D(row.costPerSms).toFixed(4), status: row.status, priority: row.priority, networkIds: networks, countryIds: countries, reason },
         meta,
       },
       tx,
@@ -288,16 +314,22 @@ export async function createProvider(input: z.infer<typeof providerCreateBody>, 
 }
 
 export async function updateProvider(id: string, input: z.infer<typeof providerUpdateBody>, actor: Actor, meta?: RequestMeta) {
-  const { networkIds, reason, ...data } = input;
+  const { networkIds, countryIds, reason, ...data } = input;
   const networks = networkIds ? await assertNetworks(networkIds) : null;
+  const countries = countryIds ? await assertCountries(countryIds) : null;
   return prisma.$transaction(async (tx) => {
     const before = await tx.smsProvider.findUnique({ where: { id } });
     if (!before) throw AppError.notFound('Provider');
     const beforeNetworks = (await tx.smsProviderNetwork.findMany({ where: { providerId: id } })).map((l) => l.networkId).sort();
+    const beforeCountries = (await tx.smsProviderCountry.findMany({ where: { providerId: id } })).map((l) => l.countryId).sort();
     const updated = await tx.smsProvider.update({ where: { id }, data: { ...data, costPerSms: data.costPerSms ? D(data.costPerSms) : undefined } });
     if (networks) {
       await tx.smsProviderNetwork.deleteMany({ where: { providerId: id } });
       if (networks.length) await tx.smsProviderNetwork.createMany({ data: networks.map((networkId) => ({ providerId: id, networkId })) });
+    }
+    if (countries) {
+      await tx.smsProviderCountry.deleteMany({ where: { providerId: id } });
+      if (countries.length) await tx.smsProviderCountry.createMany({ data: countries.map((countryId) => ({ providerId: id, countryId })) });
     }
     const changes: Record<string, { from: unknown; to: unknown }> = {};
     for (const k of AUDITED_FIELDS) {
@@ -306,6 +338,7 @@ export async function updateProvider(id: string, input: z.infer<typeof providerU
       if (from !== to) changes[k] = { from, to };
     }
     if (networks && networks.slice().sort().join() !== beforeNetworks.join()) changes.networkIds = { from: beforeNetworks, to: networks.slice().sort() };
+    if (countries && countries.slice().sort().join() !== beforeCountries.join()) changes.countryIds = { from: beforeCountries, to: countries.slice().sort() };
     if (Object.keys(changes).length) {
       const action = changes.costPerSms ? 'PROVIDER_PRICING_CHANGED' : changes.health ? 'PROVIDER_HEALTH_CHANGED' : changes.status ? 'PROVIDER_STATUS_CHANGED' : 'PROVIDER_UPDATED';
       await audit({ actor, action, resource: 'sms_provider', resourceId: id, metadata: { code: before.code, changes, reason }, meta }, tx);
@@ -318,14 +351,26 @@ export async function updateProvider(id: string, input: z.infer<typeof providerU
 
 export const simulateBody = z
   .object({
+    phone: z.string().trim().max(30).optional().nullable(),
     networkId: z.string().uuid().optional().nullable(),
     countryCode: z.string().trim().length(2).toUpperCase().optional().nullable(),
-    phone: z.string().trim().max(30).optional().nullable(),
     senderName: z.string().trim().max(11).optional().nullable(),
+    organizationId: z.string().uuid().optional().nullable(),
     recipients: z.coerce.number().int().min(1).max(1_000_000),
     message: z.string().min(1).max(20_000),
   })
   .strict();
+
+/** Overall result of a simulation, in the order a real send makes its decisions. */
+export type SimulationOutcome = 'ROUTED' | 'REJECTED_BEFORE_ROUTING' | 'NO_ELIGIBLE_PROVIDER' | 'NO_CAPACITY' | 'INSUFFICIENT_CREDITS';
+
+const OUTCOME_TEXT: Record<SimulationOutcome, string> = {
+  ROUTED: 'Would be sent',
+  REJECTED_BEFORE_ROUTING: 'Rejected before routing',
+  NO_ELIGIBLE_PROVIDER: 'No eligible provider',
+  NO_CAPACITY: 'No provider has enough usable capacity',
+  INSUFFICIENT_CREDITS: 'Insufficient credits',
+};
 
 /** Peek the oldest-first lot cost of taking `quantity` segments (no writes). */
 async function peekLotCost(providerId: string, quantity: number) {
@@ -342,69 +387,141 @@ async function peekLotCost(providerId: string, quantity: number) {
 }
 
 /**
- * Explains how a send would be routed right now, without reserving anything: the same engine
- * as real sends, applied to `recipients` messages to one destination (spilling over to backups
- * when the first provider runs out, exactly like per-recipient routing does).
+ * Explains how a send would be handled right now, using the same steps and services as a real
+ * send (number validation → destination → routing engine → customer balance), without writing
+ * anything: no credits, capacity, wallet or provider calls. `recipients` messages to one
+ * destination are allocated like per-recipient routing (spilling over to the backup).
  */
 export async function simulateRouting(input: z.infer<typeof simulateBody>) {
   const analysis = await analyzeMessage(input.message);
   const ctx = await loadRoutingContext(prisma);
-  let dest: Destination;
-  if (input.networkId) {
-    const network = ctx.networks.find((n) => n.id === input.networkId);
-    if (!network) throw AppError.unprocessable('Unknown or inactive network', 'UNKNOWN_NETWORK', [{ field: 'networkId', message: 'Unknown network' }]);
-    dest = { network, countryCode: network.countryCode };
-  } else if (input.phone) {
-    dest = resolveDestination(ctx, input.phone);
-  } else {
-    dest = { network: null, countryCode: input.countryCode ?? null };
-  }
-  // Every message carries a sender ID, so providers without sender ID support are excluded; report the sender's state too.
-  const senders = input.senderName ? await prisma.senderId.findMany({ where: { name: input.senderName }, select: { status: true } }) : [];
-  const senderCheck = input.senderName
-    ? { name: input.senderName, known: senders.length > 0, approved: senders.some((x) => x.status === 'APPROVED') }
-    : null;
-
   const perRecipient = analysis.segments;
+  const message = {
+    encoding: analysis.encoding,
+    characterCount: analysis.characterCount,
+    segmentsPerRecipient: perRecipient,
+    totalSegments: perRecipient * input.recipients,
+    creditsPerRecipient: analysis.creditsPerRecipient,
+    totalCredits: analysis.creditsPerRecipient * input.recipients,
+    creditsPerSegment: await getSetting('sms.creditsPerSegment'),
+    tooLong: analysis.tooLong,
+    segmentationVersion: analysis.segmentationVersion,
+  };
+  const senders = input.senderName ? await prisma.senderId.findMany({ where: { name: input.senderName }, select: { status: true } }) : [];
+  const sender = input.senderName ? { name: input.senderName, known: senders.length > 0, approved: senders.some((x) => x.status === 'APPROVED') } : null;
+
+  // 1–2. Validate the number and identify the destination (exactly like a real send).
+  let dest: Destination;
+  let validation: { checked: boolean; ok: boolean; phone: string | null; code: string | null; reason: string | null; country: { code: string; name: string } | null };
+  if (input.phone) {
+    const normalized = normalizePhone(input.phone, await getSetting('sms.defaultCountryCode'));
+    const check = normalized ? checkDestination(ctx, normalized) : null;
+    if (!check || !check.ok) {
+      const reason = check && !check.ok ? check.reason : 'Invalid destination number: not a valid phone number';
+      return {
+        outcome: 'REJECTED_BEFORE_ROUTING' as SimulationOutcome,
+        outcomeText: OUTCOME_TEXT.REJECTED_BEFORE_ROUTING,
+        message,
+        sender,
+        validation: { checked: true, ok: false, phone: check?.phone ?? input.phone, code: check && !check.ok ? check.code : 'INVALID_NUMBER', reason, country: check?.countryCode ? { code: check.countryCode, name: countryName(check.countryCode) } : null },
+        destination: null,
+        rule: null,
+        strategy: null,
+        candidates: [],
+        selected: null,
+        backup: null,
+        rejected: [],
+        reason,
+        allocations: [],
+        unroutedRecipients: input.recipients,
+        customer: null,
+        estimate: { providerCost: money(ZERO), revenue: null, revenuePerCredit: null, grossMargin: null },
+      };
+    }
+    dest = check;
+    validation = { checked: true, ok: true, phone: check.phone, code: null, reason: null, country: { code: check.countryCode!, name: check.countryName } };
+  } else {
+    dest = destinationFor(ctx, input);
+    const c = dest.countryCode ? ctx.countries.find((x) => x.isoCode === dest.countryCode) : undefined;
+    validation = { checked: false, ok: true, phone: null, code: null, reason: null, country: dest.countryCode ? { code: dest.countryCode, name: c?.name ?? countryName(dest.countryCode) } : null };
+    if (input.networkId && !dest.network) throw AppError.unprocessable('Unknown or inactive network', 'UNKNOWN_NETWORK', [{ field: 'networkId', message: 'Unknown network' }]);
+    if (!c || !c.isActive) {
+      const reason = dest.countryCode ? `Destination not supported: ${countryName(dest.countryCode)} (${dest.countryCode}) is not configured for sending` : 'Choose a destination country or enter a number';
+      return {
+        outcome: 'REJECTED_BEFORE_ROUTING' as SimulationOutcome,
+        outcomeText: OUTCOME_TEXT.REJECTED_BEFORE_ROUTING,
+        message,
+        sender,
+        validation: { ...validation, ok: false, code: 'UNSUPPORTED_COUNTRY', reason },
+        destination: null,
+        rule: null,
+        strategy: null,
+        candidates: [],
+        selected: null,
+        backup: null,
+        rejected: [],
+        reason,
+        allocations: [],
+        unroutedRecipients: input.recipients,
+        customer: null,
+        estimate: { providerCost: money(ZERO), revenue: null, revenuePerCredit: null, grossMargin: null },
+      };
+    }
+  }
+
+  // 3. Routing engine (same as real sends).
   const remaining = new Map(ctx.providers.map((p) => [p.id, p.capacityBalance]));
   const first = planRoute(ctx, dest, perRecipient, remaining);
-
-  // Allocate recipients the way per-recipient routing would: fill each eligible candidate in order.
   const allocations: { provider: CandidateEvaluation['provider']; recipients: number; segments: number }[] = [];
   let left = input.recipients;
   while (left > 0 && perRecipient > 0) {
     const plan = planRoute(ctx, dest, perRecipient, remaining);
     if (!plan.selected) break;
     const p = plan.selected.provider;
-    const fits = Math.floor(plan.selected.available / perRecipient);
-    const take = Math.min(left, fits);
+    const take = Math.min(left, Math.floor(plan.selected.available / perRecipient));
     allocations.push({ provider: p, recipients: take, segments: take * perRecipient });
     remaining.set(p.id, (remaining.get(p.id) ?? 0) - take * perRecipient);
     left -= take;
   }
 
+  // 4. Customer balance (only after a route exists, like a real send).
+  let customer: { organizationId: string; name: string; balance: number; required: number; sufficient: boolean } | null = null;
+  if (input.organizationId) {
+    const org = await prisma.organization.findUnique({ where: { id: input.organizationId }, select: { id: true, name: true, wallet: { select: { balance: true } } } });
+    if (!org) throw AppError.unprocessable('Unknown organization', 'UNKNOWN_ORGANIZATION', [{ field: 'organizationId', message: 'Unknown organization' }]);
+    const balance = org.wallet?.balance ?? 0;
+    customer = { organizationId: org.id, name: org.name, balance, required: message.totalCredits, sufficient: balance >= message.totalCredits };
+  }
+
+  const serving = first.candidates.filter((c) => !c.reasonCodes.includes('UNSUPPORTED_DESTINATION'));
+  const outcome: SimulationOutcome = !first.selected
+    ? serving.length && serving.every((c) => c.reasonCodes.some((r) => r === 'INSUFFICIENT_CAPACITY' || r === 'BELOW_RESERVE'))
+      ? 'NO_CAPACITY'
+      : 'NO_ELIGIBLE_PROVIDER'
+    : left > 0
+      ? 'NO_CAPACITY'
+      : customer && !customer.sufficient
+        ? 'INSUFFICIENT_CREDITS'
+        : 'ROUTED';
+
   const perCredit = await revenuePerCredit();
   const costs = await Promise.all(allocations.map((a) => peekLotCost(a.provider.id, a.segments)));
   const providerCost = costs.reduce((s, c) => s.plus(c), ZERO).toDecimalPlaces(2);
-  const routed = input.recipients - left;
-  const credits = routed * analysis.creditsPerRecipient;
+  const credits = (input.recipients - left) * analysis.creditsPerRecipient;
   const revenue = perCredit ? perCredit.mul(credits).toDecimalPlaces(2) : null;
-  const creditsPerSegment = await getSetting('sms.creditsPerSegment');
+  const country = dest.countryCode ? ctx.countries.find((c) => c.isoCode === dest.countryCode) : undefined;
 
   return {
-    message: {
-      encoding: analysis.encoding,
-      characterCount: analysis.characterCount,
-      segmentsPerRecipient: perRecipient,
-      totalSegments: perRecipient * input.recipients,
-      creditsPerRecipient: analysis.creditsPerRecipient,
-      totalCredits: analysis.creditsPerRecipient * input.recipients,
-      creditsPerSegment,
-      tooLong: analysis.tooLong,
-      segmentationVersion: analysis.segmentationVersion,
+    outcome,
+    outcomeText: OUTCOME_TEXT[outcome],
+    message,
+    sender,
+    validation,
+    destination: {
+      countryCode: dest.countryCode,
+      countryName: country?.name ?? (dest.countryCode ? countryName(dest.countryCode) : null),
+      network: dest.network ? { id: dest.network.id, name: dest.network.name, code: dest.network.code } : null,
     },
-    sender: senderCheck,
-    destination: { countryCode: dest.countryCode, network: dest.network ? { id: dest.network.id, name: dest.network.name, code: dest.network.code } : null },
     rule: first.rule ? { id: first.rule.id, name: first.rule.name, priority: first.rule.priority, strategy: first.rule.strategy } : null,
     strategy: first.strategy,
     candidates: first.candidates.map((c) => ({
@@ -414,6 +531,7 @@ export async function simulateRouting(input: z.infer<typeof simulateBody>) {
       role: c.role,
       eligible: c.eligible,
       reasons: c.reasons,
+      reasonCodes: c.reasonCodes,
       costPerSegment: c.cost.toFixed(2),
       capacity: c.provider.capacityBalance,
       reserve: c.reserve,
@@ -423,10 +541,11 @@ export async function simulateRouting(input: z.infer<typeof simulateBody>) {
     })),
     selected: first.selected ? { providerId: first.selected.provider.id, name: first.selected.provider.name, costPerSegment: first.selected.cost.toFixed(2), available: first.selected.available } : null,
     backup: first.backup ? { providerId: first.backup.provider.id, name: first.backup.provider.name, costPerSegment: first.backup.cost.toFixed(2), available: first.backup.available } : null,
-    rejected: first.candidates.filter((c) => !c.eligible).map((c) => ({ providerId: c.provider.id, name: c.provider.name, reason: c.reasons[0] })),
+    rejected: first.candidates.filter((c) => !c.eligible).map((c) => ({ providerId: c.provider.id, name: c.provider.name, reason: c.reasons[0], code: c.reasonCodes[0] })),
     reason: first.reason,
     allocations: allocations.map((a, i) => ({ providerId: a.provider.id, name: a.provider.name, recipients: a.recipients, segments: a.segments, estimatedCost: money(costs[i]) })),
     unroutedRecipients: left,
+    customer,
     estimate: {
       providerCost: money(providerCost),
       revenue: revenue ? money(revenue) : null,

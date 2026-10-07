@@ -49,7 +49,7 @@ describe('provider capacity', () => {
   it('routes by prefix and deducts provider capacity together with the customer wallet', async () => {
     const { token, sender, org } = await createActiveOrg({ credits: 100 });
     const before = { mtn: (await provider('MTN')).capacityBalance, airtel: (await provider('AIRTEL')).capacityBalance, generic: (await provider('GENERIC')).capacityBalance };
-    const res = await request(app).post('/api/v1/sms/send').set(auth(token)).send({ senderId: sender.id, message: 'x'.repeat(200), recipients: ['+250788100001', '+250728100002', '+447700900123'] });
+    const res = await request(app).post('/api/v1/sms/send').set(auth(token)).send({ senderId: sender.id, message: 'x'.repeat(200), recipients: ['+250788100001', '+250728100002', '+447400123456'] });
     expect(res.status).toBe(201);
     expect(res.body.data.totalCredits).toBe(6); // 3 recipients × 2 segments
     expect(await balanceOf(org.id)).toBe(94);
@@ -60,7 +60,7 @@ describe('provider capacity', () => {
     const byPhone = Object.fromEntries(recipients.map((r) => [r.phone, r]));
     expect(byPhone['+250788100001'].provider).toBe('mtn-simulation');
     expect(byPhone['+250728100002'].provider).toBe('airtel-simulation');
-    expect(byPhone['+447700900123'].provider).toBe('generic-simulation');
+    expect(byPhone['+447400123456'].provider).toBe('generic-simulation');
     expect(Number(byPhone['+250788100001'].providerCost)).toBe(16); // 2 segments × WAC 8
   });
 
@@ -82,7 +82,7 @@ describe('provider capacity', () => {
     const generic = await provider('GENERIC');
     // Leave the catch-all aggregator (the only route for +44 numbers) with 5,000 SMS.
     await adjustCapacity(generic.id, { amount: 5_000 - generic.capacityBalance, reason: 'test: shrink capacity', reference: 'test-shrink' }, SYSTEM_ACTOR);
-    const recipients = Array.from({ length: 1000 }, (_, i) => `+44770090${String(i).padStart(4, '0')}`);
+    const recipients = Array.from({ length: 1000 }, (_, i) => `+4474001${String(i + 1).padStart(5, '0')}`);
     const tooMany = await request(app).post('/api/v1/sms/send').set(auth(token)).send({ senderId: sender.id, message: 'x'.repeat(1530), recipients }); // 10 segments → 10,000 needed
     expect(tooMany.status).toBe(503);
     expect(tooMany.body.code).toBe('PROVIDER_CAPACITY_UNAVAILABLE');
@@ -103,7 +103,7 @@ describe('provider capacity', () => {
     expect((await provider('MTN')).capacityBalance).toBe(before);
     expect(await balanceOf(org.id)).toBe(10);
     const r = await prisma.smsRecipient.findFirstOrThrow({ where: { messageId: res.body.data.id } });
-    expect(r).toMatchObject({ status: 'FAILED', errorCode: 'INVALID_DESTINATION', capacityReleased: true, refunded: true });
+    expect(r).toMatchObject({ status: 'REJECTED', errorCode: 'INVALID_DESTINATION', capacityReleased: true, refunded: true });
   });
 
   it('delivers through the simulated network with delivery reports', async () => {

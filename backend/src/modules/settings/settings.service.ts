@@ -38,6 +38,7 @@ export const SETTING_SCHEMAS = {
   'sms.maxRecipientsPerRequest': z.number().int().min(1).max(100000),
   'sms.defaultCountryCode': z.string().regex(/^\d{1,4}$/),
   'sms.refundOnSubmissionFailure': z.boolean(),
+  'sms.submissionTimeoutHours': z.number().int().min(1).max(168),
   'sms.maxMessageSegments': z.number().int().min(1).max(20),
   'wallet.defaultLowBalanceThreshold': z.number().int().min(0),
   'verification.requiredDocuments': z.array(documentRequirement).max(20),
@@ -66,6 +67,7 @@ export const SETTING_DEFAULTS: { [K in SettingKey]: SettingValue<K> } = {
   'sms.maxRecipientsPerRequest': 10000,
   'sms.defaultCountryCode': '250',
   'sms.refundOnSubmissionFailure': true,
+  'sms.submissionTimeoutHours': 24,
   'sms.maxMessageSegments': 10,
   'wallet.defaultLowBalanceThreshold': 500,
   'verification.requiredDocuments': [
@@ -106,6 +108,7 @@ export const SETTING_DESCRIPTIONS: Record<SettingKey, string> = {
   'sms.maxRecipientsPerRequest': 'Maximum recipients in a single send request',
   'sms.defaultCountryCode': 'Country calling code applied to national-format numbers',
   'sms.refundOnSubmissionFailure': 'Refund credits when the provider rejects a message at submission',
+  'sms.submissionTimeoutHours': 'Hours a message may wait for a provider to accept it before it is rejected and refunded',
   'sms.maxMessageSegments': 'Maximum segments allowed for one message',
   'wallet.defaultLowBalanceThreshold': 'Default low balance alert threshold for new wallets',
   'verification.requiredDocuments': 'Items collected during business verification (file upload, link, text, date or choice)',

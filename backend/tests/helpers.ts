@@ -50,24 +50,29 @@ export async function resetDatabase() {
 }
 
 /** Networks RW-MTN (+25078/+25079) and RW-AIRTEL (+25072/+25073). */
+/** Destination countries RW, KE and GB, and networks RW-MTN (+25078/+25079) and RW-AIRTEL (+25072/+25073). */
 export async function createNetworks() {
+  const countries: Record<string, string> = {};
+  for (const [isoCode, name] of [['RW', 'Rwanda'], ['KE', 'Kenya'], ['GB', 'United Kingdom']]) {
+    countries[isoCode] = (await prisma.smsCountry.create({ data: { isoCode, name, nationalNumberLengths: [] } })).id;
+  }
   const mtn = await prisma.smsNetwork.create({ data: { code: 'RW-MTN', name: 'MTN Rwanda', countryCode: 'RW', countryName: 'Rwanda', prefixes: ['+25078', '+25079'] } });
   const airtel = await prisma.smsNetwork.create({ data: { code: 'RW-AIRTEL', name: 'Airtel Rwanda', countryCode: 'RW', countryName: 'Rwanda', prefixes: ['+25072', '+25073'] } });
-  return { mtn: mtn.id, airtel: airtel.id };
+  return { mtn: mtn.id, airtel: airtel.id, countries };
 }
 
-/** MTN (serves MTN Rwanda), Airtel (serves Airtel Rwanda) and a catch-all aggregator, each funded through the real purchase flow. */
+/** MTN (serves MTN Rwanda), Airtel (serves Airtel Rwanda) and an aggregator explicitly serving Rwanda, Kenya and the UK, each funded through the real purchase flow. */
 export async function createProviders(capacity = 100_000) {
   const networks = await createNetworks();
   const defs = [
-    { code: 'MTN', name: 'MTN Rwanda', type: 'MNO' as const, costPerSms: '8', networkIds: [networks.mtn], servesAllDestinations: false, priority: 10 },
-    { code: 'AIRTEL', name: 'Airtel Rwanda', type: 'MNO' as const, costPerSms: '8.5', networkIds: [networks.airtel], servesAllDestinations: false, priority: 10 },
-    { code: 'GENERIC', name: 'Aggregator', type: 'AGGREGATOR' as const, costPerSms: '11', networkIds: [], servesAllDestinations: true, priority: 100 },
+    { code: 'MTN', name: 'MTN Rwanda', type: 'MNO' as const, costPerSms: '8', networkIds: [networks.mtn], countryIds: [] as string[], priority: 10 },
+    { code: 'AIRTEL', name: 'Airtel Rwanda', type: 'MNO' as const, costPerSms: '8.5', networkIds: [networks.airtel], countryIds: [] as string[], priority: 10 },
+    { code: 'GENERIC', name: 'Aggregator', type: 'AGGREGATOR' as const, costPerSms: '11', networkIds: [], countryIds: Object.values(networks.countries), priority: 100 },
   ];
   const out: Record<string, string> = {};
-  for (const { networkIds, ...d } of defs) {
+  for (const { networkIds, countryIds, ...d } of defs) {
     const p = await prisma.smsProvider.create({
-      data: { ...d, routePrefixes: [], costPerSms: new Prisma.Decimal(d.costPerSms), mode: 'SIMULATION', status: 'ACTIVE', currency: 'RWF', networks: { create: networkIds.map((networkId) => ({ networkId })) } },
+      data: { ...d, routePrefixes: [], costPerSms: new Prisma.Decimal(d.costPerSms), mode: 'SIMULATION', status: 'ACTIVE', currency: 'RWF', networks: { create: networkIds.map((networkId) => ({ networkId })) }, countries: { create: countryIds.map((countryId) => ({ countryId })) } },
     });
     if (capacity > 0) await purchaseCapacity(p.id, { quantity: capacity }, SYSTEM_ACTOR);
     out[d.code] = p.id;

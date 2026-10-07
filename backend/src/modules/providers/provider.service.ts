@@ -8,7 +8,8 @@ import { nextCounterValue } from '../../utils/counter';
 import { AppError } from '../../utils/errors';
 import { audit } from '../audit-logs/audit.service';
 import { notifyStaff } from '../notifications/notification.service';
-import { loadRoutingContext, planRoute, resolveDestination } from './routing.service';
+import { checkDestination } from './destination.service';
+import { loadRoutingContext, planRoute } from './routing.service';
 
 /**
  * Supply side of the business: SMS capacity we buy from upstream providers.
@@ -272,9 +273,11 @@ export interface RouteAssignment {
   adapterKey: string;
   /** Provider cost of ONE segment for this route (cost of the capacity lots consumed). */
   unitCost: Prisma.Decimal;
-  /** Destination network and the rule that chose the provider (null = default routing). */
+  /** Destination country/network, the rule that chose the provider (null = default routing) and a short note. */
+  countryCode: string | null;
   networkId: string | null;
   routingRuleId: string | null;
+  routingNote: string;
 }
 
 /**
@@ -285,25 +288,38 @@ export interface RouteAssignment {
 export async function routeAndReserve(tx: Tx, input: { reservationRef: string; phones: string[]; segmentsPerRecipient: number; actor?: Actor }) {
   const ctx = await loadRoutingContext(tx);
   const remaining = new Map(ctx.providers.map((p) => [p.id, p.capacityBalance]));
-  const decisions = new Map<string, { providerId: string; networkId: string | null; routingRuleId: string | null }>();
+  const decisions = new Map<string, { providerId: string; countryCode: string | null; networkId: string | null; routingRuleId: string | null; routingNote: string }>();
   const perProvider = new Map<string, number>();
   const need = input.segmentsPerRecipient;
 
   for (const phone of input.phones) {
-    const plan = planRoute(ctx, resolveDestination(ctx, phone), need, remaining);
+    // Same destination check as recipient preparation and the simulator (defence in depth: e.g. a retry after config changes).
+    const dest = checkDestination(ctx, phone);
+    if (!dest.ok) throw AppError.unprocessable(dest.reason, dest.code === 'INVALID_NUMBER' ? 'INVALID_RECIPIENTS' : 'DESTINATION_NOT_SUPPORTED', [{ field: 'recipients', message: `${phone}: ${dest.reason}` }]);
+    const plan = planRoute(ctx, dest, need, remaining);
     if (!plan.selected) {
+      const configured = plan.candidates.some((c) => !c.reasonCodes.includes('UNSUPPORTED_DESTINATION'));
       void notifyStaff('providers.manage', {
         type: 'LOW_BALANCE',
-        title: 'No provider available for a destination',
-        body: `A customer send was refused for ${phone.slice(0, 6)}…: ${plan.candidates[0]?.reasons[0] ?? 'no provider serves it'}. Review providers and routing rules.`,
-        link: '/admin/providers',
+        title: configured ? 'No provider available for a destination' : 'Send refused: destination has no provider',
+        body: `A customer send was refused for ${phone.slice(0, 6)}… (${dest.network?.name ?? dest.countryName}): ${plan.reason} Review providers and routing rules.`,
+        link: '/admin/routing',
       });
+      if (!configured) {
+        throw AppError.unprocessable(`SMS to ${dest.network?.name ?? dest.countryName} is not supported yet. Please contact support.`, 'DESTINATION_NOT_SUPPORTED', [{ field: 'recipients', message: `${phone}: destination not supported` }]);
+      }
       throw new AppError(503, 'PROVIDER_CAPACITY_UNAVAILABLE', 'SMS capacity is temporarily unavailable for some destinations. Please try again later or contact support.');
     }
     const id = plan.selected.provider.id;
     remaining.set(id, (remaining.get(id) ?? 0) - need);
     perProvider.set(id, (perProvider.get(id) ?? 0) + need);
-    decisions.set(phone, { providerId: id, networkId: plan.destination.network?.id ?? null, routingRuleId: plan.rule?.id ?? null });
+    decisions.set(phone, {
+      providerId: id,
+      countryCode: dest.countryCode,
+      networkId: dest.network?.id ?? null,
+      routingRuleId: plan.rule?.id ?? null,
+      routingNote: plan.reason.slice(0, 191),
+    });
   }
 
   const unitCosts = new Map<string, Prisma.Decimal>();

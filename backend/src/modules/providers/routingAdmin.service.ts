@@ -6,12 +6,131 @@ import { actorUserId } from '../../types/actor';
 import { AppError } from '../../utils/errors';
 import { stringList } from '../../utils/json';
 import { audit } from '../audit-logs/audit.service';
+import { callingCodeFor, countryName, isKnownCountry } from './destination.service';
 import { loadRoutingContext, planRoute, type CandidateEvaluation, type Destination, type RoutePlan, type RoutingContext } from './routing.service';
 
-/** Super Admin management of destination networks and routing rules (all changes audited). */
+/** Super Admin management of destination countries, networks and routing rules (all changes audited). */
 
 const D = (v: Prisma.Decimal.Value) => new Prisma.Decimal(v);
 const prefix = z.string().trim().regex(/^\+\d{1,8}$/, 'Prefixes look like +25078');
+
+// ── Countries ────────────────────────────────────────────────────────────
+
+const lengthList = z.array(z.coerce.number().int().min(4, 'At least 4 digits').max(15, 'At most 15 digits')).max(5);
+
+export const countryBody = z
+  .object({
+    isoCode: z
+      .string()
+      .trim()
+      .toUpperCase()
+      .length(2, 'Use the 2-letter ISO code (e.g. KE)')
+      .refine(isKnownCountry, 'Unknown country code'),
+    name: z.string().trim().min(2).max(80).optional(),
+    isActive: z.boolean().default(true),
+    validationMode: z.enum(['STRICT', 'LENGTH']).default('STRICT'),
+    nationalNumberLengths: lengthList.default([]),
+    // Providers that can deliver to every number of the country.
+    providerIds: z.array(z.string().uuid()).max(100).optional(),
+  })
+  .strict();
+
+export const countryUpdateBody = countryBody.omit({ isoCode: true }).partial().strict();
+
+type CountryRow = Prisma.SmsCountryGetPayload<{ include: { networks: { include: { _count: { select: { providers: true } } } }; providers: { include: { provider: { select: { id: true; name: true; code: true } } } } } }>;
+
+/** Configuration status: does every number of the country have at least one provider? */
+function countryStatus(c: CountryRow) {
+  if (!c.isActive) return 'INACTIVE' as const;
+  const countryWide = c.providers.length > 0;
+  const activeNetworks = c.networks.filter((n) => n.isActive);
+  const covered = activeNetworks.filter((n) => n._count.providers > 0).length;
+  if (countryWide) return 'CONFIGURED' as const;
+  if (!covered) return 'NO_PROVIDER' as const;
+  // Networks are covered but numbers outside them (or uncovered networks) have no provider.
+  return covered === activeNetworks.length ? ('NETWORKS_ONLY' as const) : ('PARTIAL' as const);
+}
+
+export function serializeCountry(c: CountryRow) {
+  return {
+    id: c.id,
+    isoCode: c.isoCode,
+    name: c.name,
+    callingCode: callingCodeFor(c.isoCode),
+    isActive: c.isActive,
+    validationMode: c.validationMode,
+    nationalNumberLengths: (c.nationalNumberLengths as number[]) ?? [],
+    networkCount: c.networks.length,
+    providers: c.providers.map((p) => p.provider),
+    status: countryStatus(c),
+    updatedAt: c.updatedAt,
+  };
+}
+
+const countryInclude = { networks: { include: { _count: { select: { providers: true } } } }, providers: { include: { provider: { select: { id: true, name: true, code: true } } } } } as const;
+
+export async function listCountries() {
+  const rows = await prisma.smsCountry.findMany({ orderBy: { name: 'asc' }, include: countryInclude });
+  return rows.map(serializeCountry);
+}
+
+async function setCountryProviders(tx: Tx, countryId: string, providerIds: string[]) {
+  const unique = [...new Set(providerIds)];
+  if (unique.length && (await tx.smsProvider.count({ where: { id: { in: unique } } })) !== unique.length) throw AppError.unprocessable('One or more providers do not exist', 'UNKNOWN_PROVIDER');
+  await tx.smsProviderCountry.deleteMany({ where: { countryId } });
+  if (unique.length) await tx.smsProviderCountry.createMany({ data: unique.map((providerId) => ({ providerId, countryId })) });
+}
+
+export async function createCountry(input: z.infer<typeof countryBody>, actor: Actor, meta?: RequestMeta) {
+  const { providerIds, ...data } = input;
+  return prisma.$transaction(async (tx) => {
+    if (await tx.smsCountry.findUnique({ where: { isoCode: data.isoCode } })) throw AppError.conflict(`${countryName(data.isoCode)} is already configured`, 'COUNTRY_EXISTS');
+    const c = await tx.smsCountry.create({ data: { ...data, name: data.name ?? countryName(data.isoCode) } });
+    if (providerIds) await setCountryProviders(tx, c.id, providerIds);
+    const row = await tx.smsCountry.findUniqueOrThrow({ where: { id: c.id }, include: countryInclude });
+    await audit({ actor, action: 'ROUTING_COUNTRY_CREATED', resource: 'sms_country', resourceId: c.id, metadata: { country: serializeCountry(row) }, meta }, tx);
+    return row;
+  });
+}
+
+export async function updateCountry(id: string, input: z.infer<typeof countryUpdateBody>, actor: Actor, meta?: RequestMeta) {
+  const { providerIds, ...data } = input;
+  return prisma.$transaction(async (tx) => {
+    const before = await tx.smsCountry.findUnique({ where: { id }, include: countryInclude });
+    if (!before) throw AppError.notFound('Country');
+    await tx.smsCountry.update({ where: { id }, data });
+    if (data.name && data.name !== before.name) await tx.smsNetwork.updateMany({ where: { countryCode: before.isoCode }, data: { countryName: data.name } });
+    if (providerIds) await setCountryProviders(tx, id, providerIds);
+    const row = await tx.smsCountry.findUniqueOrThrow({ where: { id }, include: countryInclude });
+    await audit({ actor, action: 'ROUTING_COUNTRY_UPDATED', resource: 'sms_country', resourceId: id, metadata: { before: serializeCountry(before), after: serializeCountry(row) }, meta }, tx);
+    return row;
+  });
+}
+
+/**
+ * Deletes a country together with its networks, only when nothing depends on them: no routing rule
+ * targets the country or one of its networks, and no message was ever sent there (disable instead).
+ */
+export async function deleteCountry(id: string, actor: Actor, meta?: RequestMeta) {
+  return prisma.$transaction(async (tx) => {
+    const country = await tx.smsCountry.findUnique({ where: { id }, include: countryInclude });
+    if (!country) throw AppError.notFound('Country');
+    const networks = await tx.smsNetwork.findMany({ where: { countryCode: country.isoCode } });
+    const networkIds = networks.map((n) => n.id);
+    const rules = await tx.smsRoutingRule.findMany({ where: { OR: [{ countryCode: country.isoCode }, { networkId: { in: networkIds } }] }, select: { name: true } });
+    if (rules.length) {
+      throw AppError.conflict(`${country.name} is used by routing rule${rules.length > 1 ? 's' : ''} ${rules.map((r) => `"${r.name}"`).join(', ')}. Change or remove the rule first.`, 'COUNTRY_IN_USE');
+    }
+    const messages = await tx.smsRecipient.count({ where: { OR: [{ countryCode: country.isoCode }, { networkId: { in: networkIds } }] } });
+    if (messages) throw AppError.conflict(`${messages.toLocaleString()} messages were sent to ${country.name}; disable it instead so their history stays accurate.`, 'COUNTRY_HAS_HISTORY');
+    await tx.smsNetwork.deleteMany({ where: { id: { in: networkIds } } });
+    await tx.smsCountry.delete({ where: { id } });
+    await audit(
+      { actor, action: 'ROUTING_COUNTRY_DELETED', resource: 'sms_country', resourceId: id, metadata: { country: serializeCountry(country), networksDeleted: networks.map((n) => n.code) }, meta },
+      tx,
+    );
+  });
+}
 
 // ── Networks ─────────────────────────────────────────────────────────────
 
@@ -20,43 +139,89 @@ export const networkBody = z
     code: z.string().trim().toUpperCase().regex(/^[A-Z0-9][A-Z0-9_-]{1,29}$/, 'Letters, digits, - and _ (e.g. RW-MTN)'),
     name: z.string().trim().min(2).max(80),
     countryCode: z.string().trim().length(2).toUpperCase(),
-    countryName: z.string().trim().min(2).max(80),
-    prefixes: z.array(prefix).min(1, 'Add at least one prefix').max(50),
+    prefixes: z.array(prefix).min(1, 'At least one valid prefix is required').max(50),
+    nationalNumberLengths: lengthList.optional(),
     isActive: z.boolean().default(true),
+    // Providers that can deliver to this network.
+    providerIds: z.array(z.string().uuid()).max(100).optional(),
   })
   .strict();
 
-export function serializeNetwork(n: SmsNetwork & { _count?: { providers: number } }) {
-  return { id: n.id, code: n.code, name: n.name, countryCode: n.countryCode, countryName: n.countryName, prefixes: stringList(n.prefixes), isActive: n.isActive, providerCount: n._count?.providers, updatedAt: n.updatedAt };
+type NetworkRow = SmsNetwork & { _count?: { providers: number }; providers?: { provider: { id: string; name: string; code: string } }[] };
+
+export function serializeNetwork(n: NetworkRow) {
+  return {
+    id: n.id,
+    code: n.code,
+    name: n.name,
+    countryCode: n.countryCode,
+    countryName: n.countryName,
+    callingCode: callingCodeFor(n.countryCode),
+    prefixes: stringList(n.prefixes),
+    nationalNumberLengths: Array.isArray(n.nationalNumberLengths) ? (n.nationalNumberLengths as number[]) : [],
+    isActive: n.isActive,
+    providerCount: n._count?.providers ?? n.providers?.length,
+    providers: n.providers?.map((p) => p.provider) ?? [],
+    updatedAt: n.updatedAt,
+  };
 }
 
-async function assertUniquePrefixes(tx: Tx, prefixes: string[], exceptId?: string) {
-  if (new Set(prefixes).size !== prefixes.length) throw AppError.unprocessable('A prefix is listed twice', 'DUPLICATE_PREFIX');
+export const networkInclude = { _count: { select: { providers: true } }, providers: { include: { provider: { select: { id: true, name: true, code: true } } } } } as const;
+
+/** Country must exist (and be active for an active network); prefixes must sit inside the country and be unique. */
+async function validateNetwork(tx: Tx, input: { countryCode: string; prefixes: string[]; isActive: boolean }, exceptId?: string) {
+  const country = await tx.smsCountry.findUnique({ where: { isoCode: input.countryCode } });
+  if (!country) throw AppError.unprocessable(`${countryName(input.countryCode)} is not a configured country. Add the country first.`, 'COUNTRY_NOT_CONFIGURED', [{ field: 'countryCode', message: 'Add the country first' }]);
+  if (input.isActive && !country.isActive) throw AppError.unprocessable('Network must belong to an active country', 'COUNTRY_INACTIVE', [{ field: 'countryCode', message: 'Country is inactive' }]);
+  const cc = `+${callingCodeFor(country.isoCode)}`;
+  for (const p of input.prefixes) {
+    if (!p.startsWith(cc)) throw AppError.unprocessable(`Prefix ${p} is not a ${country.name} number (must start with ${cc})`, 'PREFIX_COUNTRY_MISMATCH', [{ field: 'prefixes', message: `Must start with ${cc}` }]);
+    if (p === cc) throw AppError.unprocessable(`Prefix ${p} is the whole of ${country.name}; give providers country-wide capability instead`, 'PREFIX_TOO_SHORT', [{ field: 'prefixes', message: `Longer than ${cc}` }]);
+  }
+  if (new Set(input.prefixes).size !== input.prefixes.length) throw AppError.unprocessable('A prefix is listed twice', 'DUPLICATE_PREFIX', [{ field: 'prefixes', message: 'Duplicate' }]);
+  if (!input.isActive) return country;
   const others = await tx.smsNetwork.findMany({ where: { isActive: true, ...(exceptId ? { id: { not: exceptId } } : {}) } });
   for (const o of others) {
-    const clash = stringList(o.prefixes).find((p) => prefixes.includes(p));
-    if (clash) throw AppError.conflict(`Prefix ${clash} already belongs to ${o.name}`, 'PREFIX_IN_USE');
+    const clash = stringList(o.prefixes).find((p) => input.prefixes.includes(p));
+    if (clash) throw AppError.conflict(`Prefix ${clash} already belongs to another configured destination (${o.name})`, 'PREFIX_IN_USE');
   }
+  return country;
+}
+
+async function setNetworkProviders(tx: Tx, networkId: string, providerIds: string[]) {
+  const unique = [...new Set(providerIds)];
+  if (unique.length && (await tx.smsProvider.count({ where: { id: { in: unique } } })) !== unique.length) throw AppError.unprocessable('One or more providers do not exist', 'UNKNOWN_PROVIDER');
+  await tx.smsProviderNetwork.deleteMany({ where: { networkId } });
+  if (unique.length) await tx.smsProviderNetwork.createMany({ data: unique.map((providerId) => ({ providerId, networkId })) });
 }
 
 export async function createNetwork(input: z.infer<typeof networkBody>, actor: Actor, meta?: RequestMeta) {
+  const { providerIds, nationalNumberLengths, ...data } = input;
   return prisma.$transaction(async (tx) => {
-    if (input.isActive) await assertUniquePrefixes(tx, input.prefixes);
-    const n = await tx.smsNetwork.create({ data: input });
-    await audit({ actor, action: 'ROUTING_NETWORK_CREATED', resource: 'sms_network', resourceId: n.id, metadata: { network: serializeNetwork(n) }, meta }, tx);
-    return n;
+    const country = await validateNetwork(tx, data);
+    const n = await tx.smsNetwork.create({ data: { ...data, countryName: country.name, nationalNumberLengths: nationalNumberLengths ?? [] } });
+    if (providerIds) await setNetworkProviders(tx, n.id, providerIds);
+    const row = await tx.smsNetwork.findUniqueOrThrow({ where: { id: n.id }, include: networkInclude });
+    await audit({ actor, action: 'ROUTING_NETWORK_CREATED', resource: 'sms_network', resourceId: n.id, metadata: { network: serializeNetwork(row) }, meta }, tx);
+    return row;
   });
 }
 
 export async function updateNetwork(id: string, input: Partial<z.infer<typeof networkBody>>, actor: Actor, meta?: RequestMeta) {
+  const { providerIds, nationalNumberLengths, ...data } = input;
   return prisma.$transaction(async (tx) => {
-    const before = await tx.smsNetwork.findUnique({ where: { id } });
+    const before = await tx.smsNetwork.findUnique({ where: { id }, include: networkInclude });
     if (!before) throw AppError.notFound('Network');
-    const prefixes = input.prefixes ?? stringList(before.prefixes);
-    if (input.isActive ?? before.isActive) await assertUniquePrefixes(tx, prefixes, id);
-    const n = await tx.smsNetwork.update({ where: { id }, data: input });
-    await audit({ actor, action: 'ROUTING_NETWORK_UPDATED', resource: 'sms_network', resourceId: id, metadata: { before: serializeNetwork(before), after: serializeNetwork(n) }, meta }, tx);
-    return n;
+    const country = await validateNetwork(
+      tx,
+      { countryCode: data.countryCode ?? before.countryCode, prefixes: data.prefixes ?? stringList(before.prefixes), isActive: data.isActive ?? before.isActive },
+      id,
+    );
+    await tx.smsNetwork.update({ where: { id }, data: { ...data, countryName: country.name, ...(nationalNumberLengths ? { nationalNumberLengths } : {}) } });
+    if (providerIds) await setNetworkProviders(tx, id, providerIds);
+    const row = await tx.smsNetwork.findUniqueOrThrow({ where: { id }, include: networkInclude });
+    await audit({ actor, action: 'ROUTING_NETWORK_UPDATED', resource: 'sms_network', resourceId: id, metadata: { before: serializeNetwork(before), after: serializeNetwork(row) }, meta }, tx);
+    return row;
   });
 }
 
@@ -240,18 +405,38 @@ export async function listRules() {
   });
 }
 
-/** How messages route right now, per destination network plus everything outside them. */
+/** Route status for the admin overview. */
+function routeStatus(plan: RoutePlan) {
+  if (plan.selected) return 'CONFIGURED' as const;
+  const serving = plan.candidates.filter((c) => !c.reasonCodes.includes('UNSUPPORTED_DESTINATION'));
+  if (!serving.length) return 'UNSUPPORTED' as const;
+  const down = serving.every((c) => c.reasonCodes.some((r) => r === 'PROVIDER_INACTIVE' || r === 'PROVIDER_DOWN' || r === 'NO_ADAPTER'));
+  return down ? ('PROVIDER_UNAVAILABLE' as const) : ('NO_ELIGIBLE_PROVIDER' as const);
+}
+
+/**
+ * How messages route right now, for configured destinations only: every active network of every
+ * active country, plus "other numbers" of a country when a provider serves the whole country.
+ */
 export async function routingOverview() {
   const ctx = await loadRoutingContext(prisma);
   const capacity = new Map(ctx.providers.map((p) => [p.id, p.capacityBalance]));
-  const destinations: Destination[] = [...ctx.networks.map((n) => ({ network: n, countryCode: n.countryCode })), { network: null, countryCode: null }];
-  return destinations.map((dest) => {
+  const rows: { label: string; dest: Destination; country: string }[] = [];
+  for (const c of ctx.countries.filter((x) => x.isActive)) {
+    const networks = ctx.networks.filter((n) => n.countryCode === c.isoCode);
+    for (const n of networks) rows.push({ label: `${c.name} / ${n.name}`, dest: { network: n, countryCode: c.isoCode }, country: c.isoCode });
+    const countryWide = ctx.providers.some((p) => p.countryIds.includes(c.id));
+    if (countryWide || !networks.length) rows.push({ label: networks.length ? `${c.name} / other numbers` : c.name, dest: { network: null, countryCode: c.isoCode }, country: c.isoCode });
+  }
+  return rows.map(({ label, dest, country }) => {
     const plan = planRoute(ctx, dest, 1, capacity);
     return {
-      destination: dest.network ? `${dest.network.countryName} / ${dest.network.name}` : 'Other destinations (no configured network)',
+      destination: label,
+      countryCode: country,
       networkId: dest.network?.id ?? null,
       rule: plan.rule ? { id: plan.rule.id, name: plan.rule.name, strategy: plan.rule.strategy } : null,
       strategy: plan.strategy,
+      status: routeStatus(plan),
       ...summarisePlan(plan),
     };
   });

@@ -92,7 +92,7 @@ export function SmsTrafficPage() {
           <Input placeholder="Phone or provider message ID…" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} className="max-w-xs" />
           <Select value={status} onChange={(e) => { setStatus(e.target.value); setPage(1); }} className="w-auto">
             <option value="">All statuses</option>
-            {['QUEUED', 'PROCESSING', 'SENT', 'DELIVERED', 'FAILED', 'EXPIRED', 'CANCELLED'].map((s) => <option key={s} value={s}>{titleCase(s)}</option>)}
+            {['QUEUED', 'PROCESSING', 'SENT', 'DELIVERED', 'FAILED', 'REJECTED', 'EXPIRED', 'CANCELLED'].map((s) => <option key={s} value={s}>{titleCase(s)}</option>)}
           </Select>
         </div>
         <DataTable
@@ -107,7 +107,7 @@ export function SmsTrafficPage() {
               key: 'act',
               header: '',
               className: 'text-right',
-              cell: (m) => canAdmin('sms.retry') && ['FAILED', 'EXPIRED'].includes(m.status) && (
+              cell: (m) => canAdmin('sms.retry') && ['FAILED', 'EXPIRED', 'REJECTED'].includes(m.status) && (
                 <Button size="xs" variant="secondary" icon={<RotateCcw className="h-3 w-3" />} onClick={(e) => { e.stopPropagation(); setRetry(m.id); }}>Retry</Button>
               ),
             },

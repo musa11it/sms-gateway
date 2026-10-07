@@ -190,13 +190,15 @@ describe('routing', () => {
     const capped = rules.find((r) => r.id === cappedRule.body.data.id)!;
     // A country-wide rule is previewed on the first network of that country (Airtel Rwanda, served only by Airtel).
     expect(capped.preview).toMatchObject({ destination: 'Airtel Rwanda', selected: { name: 'Airtel Rwanda', costPerSegment: '8.50' } });
-    expect(capped.preview.reason).toMatch(/^Lowest eligible cost/);
+    // MTN does not serve Airtel Rwanda and the aggregator is above the cap: Airtel is the only eligible provider.
+    expect(capped.preview.reason).toMatch(/^Only eligible provider/);
     expect(capped.preview.rejected).toEqual(expect.arrayContaining([{ providerId: ids.GENERIC, name: 'Aggregator', reason: 'Cost 11.00 exceeds the rule maximum 10.00' }]));
     expect(rules.find((r) => r.id === shadowed.body.data.id)!.shadowedBy).toMatchObject({ name: 'Rwanda capped' });
 
     const overview = (await request(app).get('/api/v1/admin/routing/overview').set(auth(sa))).body.data as { destination: string; rule: { name: string } | null; selected: { name: string } | null; backup: { name: string } | null }[];
     expect(overview.find((d) => d.destination === 'Rwanda / Airtel Rwanda')).toMatchObject({ rule: { name: 'Rwanda capped' }, selected: { name: 'Airtel Rwanda' } });
-    expect(overview.find((d) => d.destination.startsWith('Other'))).toMatchObject({ rule: null, selected: { name: 'Aggregator' } });
+    // Kenya is configured with no networks: every valid Kenyan number goes to the aggregator (explicit capability).
+    expect(overview.find((d) => d.destination === 'Kenya')).toMatchObject({ rule: null, selected: { name: 'Aggregator' } });
   });
 
   it('inactive providers are excluded', async () => {
@@ -251,7 +253,8 @@ describe('routing rules administration', () => {
 
   it('deletes unused networks; refuses networks used by a rule or by past messages', async () => {
     const del = (id: string, token = sa) => request(app).delete(`/api/v1/admin/routing/networks/${id}`).set(auth(token));
-    const mkNet = (code: string, prefixes: string[]) => request(app).post('/api/v1/admin/routing/networks').set(auth(sa)).send({ code, name: code, countryCode: 'UG', countryName: 'Uganda', prefixes });
+    const mkNet = (code: string, prefixes: string[]) => request(app).post('/api/v1/admin/routing/networks').set(auth(sa)).send({ code, name: code, countryCode: 'UG', prefixes });
+    await request(app).post('/api/v1/admin/routing/countries').set(auth(sa)).send({ isoCode: 'UG', providerIds: [ids.GENERIC] }).expect(201);
 
     // Unused network (with a provider linked to it) is deleted, links included, and audited.
     const spare = await mkNet('UG-SPARE', ['+25670']);
@@ -280,9 +283,9 @@ describe('routing rules administration', () => {
   });
 
   it('manages destination networks without prefix clashes', async () => {
-    const ke = await request(app).post('/api/v1/admin/routing/networks').set(auth(sa)).send({ code: 'KE-SAF', name: 'Safaricom Kenya', countryCode: 'KE', countryName: 'Kenya', prefixes: ['+25471', '+25472'] });
+    const ke = await request(app).post('/api/v1/admin/routing/networks').set(auth(sa)).send({ code: 'KE-SAF', name: 'Safaricom Kenya', countryCode: 'KE', prefixes: ['+25471', '+25472'] });
     expect(ke.status).toBe(201);
-    const clash = await request(app).post('/api/v1/admin/routing/networks').set(auth(sa)).send({ code: 'RW-X', name: 'Clash', countryCode: 'RW', countryName: 'Rwanda', prefixes: ['+25078'] });
+    const clash = await request(app).post('/api/v1/admin/routing/networks').set(auth(sa)).send({ code: 'RW-X', name: 'Clash', countryCode: 'RW', prefixes: ['+25078'] });
     expect(clash.body.code).toBe('PREFIX_IN_USE');
   });
 });
@@ -298,9 +301,9 @@ describe('routing simulator', () => {
     expect(d.destination.network.code).toBe('RW-MTN');
     expect(d.selected).toMatchObject({ name: 'MTN Rwanda', costPerSegment: '8.00' });
     expect(d.backup).toMatchObject({ name: 'Aggregator', costPerSegment: '11.00' });
-    expect(d.rejected).toEqual(expect.arrayContaining([{ providerId: ids.AIRTEL, name: 'Airtel Rwanda', reason: 'Does not serve MTN Rwanda' }]));
+    expect(d.rejected).toEqual(expect.arrayContaining([{ providerId: ids.AIRTEL, name: 'Airtel Rwanda', reason: 'Not configured to serve MTN Rwanda', code: 'UNSUPPORTED_DESTINATION' }]));
     expect(d.reason).toMatch(/Highest-priority eligible provider/);
-    expect(d.candidates.find((c: { code: string }) => c.code === 'AIRTEL')).toMatchObject({ eligible: false, reasons: ['Does not serve MTN Rwanda'] });
+    expect(d.candidates.find((c: { code: string }) => c.code === 'AIRTEL')).toMatchObject({ eligible: false, reasons: ['Not configured to serve MTN Rwanda'], reasonCodes: ['UNSUPPORTED_DESTINATION'] });
     expect(d.sender).toMatchObject({ known: false, approved: false });
     expect(Number(d.estimate.providerCost)).toBeGreaterThan(0);
     expect((await prisma.smsProvider.findMany({ select: { capacityBalance: true } })).map((p) => p.capacityBalance)).toEqual(capacityBefore);

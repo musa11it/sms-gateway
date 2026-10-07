@@ -34,7 +34,8 @@ import { DataTable } from '@/components/ui/Table';
 import { PageHeader, ProgressBar, Tabs } from '@/components/ui/Misc';
 import { useApiMutation } from '@/hooks/useApiMutation';
 import { usePermissions } from '@/hooks/useAuth';
-import { businessService, type Provider, type ProviderEconomics, type RouteSummary, type RoutingRule, type RoutingStrategy, type SmsNetwork } from '@/services/businessService';
+import { adminService } from '@/services/adminService';
+import { businessService, type CountryStatus, type Provider, type ProviderEconomics, type RouteStatus, type RouteSummary, type RoutingRule, type RoutingSimulation, type RoutingStrategy, type SmsCountry, type SmsNetwork } from '@/services/businessService';
 import { cn, fmtDate, fmtDateTime, fmtMoney, fmtNumber, fmtRelative, titleCase } from '@/utils/format';
 import { RangePicker, useRange } from '../dashboard/ReportsPage';
 
@@ -112,7 +113,7 @@ type ProviderForm = {
   minimumCapacity: string;
   lowCapacityThreshold: string;
   supportsSenderId: boolean;
-  servesAllDestinations: boolean;
+  countryIds: string[];
   networkIds: string[];
   notes: string;
   reason: string;
@@ -131,7 +132,7 @@ const emptyForm: ProviderForm = {
   minimumCapacity: '0',
   lowCapacityThreshold: '10000',
   supportsSenderId: true,
-  servesAllDestinations: false,
+  countryIds: [],
   networkIds: [],
   notes: '',
   reason: '',
@@ -139,6 +140,7 @@ const emptyForm: ProviderForm = {
 
 export function ProviderFormModal({ provider, open, onClose }: { provider: Provider | null; open: boolean; onClose: () => void }) {
   const networks = useQuery({ queryKey: ['admin', 'routing', 'networks'], queryFn: businessService.networks, enabled: open });
+  const countries = useQuery({ queryKey: ['admin', 'routing', 'countries'], queryFn: businessService.countries, enabled: open });
   const [form, setForm] = useState<ProviderForm>(emptyForm);
   const [loadedFor, setLoadedFor] = useState<string | null | undefined>(undefined);
   if (open && loadedFor !== (provider?.id ?? null)) {
@@ -158,7 +160,7 @@ export function ProviderFormModal({ provider, open, onClose }: { provider: Provi
             minimumCapacity: String(provider.minimumCapacity),
             lowCapacityThreshold: String(provider.lowCapacityThreshold),
             supportsSenderId: provider.supportsSenderId,
-            servesAllDestinations: provider.servesAllDestinations,
+            countryIds: provider.countries.map((c) => c.id),
             networkIds: provider.networks.map((n) => n.id),
             notes: provider.notes ?? '',
             reason: '',
@@ -181,7 +183,7 @@ export function ProviderFormModal({ provider, open, onClose }: { provider: Provi
     minimumCapacity: Number(form.minimumCapacity),
     lowCapacityThreshold: Number(form.lowCapacityThreshold),
     supportsSenderId: form.supportsSenderId,
-    servesAllDestinations: form.servesAllDestinations,
+    countryIds: form.countryIds,
     networkIds: form.networkIds,
     notes: form.notes.trim() || null,
     ...(form.reason.trim() ? { reason: form.reason.trim() } : {}),
@@ -252,27 +254,49 @@ export function ProviderFormModal({ provider, open, onClose }: { provider: Provi
         </section>
 
         <section>
-          <h4 className="text-sm font-semibold text-slate-900">Destinations & capabilities</h4>
-          <p className="mt-0.5 text-xs text-slate-500">A provider can deliver to any network you allow — not only its own.</p>
+          <h4 className="text-sm font-semibold text-slate-900">Destinations it can deliver to</h4>
+          <p className="mt-0.5 text-xs text-slate-500">Routing only uses a provider for destinations ticked here — nothing is assumed. A provider can serve any network you allow, not only its own.</p>
           <div className="mt-3 space-y-3">
-            <Checkbox label="Serves all destinations" description="Including numbers outside the configured networks (international, unknown networks)" checked={form.servesAllDestinations} onChange={(e) => setForm((f) => ({ ...f, servesAllDestinations: e.target.checked }))} />
-            {!form.servesAllDestinations && (
+            <div>
+              <p className="label">Whole countries</p>
               <div className="grid gap-2 rounded-lg bg-slate-50 p-3 ring-1 ring-inset ring-slate-100 sm:grid-cols-2">
-                {networks.isLoading ? <Skeleton className="h-10" /> : !networks.data?.length ? (
-                  <p className="text-xs text-slate-500">No destination networks yet. Add them under <Link to="/admin/routing" className="link">Routing</Link>.</p>
+                {countries.isLoading ? <Skeleton className="h-10" /> : !countries.data?.length ? (
+                  <p className="text-xs text-slate-500">No destination countries yet. Add them under <Link to="/admin/routing" className="link">Routing</Link>.</p>
                 ) : (
-                  networks.data.map((n) => (
+                  countries.data.map((c) => (
                     <Checkbox
-                      key={n.id}
-                      label={n.name}
-                      description={`${n.countryName} · ${n.prefixes.join(', ')}`}
-                      checked={form.networkIds.includes(n.id)}
-                      onChange={(e) => setForm((f) => ({ ...f, networkIds: e.target.checked ? [...f.networkIds, n.id] : f.networkIds.filter((x) => x !== n.id) }))}
+                      key={c.id}
+                      label={`${c.name} (+${c.callingCode ?? '?'})`}
+                      description={`Every valid ${c.name} number, on any network${c.isActive ? '' : ' · country inactive'}`}
+                      checked={form.countryIds.includes(c.id)}
+                      onChange={(e) => setForm((f) => ({ ...f, countryIds: e.target.checked ? [...f.countryIds, c.id] : f.countryIds.filter((x) => x !== c.id) }))}
                     />
                   ))
                 )}
               </div>
-            )}
+            </div>
+            <div>
+              <p className="label">Specific networks</p>
+              <div className="grid gap-2 rounded-lg bg-slate-50 p-3 ring-1 ring-inset ring-slate-100 sm:grid-cols-2">
+                {networks.isLoading ? <Skeleton className="h-10" /> : !networks.data?.length ? (
+                  <p className="text-xs text-slate-500">No destination networks yet. Add them under <Link to="/admin/routing" className="link">Routing</Link>.</p>
+                ) : (
+                  networks.data.map((n) => {
+                    const viaCountry = countries.data?.some((c) => c.isoCode === n.countryCode && form.countryIds.includes(c.id));
+                    return (
+                      <Checkbox
+                        key={n.id}
+                        label={`${n.name}`}
+                        description={viaCountry ? `Already covered by ${n.countryName}` : `${n.countryName} · ${n.prefixes.join(', ')}`}
+                        checked={!!viaCountry || form.networkIds.includes(n.id)}
+                        disabled={!!viaCountry}
+                        onChange={(e) => setForm((f) => ({ ...f, networkIds: e.target.checked ? [...f.networkIds, n.id] : f.networkIds.filter((x) => x !== n.id) }))}
+                      />
+                    );
+                  })
+                )}
+              </div>
+            </div>
             <Checkbox label="Supports alphanumeric sender IDs" description="Providers without sender ID support are never used (every message has a sender ID)" checked={form.supportsSenderId} onChange={(e) => setForm((f) => ({ ...f, supportsSenderId: e.target.checked }))} />
           </div>
         </section>
@@ -478,7 +502,7 @@ export function ProvidersPage() {
                         <span className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-lg font-mono text-[11px] font-bold text-white', p.routable ? 'bg-gradient-to-br from-brand-600 to-violet-600' : 'bg-slate-400')}>{p.code.slice(0, 3)}</span>
                         <span className="min-w-0">
                           <span className="block font-medium text-slate-900">{p.name}</span>
-                          <span className="block truncate text-xs text-slate-500">{p.servesAllDestinations ? 'All destinations' : p.networks.map((n) => n.name).join(', ') || 'No destinations'}</span>
+                          <span className="block truncate text-xs text-slate-500">{[...p.countries.map((c) => c.name), ...p.networks.map((n) => n.name)].join(', ') || 'No destinations — never routed'}</span>
                         </span>
                       </span>
                     ),
@@ -634,7 +658,14 @@ export function ProviderDetailPage() {
               <div>
                 <dt className="text-xs text-slate-500">Destinations</dt>
                 <dd className="mt-1 flex flex-wrap gap-1.5">
-                  {p.servesAllDestinations ? <Badge color="violet"><Globe2 className="mr-1 inline h-3 w-3" />All destinations</Badge> : p.networks.length ? p.networks.map((n) => <Badge key={n.id} color="gray">{n.name}</Badge>) : <span className="text-slate-400">None — this provider cannot be routed to</span>}
+                  {p.countries.length || p.networks.length ? (
+                    <>
+                      {p.countries.map((c) => <Badge key={c.id} color="violet"><Globe2 className="mr-1 inline h-3 w-3" />{c.name} (all numbers)</Badge>)}
+                      {p.networks.map((n) => <Badge key={n.id} color="gray">{n.name}</Badge>)}
+                    </>
+                  ) : (
+                    <span className="text-slate-400">None — this provider is never routed to</span>
+                  )}
                 </dd>
               </div>
               <div className="grid grid-cols-2 gap-4">
@@ -975,35 +1006,180 @@ function RuleModal({ rule, open, onClose, providers, networks }: { rule: Routing
   );
 }
 
-function NetworkModal({ network, open, onClose }: { network: SmsNetwork | null; open: boolean; onClose: () => void }) {
-  const empty = { code: '', name: '', countryCode: '', countryName: '', prefixes: '', isActive: true };
+const COUNTRY_STATUS: Record<CountryStatus, { color: BadgeColor; label: string; hint: string }> = {
+  CONFIGURED: { color: 'green', label: 'Configured', hint: 'Every valid number has at least one provider' },
+  NETWORKS_ONLY: { color: 'blue', label: 'Networks only', hint: 'Numbers on configured networks are covered; other numbers in the country are refused' },
+  PARTIAL: { color: 'amber', label: 'Partially configured', hint: 'Some networks have no provider' },
+  NO_PROVIDER: { color: 'red', label: 'No provider', hint: 'No provider serves this country — every send is refused' },
+  INACTIVE: { color: 'gray', label: 'Inactive', hint: 'Numbers in this country are refused' },
+};
+
+const ROUTE_STATUS: Record<RouteStatus, { color: BadgeColor; label: string }> = {
+  CONFIGURED: { color: 'green', label: 'Configured' },
+  UNSUPPORTED: { color: 'red', label: 'Unsupported' },
+  NO_ELIGIBLE_PROVIDER: { color: 'amber', label: 'No eligible provider' },
+  PROVIDER_UNAVAILABLE: { color: 'red', label: 'Provider unavailable' },
+};
+
+/** A few words for tables; the full routing explanation stays in the tooltip. */
+function shortReason(reason: string) {
+  const r = reason.toLowerCase();
+  if (r.startsWith('no provider is configured')) return 'No provider configured';
+  if (r.startsWith('no provider has enough')) return 'Not enough capacity';
+  if (r.startsWith('no eligible provider')) return 'No eligible provider';
+  if (r.startsWith('backup provider')) return 'Backup (primary down)';
+  if (r.startsWith('primary provider')) return 'Primary';
+  if (r.startsWith('only eligible')) return 'Only option';
+  if (r.startsWith('lowest eligible cost')) return 'Lowest cost';
+  if (r.startsWith('highest-priority')) return 'Highest priority';
+  return reason.split(/ — |;| \(/)[0];
+}
+
+const parseLengths = (v: string) => v.split(/[\s,]+/).filter(Boolean).map(Number);
+const lengthsValid = (v: string) => parseLengths(v).every((n) => Number.isInteger(n) && n >= 4 && n <= 15);
+
+function ProviderPicker({ providers, value, onChange, hint }: { providers: Provider[]; value: string[]; onChange: (ids: string[]) => void; hint: string }) {
+  return (
+    <div>
+      <p className="label">Providers that can deliver here</p>
+      <div className="grid gap-2 rounded-lg bg-slate-50 p-3 ring-1 ring-inset ring-slate-100 sm:grid-cols-2">
+        <p className="text-xs text-slate-500 sm:col-span-2">{hint}</p>
+        {providers.length ? (
+          providers.map((p) => (
+            <Checkbox
+              key={p.id}
+              label={p.name}
+              description={`${fmtMoney(p.costPerSms, p.currency)}/segment · ${fmtNumber(p.capacityBalance)} capacity${p.status !== 'ACTIVE' ? ` · ${p.status.toLowerCase()}` : ''}`}
+              checked={value.includes(p.id)}
+              onChange={(e) => onChange(e.target.checked ? [...value, p.id] : value.filter((x) => x !== p.id))}
+            />
+          ))
+        ) : (
+          <p className="text-xs text-slate-500">No providers yet.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CountryModal({ country, open, onClose, providers }: { country: SmsCountry | null; open: boolean; onClose: () => void; providers: Provider[] }) {
+  const empty = { isoCode: '', name: '', validationMode: 'STRICT' as 'STRICT' | 'LENGTH', lengths: '', isActive: true, providerIds: [] as string[] };
   const [form, setForm] = useState(empty);
   const [loadedFor, setLoadedFor] = useState<string | null | undefined>(undefined);
-  if (open && loadedFor !== (network?.id ?? null)) {
-    setLoadedFor(network?.id ?? null);
-    setForm(network ? { code: network.code, name: network.name, countryCode: network.countryCode, countryName: network.countryName, prefixes: network.prefixes.join(', '), isActive: network.isActive } : empty);
+  if (open && loadedFor !== (country?.id ?? null)) {
+    setLoadedFor(country?.id ?? null);
+    setForm(country ? { isoCode: country.isoCode, name: country.name, validationMode: country.validationMode, lengths: country.nationalNumberLengths.join(', '), isActive: country.isActive, providerIds: country.providers.map((p) => p.id) } : empty);
   }
   const close = () => {
     setLoadedFor(undefined);
     onClose();
   };
-  const prefixes = form.prefixes.split(/[\s,]+/).filter(Boolean);
-  const body = { code: form.code.trim().toUpperCase(), name: form.name.trim(), countryCode: form.countryCode.trim().toUpperCase(), countryName: form.countryName.trim(), prefixes, isActive: form.isActive };
-  const save = useApiMutation(() => (network ? businessService.updateNetwork(network.id, body) : businessService.createNetwork(body)), {
-    success: network ? 'Network updated' : 'Network created',
-    invalidate: [['admin', 'routing']],
+  const body = {
+    ...(country ? {} : { isoCode: form.isoCode.trim().toUpperCase() }),
+    ...(form.name.trim() ? { name: form.name.trim() } : {}),
+    validationMode: form.validationMode,
+    nationalNumberLengths: parseLengths(form.lengths),
+    isActive: form.isActive,
+    providerIds: form.providerIds,
+  };
+  const save = useApiMutation(() => (country ? businessService.updateCountry(country.id, body) : businessService.createCountry(body)), {
+    success: country ? 'Country updated' : 'Country added',
+    invalidate: [['admin', 'routing'], ['admin', 'providers']],
     onSuccess: close,
   });
-  const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) => setForm((f) => ({ ...f, [k]: e.target.value }));
-  const valid = body.code.length >= 2 && body.name.length >= 2 && /^[A-Z]{2}$/.test(body.countryCode) && body.countryName.length >= 2 && prefixes.length > 0 && prefixes.every((p) => /^\+\d{1,8}$/.test(p));
+  const valid = (country || /^[A-Za-z]{2}$/.test(form.isoCode.trim())) && lengthsValid(form.lengths);
   return (
-    <Modal open={open} onClose={close} title={network ? `Edit ${network.name}` : 'New destination network'} footer={<><Button variant="secondary" onClick={close}>Cancel</Button><Button disabled={!valid} loading={save.isPending} onClick={() => save.mutate(undefined)}>Save</Button></>}>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="Code" required><Input value={form.code} onChange={set('code')} className="font-mono uppercase" placeholder="RW-MTN" /></Field>
-        <Field label="Network name" required><Input value={form.name} onChange={set('name')} placeholder="MTN Rwanda" /></Field>
-        <Field label="Country code" required hint="ISO, 2 letters"><Input value={form.countryCode} onChange={set('countryCode')} maxLength={2} className="uppercase" placeholder="RW" /></Field>
-        <Field label="Country name" required><Input value={form.countryName} onChange={set('countryName')} placeholder="Rwanda" /></Field>
-        <Field label="Number prefixes" required hint="E.164, comma separated. The longest matching prefix wins." className="sm:col-span-2"><Input value={form.prefixes} onChange={set('prefixes')} className="font-mono" placeholder="+25078, +25079" /></Field>
+    <Modal
+      open={open}
+      onClose={close}
+      size="lg"
+      title={country ? `Edit ${country.name}` : 'Add destination country'}
+      description="Numbers are only sent to configured, active countries — and only when a provider serves them."
+      footer={<><Button variant="secondary" onClick={close}>Cancel</Button><Button disabled={!valid} loading={save.isPending} onClick={() => save.mutate(undefined)}>{country ? 'Save country' : 'Add country'}</Button></>}
+    >
+      <div className="space-y-5">
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="ISO country code" required hint={country ? `Calling code +${country.callingCode}` : 'Two letters, e.g. KE — the calling code is filled in automatically'}>
+            <Input value={form.isoCode} onChange={(e) => setForm((f) => ({ ...f, isoCode: e.target.value }))} maxLength={2} disabled={!!country} className="font-mono uppercase" placeholder="KE" />
+          </Field>
+          <Field label="Name" hint="Empty = standard English name"><Input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="Kenya" /></Field>
+          <Field label="Number validation" hint={form.validationMode === 'STRICT' ? 'Number must be valid in the national numbering plan (recommended)' : 'Only the length is checked — use for new number ranges'}>
+            <Select value={form.validationMode} onChange={(e) => setForm((f) => ({ ...f, validationMode: e.target.value as 'STRICT' | 'LENGTH' }))}>
+              <option value="STRICT">Numbering plan (strict)</option>
+              <option value="LENGTH">Possible length only</option>
+            </Select>
+          </Field>
+          <Field label="Allowed number lengths" hint="Digits after the country code, e.g. 9. Empty = numbering plan only." error={lengthsValid(form.lengths) ? undefined : 'Whole numbers between 4 and 15'}>
+            <Input value={form.lengths} onChange={(e) => setForm((f) => ({ ...f, lengths: e.target.value }))} placeholder="9" invalid={!lengthsValid(form.lengths)} />
+          </Field>
+        </div>
+        <ProviderPicker providers={providers} value={form.providerIds} onChange={(providerIds) => setForm((f) => ({ ...f, providerIds }))} hint="These providers can deliver to every valid number in the country, on any network. For a single network, use the network instead." />
+        <Checkbox label="Active" description="Inactive countries are refused before routing" checked={form.isActive} onChange={(e) => setForm((f) => ({ ...f, isActive: e.target.checked }))} />
+      </div>
+    </Modal>
+  );
+}
+
+function NetworkModal({ network, open, onClose, countries, providers }: { network: SmsNetwork | null; open: boolean; onClose: () => void; countries: SmsCountry[]; providers: Provider[] }) {
+  const empty = { code: '', name: '', countryCode: '', prefixes: '', lengths: '', isActive: true, providerIds: [] as string[] };
+  const [form, setForm] = useState(empty);
+  const [loadedFor, setLoadedFor] = useState<string | null | undefined>(undefined);
+  if (open && loadedFor !== (network?.id ?? null)) {
+    setLoadedFor(network?.id ?? null);
+    setForm(
+      network
+        ? { code: network.code, name: network.name, countryCode: network.countryCode, prefixes: network.prefixes.join(', '), lengths: network.nationalNumberLengths.join(', '), isActive: network.isActive, providerIds: network.providers.map((p) => p.id) }
+        : { ...empty, countryCode: countries.find((c) => c.isActive)?.isoCode ?? '' },
+    );
+  }
+  const close = () => {
+    setLoadedFor(undefined);
+    onClose();
+  };
+  const country = countries.find((c) => c.isoCode === form.countryCode);
+  const cc = country?.callingCode ? `+${country.callingCode}` : '';
+  const prefixes = form.prefixes.split(/[\s,]+/).filter(Boolean);
+  const prefixError = !prefixes.length
+    ? undefined
+    : prefixes.find((p) => !/^\+\d{1,8}$/.test(p))
+      ? 'Prefixes look like +25478'
+      : cc && prefixes.find((p) => !p.startsWith(cc) || p === cc)
+        ? `Each prefix must start with ${cc} and be longer than it`
+        : undefined;
+  const body = { code: form.code.trim().toUpperCase(), name: form.name.trim(), countryCode: form.countryCode, prefixes, nationalNumberLengths: parseLengths(form.lengths), isActive: form.isActive, providerIds: form.providerIds };
+  const save = useApiMutation(() => (network ? businessService.updateNetwork(network.id, body) : businessService.createNetwork(body)), {
+    success: network ? 'Network updated' : 'Network created',
+    invalidate: [['admin', 'routing'], ['admin', 'providers']],
+    onSuccess: close,
+  });
+  const valid = body.code.length >= 2 && body.name.length >= 2 && !!country && prefixes.length > 0 && !prefixError && lengthsValid(form.lengths);
+  return (
+    <Modal
+      open={open}
+      onClose={close}
+      size="lg"
+      title={network ? `Edit ${network.name}` : 'New destination network'}
+      description="Numbers are matched to a network by their longest prefix, after the full number is validated for its country."
+      footer={<><Button variant="secondary" onClick={close}>Cancel</Button><Button disabled={!valid} loading={save.isPending} onClick={() => save.mutate(undefined)}>Save network</Button></>}
+    >
+      <div className="space-y-5">
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Country" required hint={countries.length ? undefined : 'Add a destination country first'}>
+            <Select value={form.countryCode} onChange={(e) => setForm((f) => ({ ...f, countryCode: e.target.value }))}>
+              <option value="">Choose…</option>
+              {countries.map((c) => <option key={c.id} value={c.isoCode} disabled={!c.isActive}>{c.name} (+{c.callingCode}){c.isActive ? '' : ' — inactive'}</option>)}
+            </Select>
+          </Field>
+          <Field label="Network name" required><Input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="Safaricom Kenya" /></Field>
+          <Field label="Code" required hint="Stable identifier"><Input value={form.code} onChange={(e) => setForm((f) => ({ ...f, code: e.target.value }))} className="font-mono uppercase" placeholder="KE-SAF" /></Field>
+          <Field label="Allowed number lengths" hint="Optional; overrides the country's rule" error={lengthsValid(form.lengths) ? undefined : 'Whole numbers between 4 and 15'}>
+            <Input value={form.lengths} onChange={(e) => setForm((f) => ({ ...f, lengths: e.target.value }))} placeholder="9" invalid={!lengthsValid(form.lengths)} />
+          </Field>
+          <Field label="Number prefixes" required className="sm:col-span-2" error={prefixError} hint={`E.164, comma separated${cc ? `, starting with ${cc}` : ''}. At least one is required.`}>
+            <Input value={form.prefixes} onChange={(e) => setForm((f) => ({ ...f, prefixes: e.target.value }))} className="font-mono" placeholder={cc ? `${cc}71, ${cc}72` : '+25471, +25472'} invalid={!!prefixError} />
+          </Field>
+        </div>
+        <ProviderPicker providers={providers} value={form.providerIds} onChange={(providerIds) => setForm((f) => ({ ...f, providerIds }))} hint="Providers serving the whole country can always deliver here too." />
         <Checkbox label="Active" checked={form.isActive} onChange={(e) => setForm((f) => ({ ...f, isActive: e.target.checked }))} />
       </div>
     </Modal>
@@ -1031,13 +1207,36 @@ export function RoutingRulesPage() {
   const rules = useQuery({ queryKey: ['admin', 'routing', 'rules'], queryFn: businessService.routingRules });
   const overview = useQuery({ queryKey: ['admin', 'routing', 'overview'], queryFn: businessService.routingOverview });
   const networks = useQuery({ queryKey: ['admin', 'routing', 'networks'], queryFn: businessService.networks });
+  const countries = useQuery({ queryKey: ['admin', 'routing', 'countries'], queryFn: businessService.countries });
   const providers = useQuery({ queryKey: ['admin', 'providers'], queryFn: businessService.providers });
   const [modal, setModal] = useState<{ open: boolean; rule: RoutingRule | null }>({ open: false, rule: null });
+  const [countryModal, setCountryModal] = useState<{ open: boolean; country: SmsCountry | null }>({ open: false, country: null });
+  const [toggleCountry, setToggleCountry] = useState<SmsCountry | null>(null);
+  const [toggleNetwork, setToggleNetwork] = useState<SmsNetwork | null>(null);
+  const [netSearch, setNetSearch] = useState('');
+  const search = netSearch.trim().toLowerCase();
+  const visibleNetworks = (networks.data ?? []).filter((n) => !search || [n.name, n.code, n.countryName, n.countryCode, ...n.prefixes].some((x) => x.toLowerCase().includes(search)));
+  const toggleCountryM = useApiMutation((c: SmsCountry) => businessService.updateCountry(c.id, { isActive: !c.isActive }), {
+    success: (c) => (c.isActive ? 'Country enabled' : 'Country disabled'),
+    invalidate: [['admin', 'routing']],
+    onSuccess: () => setToggleCountry(null),
+  });
+  const toggleNetworkM = useApiMutation((n: SmsNetwork) => businessService.updateNetwork(n.id, { isActive: !n.isActive }), {
+    success: (n) => (n.isActive ? 'Network enabled' : 'Network disabled'),
+    invalidate: [['admin', 'routing']],
+    onSuccess: () => setToggleNetwork(null),
+  });
   const [netModal, setNetModal] = useState<{ open: boolean; network: SmsNetwork | null }>({ open: false, network: null });
   const [order, setOrder] = useState<string[] | null>(null);
   const [confirmOrder, setConfirmOrder] = useState(false);
   const [toggle, setToggle] = useState<RoutingRule | null>(null);
   const [deleting, setDeleting] = useState<SmsNetwork | null>(null);
+  const [deletingCountry, setDeletingCountry] = useState<SmsCountry | null>(null);
+  const deleteCountryM = useApiMutation((c: SmsCountry) => businessService.deleteCountry(c.id), {
+    success: 'Country deleted',
+    invalidate: [['admin', 'routing'], ['admin', 'providers']],
+    onSuccess: () => setDeletingCountry(null),
+  });
   const deleteNet = useApiMutation((n: SmsNetwork) => businessService.deleteNetwork(n.id), {
     success: 'Network deleted',
     invalidate: [['admin', 'routing'], ['admin', 'providers']],
@@ -1075,27 +1274,42 @@ export function RoutingRulesPage() {
       />
 
       <Card padded={false}>
-        <CardHeader title="Where messages go right now" description="For each destination: the provider used, why, its cost and capacity, and the backup if it becomes unavailable." />
+        <CardHeader title="Where messages go right now" description="Configured destinations only. Each number is validated, matched to its country and network, then routed to an eligible provider — otherwise the send is refused and nothing is charged." />
         <DataTable
-          rows={overview.data?.map((o) => ({ ...o, id: o.networkId ?? 'other' }))}
+          rows={overview.data?.map((o) => ({ ...o, id: `${o.countryCode}:${o.networkId ?? 'other'}` }))}
           loading={overview.isLoading}
           error={overview.error}
           columns={[
-            { key: 'd', header: 'Destination', cell: (o) => <span className="flex items-center gap-1.5 font-medium text-slate-900"><Globe2 className="h-3.5 w-3.5 text-slate-400" />{o.destination}</span> },
-            { key: 'u', header: 'Provider used', cell: (o) => <RouteDecision s={o} /> },
-            { key: 'r', header: 'Rule', cell: (o) => (o.rule ? <span className="text-sm">{o.rule.name}<span className="block text-xs text-slate-500">{STRATEGY[o.rule.strategy].label}</span></span> : <span className="text-xs text-slate-500">Default routing<span className="block">priority order</span></span>) },
+            { key: 'd', header: 'Destination', cell: (o) => <span className="flex items-center gap-1.5 whitespace-nowrap font-medium text-slate-900"><Globe2 className="h-3.5 w-3.5 text-slate-400" />{o.destination}</span> },
+            { key: 'p', header: 'Provider', cell: (o) => (o.selected ? <span className="font-semibold text-slate-900">{o.selected.name}</span> : <span className="text-slate-400">—</span>) },
+            { key: 'c', header: 'Cost', className: 'text-right', headerClassName: 'text-right', cell: (o) => <span className="tabular-nums">{o.selected ? fmtMoney(o.selected.costPerSegment) : '—'}</span> },
+            { key: 'u', header: 'Usable capacity', className: 'text-right', headerClassName: 'text-right', cell: (o) => <span className="tabular-nums">{o.selected ? fmtNumber(o.selected.available) : '—'}</span> },
+            { key: 'why', header: 'Routing reason', cell: (o) => <span className="cursor-help whitespace-nowrap text-xs text-slate-600 underline decoration-slate-300 decoration-dotted underline-offset-2" title={[o.reason, ...o.rejected.map((r) => `${r.name}: ${r.reason}`)].join('\n')}>{shortReason(o.reason)}</span> },
+            { key: 'r', header: 'Rule', cell: (o) => (o.rule ? <span className="text-sm">{o.rule.name}<span className="block text-xs text-slate-500">{STRATEGY[o.rule.strategy].label}</span></span> : <span className="text-xs text-slate-500">Default</span>) },
+            { key: 'b', header: 'Backup', cell: (o) => (o.backup ? <span className="text-sm">{o.backup.name}<span className="block text-xs text-slate-500">{fmtMoney(o.backup.costPerSegment)}</span></span> : <span className="text-xs text-slate-400">None</span>) },
             {
-              key: 'x',
-              header: 'Ruled out',
-              cell: (o) =>
-                o.rejected.length ? (
-                  <span className="block max-w-xs space-y-0.5 text-xs text-slate-500">{o.rejected.map((r) => <span key={r.providerId} className="block truncate" title={r.reason}><span className="font-medium text-slate-700">{r.name}:</span> {r.reason}</span>)}</span>
-                ) : (
-                  <span className="text-xs text-slate-400">—</span>
-                ),
+              key: 's',
+              header: 'Status',
+              cell: (o) => {
+                // A network row is managed as that network; a country row ("other numbers") as the whole country.
+                const net = o.networkId ? networks.data?.find((n) => n.id === o.networkId) : undefined;
+                const country = countries.data?.find((c) => c.isoCode === o.countryCode);
+                const canDelete = !!(net || country);
+                return (
+                  <span className="flex items-center gap-1 whitespace-nowrap">
+                    <Badge color={ROUTE_STATUS[o.status].color} dot>{ROUTE_STATUS[o.status].label}</Badge>
+                    {canManage && (net || country) && (
+                      <>
+                        <Button size="xs" variant="ghost" icon={<Pencil className="h-3 w-3" />} title={`Edit ${net ? net.name : country!.name}`} aria-label="Edit" onClick={() => (net ? setNetModal({ open: true, network: net }) : setCountryModal({ open: true, country: country! }))} />
+                        {canDelete && <Button size="xs" variant="ghost" className="text-red-600" icon={<Trash2 className="h-3 w-3" />} title={`Delete ${net ? net.name : country!.name}`} aria-label="Delete" onClick={() => (net ? setDeleting(net) : setDeletingCountry(country!))} />}
+                      </>
+                    )}
+                  </span>
+                );
+              },
             },
           ]}
-          empty={<EmptyState icon={<Globe2 />} title="No destinations yet" description="Add destination networks below." />}
+          empty={<EmptyState icon={<Globe2 />} title="No destinations configured" description="Add a destination country below, then give at least one provider the capability to serve it." />}
         />
       </Card>
 
@@ -1175,19 +1389,78 @@ export function RoutingRulesPage() {
 
       <Card padded={false}>
         <CardHeader
-          title="Destination networks"
-          description="Numbers are matched to a network by their longest E.164 prefix."
-          action={canManage && <Button size="xs" variant="secondary" icon={<Plus className="h-3 w-3" />} onClick={() => setNetModal({ open: true, network: null })}>Add network</Button>}
+          title="Destination countries"
+          description="A number is only sent if its country is configured here, active, and served by a provider."
+          action={canManage && <Button size="xs" variant="secondary" icon={<Plus className="h-3 w-3" />} onClick={() => setCountryModal({ open: true, country: null })}>Add country</Button>}
         />
         <DataTable
-          rows={networks.data}
+          rows={countries.data}
+          loading={countries.isLoading}
+          error={countries.error}
+          rowClassName={(c) => (!c.isActive ? 'opacity-60' : '')}
+          columns={[
+            { key: 'n', header: 'Country', cell: (c) => <span className="font-medium text-slate-900">{c.name}</span> },
+            { key: 'i', header: 'ISO', cell: (c) => <span className="font-mono text-xs">{c.isoCode}</span> },
+            { key: 'cc', header: 'Calling code', cell: (c) => <span className="font-mono text-xs">+{c.callingCode}</span> },
+            { key: 'v', header: 'Number format', cell: (c) => <span className="text-xs text-slate-600">{c.validationMode === 'STRICT' ? 'Numbering plan' : 'Length only'}{c.nationalNumberLengths.length ? ` · ${c.nationalNumberLengths.join('/')} digits` : ''}</span> },
+            { key: 'nw', header: 'Networks', className: 'text-right', headerClassName: 'text-right', cell: (c) => <span className="tabular-nums">{c.networkCount}</span> },
+            { key: 'p', header: 'Whole-country providers', cell: (c) => (c.providers.length ? <span className="flex flex-wrap gap-1">{c.providers.map((p) => <Badge key={p.id} color="violet">{p.name}</Badge>)}</span> : <span className="text-xs text-slate-400">None</span>) },
+            { key: 's', header: 'Status', cell: (c) => <span title={COUNTRY_STATUS[c.status].hint}><Badge color={COUNTRY_STATUS[c.status].color} dot>{COUNTRY_STATUS[c.status].label}</Badge></span> },
+            {
+              key: 'x',
+              header: '',
+              className: 'text-right',
+              cell: (c) =>
+                canManage && (
+                  <span className="flex justify-end gap-1">
+                    <Button size="xs" variant="secondary" icon={<Pencil className="h-3 w-3" />} onClick={() => setCountryModal({ open: true, country: c })}>Edit</Button>
+                    <Button size="xs" variant="ghost" icon={<Power className="h-3 w-3" />} onClick={() => setToggleCountry(c)}>{c.isActive ? 'Disable' : 'Enable'}</Button>
+                    <Button size="xs" variant="ghost" className="text-red-600" icon={<Trash2 className="h-3 w-3" />} onClick={() => setDeletingCountry(c)}>Delete</Button>
+                  </span>
+                ),
+            },
+          ]}
+          empty={<EmptyState icon={<Globe2 />} title="No destination countries" description="Add the countries you send to. Numbers in other countries are refused before routing." />}
+        />
+      </Card>
+
+      <Card padded={false}>
+        <CardHeader
+          title="Destination networks"
+          description="Numbers are matched to a network by their longest E.164 prefix, after the full number is validated for its country."
+          action={
+            <span className="flex items-center gap-2">
+              <Input value={netSearch} onChange={(e) => setNetSearch(e.target.value)} placeholder="Search networks" className="h-8 w-44 py-1 text-sm" aria-label="Search networks" />
+              {canManage && <Button size="xs" variant="secondary" icon={<Plus className="h-3 w-3" />} disabled={!countries.data?.length} onClick={() => setNetModal({ open: true, network: null })}>Add network</Button>}
+            </span>
+          }
+        />
+        <DataTable
+          rows={visibleNetworks}
           loading={networks.isLoading}
           error={networks.error}
+          rowClassName={(n) => (!n.isActive ? 'opacity-60' : '')}
           columns={[
             { key: 'n', header: 'Network', cell: (n) => <span><span className="font-medium">{n.name}</span><span className="block font-mono text-[11px] text-slate-400">{n.code}</span></span> },
-            { key: 'c', header: 'Country', cell: (n) => `${n.countryName} (${n.countryCode})` },
+            { key: 'c', header: 'Country', cell: (n) => n.countryName },
+            { key: 'i', header: 'ISO', cell: (n) => <span className="font-mono text-xs">{n.countryCode}</span> },
             { key: 'p', header: 'Prefixes', cell: (n) => <span className="font-mono text-xs">{n.prefixes.join(', ')}</span> },
-            { key: 'v', header: 'Providers', className: 'text-right', headerClassName: 'text-right', cell: (n) => <span className="tabular-nums">{n.providerCount ?? 0}</span> },
+            { key: 'f', header: 'Number format', cell: (n) => <span className="text-xs text-slate-600">{n.nationalNumberLengths.length ? `${n.nationalNumberLengths.join('/')} digits` : 'Country rules'}</span> },
+            {
+              key: 'v',
+              header: 'Providers',
+              cell: (n) => {
+                const viaCountry = countries.data?.find((c) => c.isoCode === n.countryCode)?.providers ?? [];
+                return n.providers.length || viaCountry.length ? (
+                  <span className="flex flex-wrap gap-1">
+                    {n.providers.map((p) => <Badge key={p.id} color="gray">{p.name}</Badge>)}
+                    {viaCountry.filter((p) => !n.providers.some((x) => x.id === p.id)).map((p) => <Badge key={p.id} color="violet">{p.name} (country)</Badge>)}
+                  </span>
+                ) : (
+                  <Badge color="red">No provider</Badge>
+                );
+              },
+            },
             { key: 's', header: 'Status', cell: (n) => <StatusBadge status={n.isActive ? 'ACTIVE' : 'INACTIVE'} /> },
             {
               key: 'x',
@@ -1197,17 +1470,58 @@ export function RoutingRulesPage() {
                 canManage && (
                   <span className="flex justify-end gap-1">
                     <Button size="xs" variant="secondary" icon={<Pencil className="h-3 w-3" />} onClick={() => setNetModal({ open: true, network: n })}>Edit</Button>
+                    <Button size="xs" variant="ghost" icon={<Power className="h-3 w-3" />} onClick={() => setToggleNetwork(n)}>{n.isActive ? 'Disable' : 'Enable'}</Button>
                     <Button size="xs" variant="ghost" className="text-red-600" icon={<Trash2 className="h-3 w-3" />} onClick={() => setDeleting(n)}>Delete</Button>
                   </span>
                 ),
             },
           ]}
-          empty={<EmptyState icon={<Globe2 />} title="No networks" description="Add destination networks so providers and rules can target them." />}
+          empty={<EmptyState icon={<Globe2 />} title={netSearch ? 'No matching networks' : 'No networks'} description={netSearch ? 'Try another search.' : 'Networks are optional: they let you route specific operators differently. Without them, whole-country providers serve the country.'} />}
         />
       </Card>
 
       <RuleModal open={modal.open} rule={modal.rule} onClose={() => setModal({ open: false, rule: null })} providers={providers.data ?? []} networks={networks.data ?? []} />
-      <NetworkModal open={netModal.open} network={netModal.network} onClose={() => setNetModal({ open: false, network: null })} />
+      <NetworkModal open={netModal.open} network={netModal.network} onClose={() => setNetModal({ open: false, network: null })} countries={countries.data ?? []} providers={providers.data ?? []} />
+      <CountryModal open={countryModal.open} country={countryModal.country} onClose={() => setCountryModal({ open: false, country: null })} providers={providers.data ?? []} />
+      <ConfirmDialog
+        open={!!toggleCountry}
+        onClose={() => setToggleCountry(null)}
+        tone={toggleCountry?.isActive ? 'danger' : 'primary'}
+        title={toggleCountry?.isActive ? `Disable ${toggleCountry?.name}?` : `Enable ${toggleCountry?.name}?`}
+        description={toggleCountry?.isActive ? `Every send to a ${toggleCountry?.name} number will be refused before routing (nothing charged), until it is enabled again.` : `Valid ${toggleCountry?.name} numbers become routable to the providers that serve them.`}
+        confirmLabel={toggleCountry?.isActive ? 'Disable country' : 'Enable country'}
+        loading={toggleCountryM.isPending}
+        onConfirm={() => toggleCountry && toggleCountryM.mutate(toggleCountry)}
+      />
+      <ConfirmDialog
+        open={!!toggleNetwork}
+        onClose={() => setToggleNetwork(null)}
+        tone={toggleNetwork?.isActive ? 'danger' : 'primary'}
+        title={toggleNetwork?.isActive ? `Disable ${toggleNetwork?.name}?` : `Enable ${toggleNetwork?.name}?`}
+        description={toggleNetwork?.isActive ? `Numbers on ${toggleNetwork?.prefixes.join(', ')} stop matching this network; only providers serving the whole country can still deliver to them. History is kept.` : 'Numbers on its prefixes are matched to this network again.'}
+        confirmLabel={toggleNetwork?.isActive ? 'Disable network' : 'Enable network'}
+        loading={toggleNetworkM.isPending}
+        onConfirm={() => toggleNetwork && toggleNetworkM.mutate(toggleNetwork)}
+      />
+      <ConfirmDialog
+        open={!!deletingCountry}
+        onClose={() => setDeletingCountry(null)}
+        title={`Delete ${deletingCountry?.name ?? 'country'}?`}
+        description={
+          <span className="block space-y-2">
+            <span className="block">Numbers in {deletingCountry?.name} will be refused before routing (nothing is charged).{deletingCountry?.providers.length ? ` It is removed from the ${deletingCountry.providers.length} provider${deletingCountry.providers.length === 1 ? '' : 's'} that serve it.` : ''}</span>
+            {!!deletingCountry?.networkCount && (
+              <span className="block font-medium text-red-700">
+                Its {deletingCountry.networkCount} network{deletingCountry.networkCount === 1 ? '' : 's'} ({networks.data?.filter((n) => n.countryCode === deletingCountry.isoCode).map((n) => n.name).join(', ')}) will be deleted too.
+              </span>
+            )}
+            <span className="block text-xs text-slate-500">Not possible while a routing rule targets it or one of its networks, or once messages have been sent there — disable it instead in that case.</span>
+          </span>
+        }
+        confirmLabel="Delete country"
+        loading={deleteCountryM.isPending}
+        onConfirm={() => deletingCountry && deleteCountryM.mutate(deletingCountry)}
+      />
       <ConfirmDialog
         open={!!deleting}
         onClose={() => setDeleting(null)}
@@ -1215,7 +1529,7 @@ export function RoutingRulesPage() {
         description={
           <span className="block space-y-2">
             <span className="block">
-              Numbers starting with <span className="font-mono">{deleting?.prefixes.join(', ')}</span> will no longer match this network; they will only be routed to providers that serve all destinations.
+              Numbers starting with <span className="font-mono">{deleting?.prefixes.join(', ')}</span> will no longer match this network; only providers serving the whole country can still deliver to them.
               {deleting?.providerCount ? ` It is removed from the ${deleting.providerCount} provider${deleting.providerCount === 1 ? '' : 's'} that serve it.` : ''}
             </span>
             <span className="block text-xs text-slate-500">Not possible while a routing rule targets it, or once messages have been routed to it — deactivate it instead in that case.</span>
@@ -1251,47 +1565,73 @@ export function RoutingRulesPage() {
 
 // ── Routing simulator ───────────────────────────────────────────────────
 
+const OUTCOME: Record<RoutingSimulation['outcome'], { tone: 'success' | 'danger' | 'warning'; title: string }> = {
+  ROUTED: { tone: 'success', title: 'Would be sent' },
+  REJECTED_BEFORE_ROUTING: { tone: 'danger', title: 'Rejected before routing' },
+  NO_ELIGIBLE_PROVIDER: { tone: 'danger', title: 'No eligible provider' },
+  NO_CAPACITY: { tone: 'danger', title: 'No provider has enough usable capacity' },
+  INSUFFICIENT_CREDITS: { tone: 'warning', title: 'Insufficient credits' },
+};
+
 export function RoutingSimulatorPage() {
   const networks = useQuery({ queryKey: ['admin', 'routing', 'networks'], queryFn: businessService.networks });
-  const [form, setForm] = useState({ countryCode: 'RW', networkId: '', senderName: '', recipients: '1000', message: 'Hello! Your order has been confirmed. Thank you for choosing us.' });
+  const countries = useQuery({ queryKey: ['admin', 'routing', 'countries'], queryFn: businessService.countries });
+  const orgs = useQuery({ queryKey: ['admin', 'organizations', 'simulator'], queryFn: () => adminService.organizations({ page: 1, limit: 100 }) });
+  const [form, setForm] = useState({ phone: '', countryCode: '', networkId: '', organizationId: '', senderName: '', recipients: '1', message: 'Hello! Your order has been confirmed. Thank you for choosing us.' });
+  const byPhone = form.phone.trim().length > 0;
   const sim = useApiMutation(() =>
     businessService.simulateRouting({
-      networkId: form.networkId || null,
-      countryCode: form.networkId ? null : form.countryCode || null,
+      phone: byPhone ? form.phone.trim() : null,
+      networkId: !byPhone && form.networkId ? form.networkId : null,
+      countryCode: !byPhone && !form.networkId ? form.countryCode || null : null,
+      organizationId: form.organizationId || null,
       senderName: form.senderName.trim() || null,
       recipients: Number(form.recipients),
       message: form.message,
     }),
   );
   const s = sim.data;
-  const countries = [...new Map((networks.data ?? []).map((n) => [n.countryCode, n.countryName])).entries()];
-  const valid = Number.isInteger(Number(form.recipients)) && Number(form.recipients) >= 1 && form.message.length > 0;
+  const valid = Number.isInteger(Number(form.recipients)) && Number(form.recipients) >= 1 && form.message.length > 0 && (byPhone || !!form.countryCode || !!form.networkId);
   const row = (label: string, value: React.ReactNode) => (
     <div className="flex flex-col gap-0.5 border-b border-slate-100 py-3 last:border-0 sm:flex-row sm:gap-6">
       <dt className="w-44 shrink-0 text-sm text-slate-500">{label}</dt>
       <dd className="min-w-0 text-sm text-slate-900">{value}</dd>
     </div>
   );
+  const destinationText = (d: NonNullable<RoutingSimulation['destination']>) => [d.countryName ?? d.countryCode, d.network?.name ?? 'other numbers'].filter(Boolean).join(' / ');
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Routing simulator"
-        description="See exactly how a send would be routed right now. Nothing is sent and no credits or provider capacity are used."
+        description="See exactly how a send would be validated and routed right now, using the same engine as real sends. Nothing is sent and no credits or provider capacity are used."
         breadcrumbs={[{ label: 'SMS providers', to: '/admin/providers' }, { label: 'Routing', to: '/admin/routing' }, { label: 'Simulator' }]}
       />
       <div className="grid gap-6 xl:grid-cols-[360px_1fr]">
         <Card className="h-fit space-y-4">
-          <Field label="Destination country">
-            <Select value={form.countryCode} onChange={(e) => setForm((f) => ({ ...f, countryCode: e.target.value, networkId: '' }))}>
-              <option value="">Other / unknown</option>
-              {countries.map(([c, n]) => <option key={c} value={c}>{n} ({c})</option>)}
-            </Select>
+          <Field label="Destination number" hint="E.164, e.g. +250788123456 — validated exactly like a real send">
+            <Input value={form.phone} onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))} className="font-mono" placeholder="+250788123456" />
           </Field>
-          <Field label="Destination network">
-            <Select value={form.networkId} onChange={(e) => setForm((f) => ({ ...f, networkId: e.target.value }))}>
-              <option value="">Any / unknown network</option>
-              {(networks.data ?? []).filter((n) => !form.countryCode || n.countryCode === form.countryCode).map((n) => <option key={n.id} value={n.id}>{n.name}</option>)}
+          {!byPhone && (
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="…or country">
+                <Select value={form.countryCode} onChange={(e) => setForm((f) => ({ ...f, countryCode: e.target.value, networkId: '' }))}>
+                  <option value="">Choose…</option>
+                  {(countries.data ?? []).map((c) => <option key={c.id} value={c.isoCode}>{c.name} ({c.isoCode})</option>)}
+                </Select>
+              </Field>
+              <Field label="Network">
+                <Select value={form.networkId} onChange={(e) => setForm((f) => ({ ...f, networkId: e.target.value }))}>
+                  <option value="">Other numbers</option>
+                  {(networks.data ?? []).filter((n) => n.countryCode === form.countryCode).map((n) => <option key={n.id} value={n.id}>{n.name}</option>)}
+                </Select>
+              </Field>
+            </div>
+          )}
+          <Field label="Customer" hint="Optional — checks their credit balance">
+            <Select value={form.organizationId} onChange={(e) => setForm((f) => ({ ...f, organizationId: e.target.value }))}>
+              <option value="">Don't check credits</option>
+              {(orgs.data?.data ?? []).map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
             </Select>
           </Field>
           <div className="grid grid-cols-2 gap-3">
@@ -1303,30 +1643,55 @@ export function RoutingSimulatorPage() {
         </Card>
 
         {!s ? (
-          <Card><EmptyState icon={<FlaskConical />} title="Run a simulation" description="Pick a destination and message to see which provider would be used, why, and at what cost." /></Card>
+          <Card><EmptyState icon={<FlaskConical />} title="Run a simulation" description="Enter a number (or pick a destination) and a message to see whether it is valid, which provider would be used, why, and at what cost." /></Card>
         ) : (
           <div className="space-y-4">
-            <Card className={cn('ring-1', s.selected ? 'ring-emerald-200' : 'ring-red-200')}>
+            <Alert tone={OUTCOME[s.outcome].tone} title={OUTCOME[s.outcome].title}>{s.outcomeText}</Alert>
+            <Card className={cn('ring-1', s.outcome === 'ROUTED' ? 'ring-emerald-200' : 'ring-red-200')}>
               <dl>
-                {row('Destination', s.destination.network ? `${s.destination.countryCode} / ${s.destination.network.name}` : s.destination.countryCode ? `${s.destination.countryCode} / unknown network` : 'Other destinations')}
+                {s.validation.checked &&
+                  row(
+                    'Validation',
+                    s.validation.ok ? (
+                      <span className="text-emerald-700">Valid <span className="font-mono text-slate-700">{s.validation.phone}</span></span>
+                    ) : (
+                      <span className="text-red-600">{s.validation.reason}</span>
+                    ),
+                  )}
+                {row('Country', s.destination?.countryName ? `${s.destination.countryName} (${s.destination.countryCode})` : s.validation.country ? `${s.validation.country.name} (${s.validation.country.code})` : '—')}
+                {row('Network', s.destination ? (s.destination.network ? s.destination.network.name : 'Other numbers (no specific network)') : '—')}
                 {row('Required segments', <span className="tabular-nums">{fmtNumber(s.message.totalSegments)} <span className="text-slate-500">({fmtNumber(s.message.segmentsPerRecipient)} per recipient · {s.message.encoding === 'GSM7' ? 'GSM-7' : 'Unicode'} · {fmtNumber(s.message.characterCount)} characters)</span></span>)}
-                {row('Selected provider', s.selected ? <span className="text-base font-semibold">{s.selected.name} <span className="text-sm font-normal text-slate-500">· {fmtMoney(s.selected.costPerSegment)}/segment · {fmtNumber(s.selected.available)} usable</span></span> : <span className="font-semibold text-red-600">None — the send would be refused and nothing charged</span>)}
-                {row('Reason', s.reason)}
-                {row('Rule', s.rule ? `#${s.rule.priority} ${s.rule.name} (${STRATEGY[s.rule.strategy].label})` : 'Default routing (no rule matches)')}
-                {row('Backup', s.backup ? `${s.backup.name} · ${fmtMoney(s.backup.costPerSegment)}/segment` : <span className="text-amber-700">None — if the selected provider becomes unavailable, sends are refused</span>)}
-                {row(
-                  'Rejected providers',
-                  s.rejected.length ? (
-                    <ul className="space-y-0.5">{s.rejected.map((r) => <li key={r.providerId}><span className="font-medium">{r.name}</span> <span className="text-slate-500">— {r.reason}</span></li>)}</ul>
-                  ) : (
-                    'None'
-                  ),
+                {s.destination && (
+                  <>
+                    {row('Selected provider', s.selected ? <span className="text-base font-semibold">{s.selected.name} <span className="text-sm font-normal text-slate-500">· {fmtMoney(s.selected.costPerSegment)}/segment · {fmtNumber(s.selected.available)} usable</span></span> : <span className="font-semibold text-red-600">None — the send would be refused and nothing charged</span>)}
+                    {row('Reason', s.reason)}
+                    {row('Rule', s.rule ? `#${s.rule.priority} ${s.rule.name}` : 'Default routing (no rule matches)')}
+                    {row('Strategy', s.strategy ? STRATEGY[s.strategy].label : '—')}
+                    {row('Backup', s.backup ? `${s.backup.name} · ${fmtMoney(s.backup.costPerSegment)}/segment · ${fmtNumber(s.backup.available)} usable` : <span className="text-amber-700">None — if the selected provider becomes unavailable, sends are refused</span>)}
+                  </>
                 )}
+                {s.customer && row('Customer credits', <span className={s.customer.sufficient ? '' : 'font-semibold text-red-600'}>{s.customer.name}: {fmtNumber(s.customer.balance)} available · {fmtNumber(s.customer.required)} required</span>)}
                 {s.allocations.length > 1 && row('Capacity split', <ul className="space-y-0.5">{s.allocations.map((a) => <li key={a.providerId}>{a.name}: {fmtNumber(a.recipients)} recipients · {fmtNumber(a.segments)} segments · {fmtMoney(a.estimatedCost)}</li>)}</ul>)}
               </dl>
-              {s.unroutedRecipients > 0 && <Alert tone="danger" className="mt-3">Not enough eligible capacity for {fmtNumber(s.unroutedRecipients)} recipients — a real send would be refused and nothing charged.</Alert>}
+              {s.unroutedRecipients > 0 && s.selected && <Alert tone="danger" className="mt-3">Not enough eligible capacity for {fmtNumber(s.unroutedRecipients)} recipients — a real send would be refused and nothing charged.</Alert>}
               {s.sender && (!s.sender.known || !s.sender.approved) && <Alert tone="warning" className="mt-3">Sender ID "{s.sender.name}" {s.sender.known ? 'is not approved' : 'does not exist'}; a real send would be rejected before routing.</Alert>}
             </Card>
+
+            {s.candidates.length > 0 && (
+              <Card padded={false}>
+                <CardHeader title="Providers considered" description={s.destination ? `For ${destinationText(s.destination)}` : undefined} />
+                <DataTable
+                  rows={s.candidates.map((c) => ({ ...c, id: c.providerId }))}
+                  columns={[
+                    { key: 'n', header: 'Provider', cell: (c) => <span className="font-medium">{c.name}{c.providerId === s.selected?.providerId && <Badge color="green" className="ml-2">Selected</Badge>}{c.providerId === s.backup?.providerId && <Badge color="blue" className="ml-2">Backup</Badge>}</span> },
+                    { key: 'c', header: 'Cost', className: 'text-right', headerClassName: 'text-right', cell: (c) => <span className="tabular-nums">{fmtMoney(c.costPerSegment)}</span> },
+                    { key: 'a', header: 'Usable capacity', className: 'text-right', headerClassName: 'text-right', cell: (c) => <span className="tabular-nums">{fmtNumber(c.available)}</span> },
+                    { key: 'e', header: 'Eligible', cell: (c) => (c.eligible ? <Badge color="green">Eligible</Badge> : <Badge color="red">Rejected</Badge>) },
+                    { key: 'r', header: 'Reason', cell: (c) => <span className="text-xs text-slate-600">{c.reasons.join('; ') || '—'}</span> },
+                  ]}
+                />
+              </Card>
+            )}
 
             <div className="grid gap-4 sm:grid-cols-3">
               <StatCard label="Customer pays" icon={<Banknote />} value={s.estimate.revenue ? fmtMoney(s.estimate.revenue) : '—'} hint={s.estimate.revenuePerCredit ? `${fmtNumber(s.message.totalCredits)} credits × ${fmtMoney(s.estimate.revenuePerCredit)}` : 'no sales history yet'} />

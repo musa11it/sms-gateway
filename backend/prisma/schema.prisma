@@ -135,11 +135,15 @@ enum SmsBatchStatus {
 enum SmsRecipientStatus {
   QUEUED
   PROCESSING
+  // Accepted by the provider (charged).
   SENT
   DELIVERED
+  // Accepted, then the network reported non-delivery (stays charged).
   FAILED
   EXPIRED
   CANCELLED
+  // Never accepted by a provider: rejected at submission or not accepted in time (refunded).
+  REJECTED
 }
 
 enum DeliveryReportSource {
@@ -657,7 +661,7 @@ model SmsProvider {
   // Legacy (pre-network routing) prefix list; kept for history, no longer used for routing.
   routePrefixes         Json
   priority              Int            @default(100)
-  // Destination capability: the networks in `networks`, or every destination when servesAllDestinations.
+  // Legacy catch-all flag, no longer used: capability is explicit per country (`countries`) or network (`networks`).
   servesAllDestinations Boolean        @default(false)
   supportsSenderId      Boolean        @default(true)
   health                ProviderHealth @default(HEALTHY)
@@ -683,25 +687,70 @@ model SmsProvider {
   registrations SenderIdRegistration[]
   lots          ProviderCapacityLot[]
   networks      SmsProviderNetwork[]
+  countries     SmsProviderCountry[]
   primaryRules  SmsRoutingRule[]         @relation("RulePrimaryProvider")
 
   @@index([status])
   @@map("sms_providers")
 }
 
+enum NumberValidationMode {
+  // Number must match the country's numbering plan (valid ranges and lengths).
+  STRICT
+  // Number must only have a possible length for the country (for new ranges not yet in the plan data).
+  LENGTH
+}
+
+// Destination countries the platform sends to. A number is only routable if its country is
+// configured and active here. The calling code comes from the numbering-plan data (by ISO code).
+model SmsCountry {
+  id                    String               @id @default(uuid()) @db.Char(36)
+  isoCode               String               @unique @db.Char(2)
+  name                  String
+  isActive              Boolean              @default(true)
+  validationMode        NumberValidationMode @default(STRICT)
+  // Optional extra rule: accepted national number lengths (digits after the country code). Empty = plan only.
+  nationalNumberLengths Json
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+
+  networks  SmsNetwork[]
+  providers SmsProviderCountry[]
+
+  @@map("sms_countries")
+}
+
+// A provider can deliver to every number of a country (any network, including numbers on no configured network).
+model SmsProviderCountry {
+  providerId String   @db.Char(36)
+  countryId  String   @db.Char(36)
+  createdAt  DateTime @default(now())
+
+  provider SmsProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  country  SmsCountry  @relation(fields: [countryId], references: [id], onDelete: Cascade)
+
+  @@id([providerId, countryId])
+  @@index([countryId])
+  @@map("sms_provider_countries")
+}
+
 // Destination networks (country + mobile network, identified by E.164 prefixes). Database-driven.
 model SmsNetwork {
-  id          String   @id @default(uuid()) @db.Char(36)
-  code        String   @unique
-  name        String
-  countryCode String   @db.Char(2)
-  countryName String
+  id                    String   @id @default(uuid()) @db.Char(36)
+  code                  String   @unique
+  name                  String
+  countryCode           String   @db.Char(2)
+  // Copy of the country name (kept in sync); the country row is authoritative.
+  countryName           String
   // E.164 prefixes (JSON array of strings, e.g. ["+25078", "+25079"]).
-  prefixes    Json
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  prefixes              Json
+  // Optional extra rule: accepted national number lengths for this network (null/empty = country rules).
+  nationalNumberLengths Json?
+  isActive              Boolean  @default(true)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
 
+  country    SmsCountry           @relation(fields: [countryCode], references: [isoCode], onDelete: Restrict)
   providers  SmsProviderNetwork[]
   rules      SmsRoutingRule[]
   recipients SmsRecipient[]
@@ -1350,9 +1399,12 @@ model SmsRecipient {
   providerId        String?            @db.Char(36)
   // Provider cost of this recipient's segments (cost of the capacity lots consumed at routing time).
   providerCost      Decimal?           @db.Decimal(14, 4)
-  // Routing decision: destination network and the rule that selected the provider (null = default routing).
+  // Routing decision: destination country/network, the rule that selected the provider (null = default
+  // routing) and a short note (e.g. backup used and why). Never recalculated.
+  countryCode       String?            @db.Char(2)
   networkId         String?            @db.Char(36)
   routingRuleId     String?            @db.Char(36)
+  routingNote       String?
   capacityReleased  Boolean            @default(false)
   providerMessageId String?            @unique
   errorCode         String?
@@ -1601,30 +1653,30 @@ model SimulatorRecord {
 // Platform-level credentials for trusted external systems (e.g. the finance system). Unlike
 // api_keys these are not tied to an organization; a Super Admin issues, scopes and revokes them.
 model IntegrationClient {
-  id          String    @id @default(uuid()) @db.Char(36)
-  name        String
+  id                 String    @id @default(uuid()) @db.Char(36)
+  name               String
   // Public identifier embedded in the key; used for lookup.
-  prefix      String    @unique
+  prefix             String    @unique
   // HMAC-SHA256(pepper, secret). The raw secret is shown exactly once.
-  keyHash     String
-  lastFour    String
+  keyHash            String
+  lastFour           String
   // Rotation overlap: the previous secret keeps working until previousValidUntil.
   previousKeyHash    String?
   previousValidUntil DateTime?
   rotatedAt          DateTime?
-  scopes      Json
-  allowedIps  Json
-  isEnabled   Boolean   @default(true)
-  expiresAt   DateTime?
+  scopes             Json
+  allowedIps         Json
+  isEnabled          Boolean   @default(true)
+  expiresAt          DateTime?
   // Non-interactive service account the credential acts as (audit trail, ownership columns).
-  userId      String?   @db.Char(36)
-  createdById String    @db.Char(36)
-  lastUsedAt  DateTime?
-  lastUsedIp  String?
-  usageCount  Int       @default(0)
-  revokedAt   DateTime?
-  revokedById String?   @db.Char(36)
-  createdAt   DateTime  @default(now())
+  userId             String?   @db.Char(36)
+  createdById        String    @db.Char(36)
+  lastUsedAt         DateTime?
+  lastUsedIp         String?
+  usageCount         Int       @default(0)
+  revokedAt          DateTime?
+  revokedById        String?   @db.Char(36)
+  createdAt          DateTime  @default(now())
 
   @@map("integration_clients")
 }

@@ -17,7 +17,7 @@ adminSmsRouter.get(
   asyncHandler(async (req, res) => {
     const q = parse(
       paginationSchema.extend({
-        status: z.enum(['QUEUED', 'PROCESSING', 'SENT', 'DELIVERED', 'FAILED', 'EXPIRED', 'CANCELLED']).optional(),
+        status: z.enum(['QUEUED', 'PROCESSING', 'SENT', 'DELIVERED', 'FAILED', 'EXPIRED', 'CANCELLED', 'REJECTED']).optional(),
         organizationId: z.string().uuid().optional(),
         search: z.string().trim().max(40).optional(),
         provider: z.string().max(40).optional(),

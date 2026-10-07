@@ -259,7 +259,7 @@ export function MessageDrawer({ id, onClose, fetcher }: { id: string | null; onC
     enabled: !!id,
     refetchInterval: (q) => (q.state.data && ['QUEUED', 'PROCESSING', 'SENT'].includes(q.state.data.status) ? 3000 : false),
   });
-  const failed = m && ['FAILED', 'EXPIRED', 'CANCELLED'].includes(m.status);
+  const failed = m && ['FAILED', 'EXPIRED', 'CANCELLED', 'REJECTED'].includes(m.status);
   // Furthest step reached; failed messages were rejected at submission (no provider id) or later.
   const reached = !m ? -1 : m.status === 'CANCELLED' ? 0 : failed ? (m.providerMessageId ? 2 : 1) : STATUS_FLOW.indexOf(m.status);
   return (
@@ -370,7 +370,7 @@ export function SmsHistoryPage() {
           <Input placeholder="Search phone number…" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} className="max-w-xs" />
           <Select value={status} onChange={(e) => { setStatus(e.target.value); setPage(1); }} className="w-auto">
             <option value="">All statuses</option>
-            {['QUEUED', 'PROCESSING', 'SENT', 'DELIVERED', 'FAILED', 'EXPIRED', 'CANCELLED'].map((s) => <option key={s} value={s}>{titleCase(s)}</option>)}
+            {['QUEUED', 'PROCESSING', 'SENT', 'DELIVERED', 'FAILED', 'REJECTED', 'EXPIRED', 'CANCELLED'].map((s) => <option key={s} value={s}>{titleCase(s)}</option>)}
           </Select>
           <Select value={source} onChange={(e) => { setSource(e.target.value); setPage(1); }} className="w-auto">
             <option value="">All sources</option>

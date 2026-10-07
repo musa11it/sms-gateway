@@ -35,12 +35,12 @@ export interface Provider {
   healthNote: string | null;
   minimumCapacity: number;
   supportsSenderId: boolean;
-  servesAllDestinations: boolean;
   usagePercent: number;
   remainingValue: string;
   averageRemainingCost: string | null;
   openLots: number;
   networks: { id: string; code: string; name: string }[];
+  countries: { id: string; isoCode: string; name: string }[];
   routable: boolean;
 }
 
@@ -132,10 +132,30 @@ export interface SmsNetwork {
   name: string;
   countryCode: string;
   countryName: string;
+  callingCode: string | null;
   prefixes: string[];
+  nationalNumberLengths: number[];
   isActive: boolean;
   providerCount?: number;
+  providers: { id: string; name: string; code: string }[];
 }
+
+export type CountryStatus = 'CONFIGURED' | 'NETWORKS_ONLY' | 'PARTIAL' | 'NO_PROVIDER' | 'INACTIVE';
+
+export interface SmsCountry {
+  id: string;
+  isoCode: string;
+  name: string;
+  callingCode: string | null;
+  isActive: boolean;
+  validationMode: 'STRICT' | 'LENGTH';
+  nationalNumberLengths: number[];
+  networkCount: number;
+  providers: { id: string; name: string; code: string }[];
+  status: CountryStatus;
+}
+
+export type RouteStatus = 'CONFIGURED' | 'UNSUPPORTED' | 'NO_ELIGIBLE_PROVIDER' | 'PROVIDER_UNAVAILABLE';
 
 export type RoutingStrategy = 'LOWEST_COST' | 'PRIORITY' | 'PRIMARY_BACKUP';
 
@@ -149,7 +169,9 @@ export interface RouteSummary {
 
 export interface RoutingOverviewRow extends RouteSummary {
   destination: string;
+  countryCode: string;
   networkId: string | null;
+  status: RouteStatus;
   rule: { id: string; name: string; strategy: RoutingStrategy } | null;
   strategy: RoutingStrategy;
 }
@@ -177,19 +199,25 @@ export interface RoutingRule {
   shadowedBy: { id: string; name: string } | null;
 }
 
+export type SimulationOutcome = 'ROUTED' | 'REJECTED_BEFORE_ROUTING' | 'NO_ELIGIBLE_PROVIDER' | 'NO_CAPACITY' | 'INSUFFICIENT_CREDITS';
+
 export interface RoutingSimulation {
+  outcome: SimulationOutcome;
+  outcomeText: string;
   message: { encoding: 'GSM7' | 'UCS2'; characterCount: number; segmentsPerRecipient: number; totalSegments: number; creditsPerRecipient: number; totalCredits: number; tooLong: boolean };
   sender: { name: string; known: boolean; approved: boolean } | null;
-  destination: { countryCode: string | null; network: { id: string; name: string; code: string } | null };
+  validation: { checked: boolean; ok: boolean; phone: string | null; code: string | null; reason: string | null; country: { code: string; name: string } | null };
+  destination: { countryCode: string | null; countryName: string | null; network: { id: string; name: string; code: string } | null } | null;
   rule: { id: string; name: string; priority: number; strategy: RoutingStrategy } | null;
-  strategy: RoutingStrategy;
-  candidates: { providerId: string; name: string; code: string; role: 'primary' | 'backup' | 'candidate'; eligible: boolean; reasons: string[]; costPerSegment: string; capacity: number; reserve: number; available: number; priority: number; health: Provider['health'] }[];
+  strategy: RoutingStrategy | null;
+  candidates: { providerId: string; name: string; code: string; role: 'primary' | 'backup' | 'candidate'; eligible: boolean; reasons: string[]; reasonCodes: string[]; costPerSegment: string; capacity: number; reserve: number; available: number; priority: number; health: Provider['health'] }[];
   selected: { providerId: string; name: string; costPerSegment: string; available: number } | null;
   backup: { providerId: string; name: string; costPerSegment: string; available: number } | null;
-  rejected: { providerId: string; name: string; reason: string }[];
+  rejected: { providerId: string; name: string; reason: string; code?: string }[];
   reason: string;
   allocations: { providerId: string; name: string; recipients: number; segments: number; estimatedCost: string }[];
   unroutedRecipients: number;
+  customer: { organizationId: string; name: string; balance: number; required: number; sufficient: boolean } | null;
   estimate: { providerCost: string; revenue: string | null; revenuePerCredit: string | null; grossMargin: string | null };
 }
 
@@ -313,6 +341,10 @@ export const businessService = {
   createProvider: (body: Record<string, unknown>) => post<Provider>('/admin/providers', body),
   purchaseCapacity: (id: string, body: { quantity: number; unitCost?: string; notes?: string }) => post<ProviderPurchase>(`/admin/providers/${id}/purchase`, body),
   adjustCapacity: (id: string, body: { amount: number; reason: string; reference: string; unitCost?: string }) => post(`/admin/providers/${id}/adjust`, body),
+  countries: () => get<SmsCountry[]>('/admin/routing/countries'),
+  createCountry: (body: Record<string, unknown>) => post<SmsCountry>('/admin/routing/countries', body),
+  updateCountry: (id: string, body: Record<string, unknown>) => patch<SmsCountry>(`/admin/routing/countries/${id}`, body),
+  deleteCountry: (id: string) => del(`/admin/routing/countries/${id}`),
   networks: () => get<SmsNetwork[]>('/admin/routing/networks'),
   createNetwork: (body: Record<string, unknown>) => post<SmsNetwork>('/admin/routing/networks', body),
   updateNetwork: (id: string, body: Record<string, unknown>) => patch<SmsNetwork>(`/admin/routing/networks/${id}`, body),

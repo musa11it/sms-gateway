@@ -18,17 +18,20 @@ walletRouter.get(
     const wallet = await getWallet(req.org!.id);
     const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
     const soon = new Date(Date.now() + EXPIRING_SOON_DAYS * 86_400_000);
-    const [purchased, used, expiring, nextLot] = await Promise.all([
+    const [purchased, used, expiring, nextLot, inFlight] = await Promise.all([
       prisma.walletTransaction.aggregate({ where: { organizationId: req.org!.id, type: 'PURCHASE', createdAt: { gte: monthStart } }, _sum: { amount: true } }),
       prisma.walletTransaction.aggregate({ where: { organizationId: req.org!.id, type: { in: ['SMS_DEBIT', 'REFUND'] }, createdAt: { gte: monthStart } }, _sum: { amount: true } }),
       prisma.smsCreditLot.aggregate({ where: { walletId: wallet.id, remaining: { gt: 0 }, expiresAt: { not: null, lte: soon } }, _sum: { remaining: true } }),
       prisma.smsCreditLot.findFirst({ where: { walletId: wallet.id, remaining: { gt: 0 }, expiresAt: { not: null } }, orderBy: { expiresAt: 'asc' }, select: { expiresAt: true, remaining: true } }),
+      // Credits held for messages a provider has not accepted yet (refunded if they are rejected).
+      prisma.smsRecipient.aggregate({ where: { organizationId: req.org!.id, status: { in: ['QUEUED', 'PROCESSING'] }, refunded: false }, _sum: { credits: true } }),
     ]);
     return ok(res, {
       balance: wallet.balance,
       lowBalanceThreshold: wallet.lowBalanceThreshold,
       isLow: wallet.balance < wallet.lowBalanceThreshold,
       thisMonth: { purchased: purchased._sum.amount ?? 0, consumed: -(used._sum.amount ?? 0) },
+      reserved: inFlight._sum.credits ?? 0,
       expiringSoon: { credits: expiring._sum.remaining ?? 0, withinDays: EXPIRING_SOON_DAYS, nextExpiry: nextLot ? { at: nextLot.expiresAt, credits: nextLot.remaining } : null },
       updatedAt: wallet.updatedAt,
     });
