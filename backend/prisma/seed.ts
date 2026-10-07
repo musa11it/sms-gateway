@@ -126,7 +126,16 @@ async function seedPricingTiers() {
  * calls the simulated provider), so it appears as genuine provider spend in finance reports.
  */
 async function seedProviders(superAdminId: string) {
-  // Destination networks (Super Admin manages these and which providers serve them).
+  // Destination countries and networks (Super Admin manages these and which providers serve them).
+  // Numbers in countries that are not configured here are refused before routing.
+  const countries: Record<string, string> = {};
+  for (const c of [
+    { isoCode: 'RW', name: 'Rwanda', nationalNumberLengths: [9] },
+    { isoCode: 'KE', name: 'Kenya', nationalNumberLengths: [9] },
+  ]) {
+    const row = await prisma.smsCountry.upsert({ where: { isoCode: c.isoCode }, create: c, update: {} });
+    countries[c.isoCode] = row.id;
+  }
   const networks: Record<string, string> = {};
   for (const n of [
     { code: 'RW-MTN', name: 'MTN Rwanda', prefixes: ['+25078', '+25079'] },
@@ -136,9 +145,9 @@ async function seedProviders(superAdminId: string) {
     networks[n.code] = row.id;
   }
   const defs = [
-    { code: 'MTN', name: 'MTN Rwanda', type: 'MNO' as const, costPerSms: '8.0000', networks: ['RW-MTN'], servesAll: false, priority: 10, initial: 100_000, notes: 'Direct connection for MTN subscribers.' },
-    { code: 'AIRTEL', name: 'Airtel Rwanda', type: 'MNO' as const, costPerSms: '8.5000', networks: ['RW-AIRTEL'], servesAll: false, priority: 10, initial: 50_000, notes: 'Direct connection for Airtel subscribers.' },
-    { code: 'GENERIC', name: 'Global Aggregator', type: 'AGGREGATOR' as const, costPerSms: '11.0000', networks: [], servesAll: true, priority: 100, initial: 20_000, notes: 'Catch-all route for other networks and international numbers.' },
+    { code: 'MTN', name: 'MTN Rwanda', type: 'MNO' as const, costPerSms: '8.0000', networks: ['RW-MTN'], countries: [] as string[], priority: 10, initial: 100_000, notes: 'Direct connection for MTN subscribers.' },
+    { code: 'AIRTEL', name: 'Airtel Rwanda', type: 'MNO' as const, costPerSms: '8.5000', networks: ['RW-AIRTEL'], countries: [] as string[], priority: 10, initial: 50_000, notes: 'Direct connection for Airtel subscribers.' },
+    { code: 'GENERIC', name: 'Global Aggregator', type: 'AGGREGATOR' as const, costPerSms: '11.0000', networks: [], countries: ['RW', 'KE'], priority: 100, initial: 20_000, notes: 'Serves every valid number in Rwanda and Kenya.' },
   ];
   const { purchaseCapacity } = await import('../src/modules/providers/provider.service');
   for (const d of defs) {
@@ -153,7 +162,7 @@ async function seedProviders(superAdminId: string) {
         currency: 'RWF',
         costPerSms: new Prisma.Decimal(d.costPerSms),
         routePrefixes: [],
-        servesAllDestinations: d.servesAll,
+        countries: { create: d.countries.map((iso) => ({ countryId: countries[iso] })) },
         networks: { create: d.networks.map((code) => ({ networkId: networks[code] })) },
         priority: d.priority,
         notes: d.notes,

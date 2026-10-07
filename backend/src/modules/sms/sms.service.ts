@@ -14,7 +14,9 @@ import { audit } from '../audit-logs/audit.service';
 import { notifyOrganization } from '../notifications/notification.service';
 import { getSetting } from '../settings/settings.service';
 import { applyLedgerEntry, scheduleLowBalanceCheck } from '../wallet/wallet.service';
+import { checkDestination } from '../providers/destination.service';
 import { releaseMessageCapacity, releaseRecipientCapacity, routeAndReserve } from '../providers/provider.service';
+import { loadRoutingContext } from '../providers/routing.service';
 import { checkAllocationAlert, reserveSenderCredits } from '../senders/allocation.service';
 import { emitWebhookEvent } from '../webhooks/webhook.service';
 import { analyzeMessage, assertSendable } from './segmentation.service';
@@ -43,15 +45,26 @@ export interface SendSmsInput {
 
 // ── Quote (pure, server-side cost calculation) ──────────────────────────
 
+/**
+ * Normalise and validate every recipient before anything is priced, reserved or charged: the
+ * number must be valid for its country's numbering plan and the country must be configured for
+ * sending (destination.service). Invalid/unsupported numbers are returned with the reason.
+ */
 export async function prepareRecipients(organizationId: string, raw: (string | RecipientInput)[]) {
   const cc = await getSetting('sms.defaultCountryCode');
+  const ctx = await loadRoutingContext(prisma);
   const invalid: FieldError[] = [];
   const unique = new Map<string, RecipientInput>();
   raw.forEach((r, i) => {
     const input = typeof r === 'string' ? { phone: r } : r;
     const phone = normalizePhone(input.phone, cc);
-    if (!phone) invalid.push({ field: `recipients.${i}`, message: `"${String(input.phone).slice(0, 30)}" is not a valid phone number` });
-    else if (!unique.has(phone)) unique.set(phone, { phone, contactId: input.contactId ?? null });
+    if (!phone) {
+      invalid.push({ field: `recipients.${i}`, message: `"${String(input.phone).slice(0, 30)}" is not a valid phone number` });
+      return;
+    }
+    const dest = checkDestination(ctx, phone);
+    if (!dest.ok) invalid.push({ field: `recipients.${i}`, message: `${phone}: ${dest.reason}` });
+    else if (!unique.has(dest.phone)) unique.set(dest.phone, { phone: dest.phone, contactId: input.contactId ?? null });
   });
 
   // Honour opt-outs: never send to unsubscribed or blocked contacts.
@@ -108,7 +121,9 @@ export async function sendSms(input: SendSmsInput) {
 
   const prepared = await prepareRecipients(org.id, input.recipients);
   if (prepared.invalid.length && input.source !== 'CAMPAIGN') {
-    throw AppError.unprocessable(`${prepared.invalid.length} recipient(s) have invalid phone numbers`, 'INVALID_RECIPIENTS', prepared.invalid.slice(0, 50));
+    // Nothing is reserved or charged: the whole request is refused with a reason per number.
+    const n = prepared.invalid.length;
+    throw AppError.unprocessable(n === 1 ? prepared.invalid[0].message : `${n} recipients have invalid or unsupported numbers`, 'INVALID_RECIPIENTS', prepared.invalid.slice(0, 50));
   }
   if (prepared.recipients.length === 0) throw AppError.unprocessable('No valid recipients', 'NO_RECIPIENTS');
   const maxRecipients = await getSetting('sms.maxRecipientsPerRequest');
@@ -176,8 +191,10 @@ export async function sendSms(input: SendSmsInput) {
               providerId: route.providerId,
               provider: route.adapterKey,
               providerCost: route.unitCost.mul(q.segments).toDecimalPlaces(4),
+              countryCode: route.countryCode,
               networkId: route.networkId,
               routingRuleId: route.routingRuleId,
+              routingNote: route.routingNote,
               status: 'QUEUED' as const,
             };
           }),
@@ -299,12 +316,13 @@ async function submitRecipient(recipient: SmsRecipient, msg: { senderName: strin
     await prisma.smsRecipient.update({ where: { id: recipient.id }, data: { status: 'QUEUED', errorCode: result.errorCode, errorMessage: result.errorMessage } });
     throw new Error(`Retryable provider error: ${result.errorCode}`);
   }
+  // Never accepted by the provider: REJECTED (not FAILED), capacity released and the credits refunded.
   const failed = await prisma.smsRecipient.update({
     where: { id: recipient.id },
-    data: { status: 'FAILED', provider: provider.key, errorCode: result.errorCode, errorMessage: result.errorMessage, failedAt: now, submittedAt: now },
+    data: { status: 'REJECTED', provider: provider.key, errorCode: result.errorCode, errorMessage: result.errorMessage, failedAt: now, submittedAt: now },
   });
   await prisma.smsDeliveryReport.create({
-    data: { recipientId: recipient.id, provider: provider.key, status: 'FAILED', providerStatus: 'REJECTED', errorCode: result.errorCode, errorMessage: result.errorMessage, source: 'SUBMISSION', occurredAt: now },
+    data: { recipientId: recipient.id, provider: provider.key, status: 'REJECTED', providerStatus: 'REJECTED', errorCode: result.errorCode, errorMessage: result.errorMessage, source: 'SUBMISSION', occurredAt: now },
   });
   await refundRecipient(failed, result.errorCode, msg.segments);
   await emitWebhookEvent(recipient.organizationId, 'sms.failed', serializeRecipientEvent(failed), `sms.failed:${recipient.id}:${recipient.attempts}`);
@@ -357,7 +375,7 @@ export async function dispatchMessage(messageId: string) {
 
 // ── Delivery reports ────────────────────────────────────────────────────
 
-const FINAL = new Set(['DELIVERED', 'FAILED', 'EXPIRED', 'CANCELLED']);
+const FINAL = new Set(['DELIVERED', 'FAILED', 'EXPIRED', 'CANCELLED', 'REJECTED']);
 
 export async function applyDeliveryStatus(status: DeliveryStatus, source: 'CALLBACK' | 'POLL', providerName: string) {
   const recipient = await prisma.smsRecipient.findUnique({ where: { providerMessageId: status.providerMessageId } });
@@ -438,7 +456,7 @@ export async function refreshMessageCompletion(messageId: string) {
     status,
     recipients: total,
     delivered,
-    failed: count('FAILED') + count('EXPIRED'),
+    failed: count('FAILED') + count('EXPIRED') + count('REJECTED'),
   }, `campaign.completed:${campaign.id}`);
 }
 
@@ -479,7 +497,7 @@ export async function cancelScheduledMessage(organizationId: string | null, mess
 export async function retryRecipient(recipientId: string, actor: Actor, meta?: RequestMeta) {
   const r = await prisma.smsRecipient.findUnique({ where: { id: recipientId }, include: { message: true } });
   if (!r) throw AppError.notFound('Message');
-  if (!['FAILED', 'EXPIRED'].includes(r.status)) throw AppError.conflict('Only failed or expired messages can be retried', 'NOT_RETRYABLE');
+  if (!['FAILED', 'EXPIRED', 'REJECTED'].includes(r.status)) throw AppError.conflict('Only failed, expired or rejected messages can be retried', 'NOT_RETRYABLE');
   const org = await prisma.organization.findUniqueOrThrow({ where: { id: r.organizationId } });
   if (org.status !== 'ACTIVE') throw AppError.conflict('Organization is not active', 'ORGANIZATION_NOT_ACTIVE');
 
@@ -504,8 +522,10 @@ export async function retryRecipient(recipientId: string, actor: Actor, meta?: R
         providerId: route.providerId,
         provider: route.adapterKey,
         providerCost: route.unitCost.mul(r.message.segments).toDecimalPlaces(4),
+        countryCode: route.countryCode,
         networkId: route.networkId,
         routingRuleId: route.routingRuleId,
+        routingNote: route.routingNote,
         capacityReleased: false,
       };
     }
@@ -554,7 +574,38 @@ export async function pollPendingDeliveryStatuses(olderThanMs = 20_000, limit = 
 }
 
 /** Recover work lost by a crash/restart (in-memory queue) or a dead worker. */
+/**
+ * Messages no provider accepted within sms.submissionTimeoutHours of their send time (e.g. a provider
+ * kept timing out) are rejected: capacity released and credits refunded — the customer is never
+ * charged for an SMS that was not handed to a provider.
+ */
+export async function rejectUnacceptedMessages() {
+  const hours = await getSetting('sms.submissionTimeoutHours');
+  const cutoff = new Date(Date.now() - hours * 3_600_000);
+  const stale = await prisma.smsRecipient.findMany({
+    where: {
+      status: 'QUEUED',
+      createdAt: { lt: cutoff },
+      message: { status: { in: ['QUEUED', 'PROCESSING'] }, OR: [{ scheduledAt: null }, { scheduledAt: { lt: cutoff } }] },
+    },
+    include: { message: { select: { segments: true } } },
+    take: 500,
+  });
+  for (const r of stale) {
+    const claimed = await prisma.smsRecipient.updateMany({
+      where: { id: r.id, status: 'QUEUED' },
+      data: { status: 'REJECTED', errorCode: 'NOT_ACCEPTED', errorMessage: `Not accepted by a provider within ${hours} hours`, failedAt: new Date() },
+    });
+    if (claimed.count === 0) continue;
+    const { message, ...recipient } = r;
+    await refundRecipient({ ...recipient, status: 'REJECTED' }, 'NOT_ACCEPTED', message.segments);
+    await refreshMessageCompletion(r.messageId);
+  }
+  return stale.length;
+}
+
 export async function recoverStalledDispatches() {
+  await rejectUnacceptedMessages();
   await prisma.smsRecipient.updateMany({
     where: { status: 'PROCESSING', updatedAt: { lt: new Date(Date.now() - 5 * 60_000) } },
     data: { status: 'QUEUED' },

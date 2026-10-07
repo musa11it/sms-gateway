@@ -21,7 +21,7 @@ export type UserStatus = 'PENDING_EMAIL_VERIFICATION' | 'PENDING_REVIEW' | 'ACTI
 export type OrganizationStatus = 'DRAFT' | 'PENDING_REVIEW' | 'ACTIVE' | 'REJECTED' | 'SUSPENDED';
 export type VerificationStatus = 'DRAFT' | 'SUBMITTED' | 'UNDER_REVIEW' | 'MORE_INFORMATION_REQUIRED' | 'APPROVED' | 'REJECTED' | 'SUSPENDED';
 export type SenderStatus = 'PENDING' | 'UNDER_REVIEW' | 'NEEDS_INFORMATION' | 'APPROVED' | 'REJECTED' | 'SUSPENDED';
-export type RecipientStatus = 'QUEUED' | 'PROCESSING' | 'SENT' | 'DELIVERED' | 'FAILED' | 'EXPIRED' | 'CANCELLED';
+export type RecipientStatus = 'QUEUED' | 'PROCESSING' | 'SENT' | 'DELIVERED' | 'FAILED' | 'EXPIRED' | 'CANCELLED' | 'REJECTED';
 export type BatchStatus = 'SCHEDULED' | 'QUEUED' | 'PROCESSING' | 'SENT' | 'COMPLETED' | 'CANCELLED' | 'FAILED';
 export type CampaignStatus = 'DRAFT' | 'SCHEDULED' | 'QUEUED' | 'PROCESSING' | 'COMPLETED' | 'PARTIALLY_COMPLETED' | 'FAILED' | 'CANCELLED';
 export type PaymentStatus = 'PENDING' | 'PROCESSING' | 'SUCCESS' | 'FAILED' | 'CANCELLED' | 'REFUNDED';
@@ -85,6 +85,8 @@ export interface Wallet {
   isLow: boolean;
   thisMonth: { purchased: number; consumed: number };
   expiringSoon?: { credits: number; withinDays: number; nextExpiry: { at: string; credits: number } | null };
+  /** Credits debited for messages not yet accepted by a provider (refunded if rejected). */
+  reserved?: number;
 }
 
 export interface WalletTransaction {

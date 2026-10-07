@@ -73,7 +73,7 @@ describe('credits sold through each provider', () => {
     const res = await request(app)
       .post('/api/v1/sms/send')
       .set(auth(token))
-      .send({ senderId: sender.id, message: 'x'.repeat(200), recipients: ['+250788200001', '+250788200002', '+250788200003', '+250728200004', '+250728200005', '+447700900321'] });
+      .send({ senderId: sender.id, message: 'x'.repeat(200), recipients: ['+250788200001', '+250788200002', '+250788200003', '+250728200004', '+250728200005', '+447400123457'] });
     expect(res.status).toBe(201);
     const ov = await request(app).get('/api/v1/admin/providers/overview?range=today').set(auth(sa));
     const by = Object.fromEntries((ov.body.data.byProvider as { code: string; credits: number; providerCost: string; sharePercent: number; revenue: string }[]).map((p) => [p.code, p]));

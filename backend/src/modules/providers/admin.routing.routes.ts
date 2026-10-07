@@ -10,11 +10,32 @@ import * as svc from './routingAdmin.service';
 /** Super Admin routing management: destination networks, routing rules and the simulator. */
 export const adminRoutingRouter = Router();
 
+// ── Destination countries ───────────────────────────────────────────────
+
+adminRoutingRouter.get('/countries', requirePlatformPermission('providers.view'), asyncHandler(async (_req, res) => ok(res, await svc.listCountries())));
+
+adminRoutingRouter.post(
+  '/countries',
+  requirePlatformPermission('providers.manage'),
+  asyncHandler(async (req, res) => created(res, svc.serializeCountry(await svc.createCountry(parse(svc.countryBody, req.body), actorFromRequest(req), metaFromRequest(req))), 'Country added')),
+);
+
+adminRoutingRouter.patch(
+  '/countries/:id',
+  requirePlatformPermission('providers.manage'),
+  asyncHandler(async (req, res) => {
+    const { id } = parse(uuidParam, req.params);
+    return ok(res, svc.serializeCountry(await svc.updateCountry(id, parse(svc.countryUpdateBody, req.body), actorFromRequest(req), metaFromRequest(req))), 'Country updated');
+  }),
+);
+
+// ── Destination networks ────────────────────────────────────────────────
+
 adminRoutingRouter.get(
   '/networks',
   requirePlatformPermission('providers.view'),
   asyncHandler(async (_req, res) => {
-    const networks = await prisma.smsNetwork.findMany({ orderBy: [{ countryCode: 'asc' }, { name: 'asc' }], include: { _count: { select: { providers: true } } } });
+    const networks = await prisma.smsNetwork.findMany({ orderBy: [{ countryCode: 'asc' }, { name: 'asc' }], include: svc.networkInclude });
     return ok(res, networks.map(svc.serializeNetwork));
   }),
 );
@@ -45,6 +66,16 @@ adminRoutingRouter.delete(
     const { id } = parse(uuidParam, req.params);
     await svc.deleteNetwork(id, actorFromRequest(req), metaFromRequest(req));
     return ok(res, null, 'Network deleted');
+  }),
+);
+
+adminRoutingRouter.delete(
+  '/countries/:id',
+  requirePlatformPermission('providers.manage'),
+  asyncHandler(async (req, res) => {
+    const { id } = parse(uuidParam, req.params);
+    await svc.deleteCountry(id, actorFromRequest(req), metaFromRequest(req));
+    return ok(res, null, 'Country deleted');
   }),
 );
 

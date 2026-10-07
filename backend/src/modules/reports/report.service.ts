@@ -167,7 +167,7 @@ export async function smsTimeseries(from: Date, to: Date, unit: Unit, organizati
     SELECT ${localBucket(Prisma.sql`r.createdAt`, unit, tz, from, to)} AS label,
       COUNT(CASE WHEN r.status <> 'CANCELLED' THEN 1 END) AS total,
       COUNT(CASE WHEN r.status = 'DELIVERED' THEN 1 END) AS delivered,
-      COUNT(CASE WHEN r.status IN ('FAILED','EXPIRED') THEN 1 END) AS failed,
+      COUNT(CASE WHEN r.status IN ('FAILED','EXPIRED','REJECTED') THEN 1 END) AS failed,
       COUNT(CASE WHEN r.status IN ('QUEUED','PROCESSING','SENT') THEN 1 END) AS pending
     FROM sms_recipients r
     WHERE r.createdAt >= ${from} AND r.createdAt <= ${to} ${orgFilter}
@@ -190,7 +190,7 @@ export async function smsTotals(from: Date, to: Date, organizationId?: string) {
   });
   const c = (s: string) => grouped.find((g) => g.status === s)?._count ?? 0;
   const delivered = c('DELIVERED');
-  const failed = c('FAILED') + c('EXPIRED');
+  const failed = c('FAILED') + c('EXPIRED') + c('REJECTED');
   const pending = c('QUEUED') + c('PROCESSING') + c('SENT');
   const total = delivered + failed + pending;
   const final = delivered + failed;
@@ -248,7 +248,7 @@ export async function providerPerformance(from: Date, to: Date) {
     SELECT COALESCE(provider, 'unassigned') AS provider,
       COUNT(*) AS total,
       COUNT(CASE WHEN status = 'DELIVERED' THEN 1 END) AS delivered,
-      COUNT(CASE WHEN status IN ('FAILED','EXPIRED') THEN 1 END) AS failed,
+      COUNT(CASE WHEN status IN ('FAILED','EXPIRED','REJECTED') THEN 1 END) AS failed,
       AVG(CASE WHEN status = 'DELIVERED' THEN TIMESTAMPDIFF(MICROSECOND, sentAt, deliveredAt) / 1000 END) AS avg_latency_ms
     FROM sms_recipients WHERE createdAt >= ${from} AND createdAt <= ${to} AND status <> 'CANCELLED'
     GROUP BY 1 ORDER BY 2 DESC`;
@@ -273,7 +273,7 @@ export async function campaignPerformance(ids: string[]) {
     const s = map.get(row.campaignId!) ?? { recipients: 0, delivered: 0, failed: 0, pending: 0 };
     s.recipients += row._count;
     if (row.status === 'DELIVERED') s.delivered += row._count;
-    else if (row.status === 'FAILED' || row.status === 'EXPIRED') s.failed += row._count;
+    else if (row.status === 'FAILED' || row.status === 'EXPIRED' || row.status === 'REJECTED') s.failed += row._count;
     else if (row.status !== 'CANCELLED') s.pending += row._count;
     map.set(row.campaignId!, s);
   }

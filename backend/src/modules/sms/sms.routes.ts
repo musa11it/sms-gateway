@@ -121,7 +121,7 @@ smsRouter.get(
     const data = items.map((m) => {
       const s = stats.filter((x) => x.messageId === m.id);
       const c = (st: string) => s.find((x) => x.status === st)?._count ?? 0;
-      return { ...m, stats: { delivered: c('DELIVERED'), failed: c('FAILED') + c('EXPIRED'), pending: c('QUEUED') + c('PROCESSING') + c('SENT'), cancelled: c('CANCELLED') } };
+      return { ...m, stats: { delivered: c('DELIVERED'), failed: c('FAILED') + c('EXPIRED') + c('REJECTED'), pending: c('QUEUED') + c('PROCESSING') + c('SENT'), cancelled: c('CANCELLED') } };
     });
     return paginated(res, data, q.page, q.limit, total);
   }),
@@ -143,7 +143,7 @@ smsRouter.get(
 
 // Per-recipient history
 const historyQuery = paginationSchema.extend({
-  status: z.enum(['QUEUED', 'PROCESSING', 'SENT', 'DELIVERED', 'FAILED', 'EXPIRED', 'CANCELLED']).optional(),
+  status: z.enum(['QUEUED', 'PROCESSING', 'SENT', 'DELIVERED', 'FAILED', 'EXPIRED', 'CANCELLED', 'REJECTED']).optional(),
   search: z.string().trim().max(40).optional(),
   from: z.coerce.date().optional(),
   to: z.coerce.date().optional(),

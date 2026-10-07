@@ -164,7 +164,7 @@ export function BuySmsPage() {
         breadcrumbs={[{ label: 'Wallet' }, { label: 'Buy SMS' }]}
       />
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Current balance" icon={<Wallet />} value={fmtNumber(wallet.data?.balance)} loading={wallet.isLoading} hint="credits" />
+        <StatCard label="Current balance" icon={<Wallet />} value={fmtNumber(wallet.data?.balance)} loading={wallet.isLoading} hint={wallet.data?.reserved ? `credits · ${fmtNumber(wallet.data.reserved)} reserved for messages in progress` : 'credits'} />
         <StatCard label="Purchased this month" icon={<ArrowDownLeft />} tone="emerald" value={fmtNumber(wallet.data?.thisMonth.purchased)} loading={wallet.isLoading} />
         <StatCard label="Used this month" icon={<ArrowUpRight />} tone="violet" value={fmtNumber(wallet.data?.thisMonth.consumed)} loading={wallet.isLoading} />
         <StatCard
@@ -337,7 +337,7 @@ export function TransactionsPage() {
     <div className="space-y-6">
       <PageHeader title="Transactions" description="Your complete, immutable credit ledger." breadcrumbs={[{ label: 'Wallet' }, { label: 'Transactions' }]} actions={can('wallet.purchase') && <LinkButton to="/app/wallet/buy">Buy SMS</LinkButton>} />
       <div className="grid gap-4 lg:grid-cols-3">
-        <StatCard label="Balance" icon={<Wallet />} value={fmtNumber(wallet.data?.balance)} loading={wallet.isLoading} hint="SMS credits" tone={wallet.data?.isLow ? 'amber' : 'brand'} />
+        <StatCard label="Balance" icon={<Wallet />} value={fmtNumber(wallet.data?.balance)} loading={wallet.isLoading} hint={wallet.data?.reserved ? `SMS credits · ${fmtNumber(wallet.data.reserved)} reserved for messages in progress` : 'SMS credits'} tone={wallet.data?.isLow ? 'amber' : 'brand'} />
         <StatCard label="Purchased this month" icon={<ArrowDownLeft />} tone="emerald" value={fmtNumber(wallet.data?.thisMonth.purchased)} loading={wallet.isLoading} />
         <Card>
           <p className="flex items-center gap-2 text-sm font-medium text-slate-500"><Bell className="h-4 w-4" /> Low balance alert</p>

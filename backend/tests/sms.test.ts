@@ -69,7 +69,7 @@ describe('sending SMS', () => {
     const byPhone = (p: string) => recipients.find((r) => r.phone === p)!;
     expect(byPhone('+250788123456').status).toBe('SENT');
     expect(byPhone('+250788123456').providerMessageId).toMatch(/^SIM-/);
-    expect(byPhone('+250788120000')).toMatchObject({ status: 'FAILED', errorCode: 'INVALID_DESTINATION', refunded: true });
+    expect(byPhone('+250788120000')).toMatchObject({ status: 'REJECTED', errorCode: 'INVALID_DESTINATION', refunded: true });
     expect(await balanceOf(org.id)).toBe(98); // rejected submission refunded
 
     await pollPendingDeliveryStatuses(0);
