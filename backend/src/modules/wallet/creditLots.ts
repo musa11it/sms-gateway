@@ -1,4 +1,4 @@
-import type { WalletTransactionType } from '@prisma/client';
+import type { Prisma, WalletTransactionType } from '@prisma/client';
 import type { Tx } from '../../config/prisma';
 
 /**
@@ -13,9 +13,11 @@ import type { Tx } from '../../config/prisma';
 export interface LotConsumption {
   lotId: string;
   credits: number;
+  /** Selling price of one credit of the lot (null = free credits). Recorded on debits so revenue never depends on today's prices. */
+  unitPrice?: string | null;
 }
 
-type Lot = { id: string; credits: number; remaining: number; expiresAt: Date | null; createdAt: Date };
+type Lot = { id: string; credits: number; remaining: number; expiresAt: Date | null; createdAt: Date; unitPrice?: Prisma.Decimal | null };
 
 /** FEFO order: soonest expiry first, non-expiring lots last, oldest first within a tie. */
 function fefo(a: Lot, b: Lot) {
@@ -26,7 +28,7 @@ function fefo(a: Lot, b: Lot) {
 
 export async function createLot(
   tx: Tx,
-  input: { walletId: string; organizationId: string; transactionId: string; type: WalletTransactionType; credits: number; expiresAt?: Date | null },
+  input: { walletId: string; organizationId: string; transactionId: string; type: WalletTransactionType; credits: number; expiresAt?: Date | null; unitPrice?: Prisma.Decimal | string | null },
 ) {
   return tx.smsCreditLot.create({
     data: {
@@ -37,6 +39,7 @@ export async function createLot(
       credits: input.credits,
       remaining: input.credits,
       expiresAt: input.expiresAt ?? null,
+      unitPrice: input.unitPrice ?? null,
     },
   });
 }
@@ -51,7 +54,7 @@ export async function consumeLots(tx: Tx, walletId: string, amount: number, pref
     if (left === 0) break;
     const n = Math.min(lot.remaining, left);
     await tx.smsCreditLot.update({ where: { id: lot.id }, data: { remaining: { decrement: n } } });
-    taken.push({ lotId: lot.id, credits: n });
+    taken.push({ lotId: lot.id, credits: n, unitPrice: lot.unitPrice?.toFixed(4) ?? null });
     left -= n;
   }
   if (left > 0) throw new Error(`Credit lots out of sync with wallet ${walletId}: ${left} credits missing`);
@@ -89,4 +92,9 @@ export async function latestExpiry(tx: Tx, consumed: LotConsumption[]): Promise<
 export function readConsumption(metadata: unknown): LotConsumption[] {
   const lots = (metadata as { lots?: unknown } | null)?.lots;
   return Array.isArray(lots) ? lots.filter((l): l is LotConsumption => typeof l?.lotId === 'string' && Number.isInteger(l?.credits)) : [];
+}
+
+/** Selling price of the first priced lot in a consumption (used when restored credits must open a new lot). */
+export function consumedPrice(consumed: LotConsumption[]): string | null {
+  return consumed.find((c) => c.unitPrice != null)?.unitPrice ?? null;
 }

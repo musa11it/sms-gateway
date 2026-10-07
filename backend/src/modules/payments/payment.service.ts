@@ -186,6 +186,8 @@ async function finalizeSuccess(payment: Payment, fee: Prisma.Decimal, actor: Act
         description: payment.unitPrice ? `Purchased ${payment.credits.toLocaleString()} SMS credits at ${payment.currency} ${payment.unitPrice.toFixed(2)}` : `Purchase: ${payment.packageName}`,
         createdById: payment.createdById,
         metadata: { paymentId: payment.id, reference: payment.reference },
+        // Selling price per credit, frozen on the credit lot: revenue of the SMS sent with these credits uses it forever.
+        unitPrice: payment.unitPrice ?? payment.amount.div(payment.credits).toDecimalPlaces(4),
         expiresAt: payment.creditValidityDays ? new Date(Date.now() + payment.creditValidityDays * 86_400_000) : null,
       });
       if (entry.duplicate) return;

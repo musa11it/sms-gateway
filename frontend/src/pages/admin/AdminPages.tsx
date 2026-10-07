@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { AlertTriangle, Banknote, Building2, CheckCircle2, Clock, CreditCard, FileCheck2, Gauge, Megaphone, RotateCcw, Send, ShieldCheck, XCircle } from 'lucide-react';
+import { AlertTriangle, Banknote, Building2, CheckCircle2, Clock, CreditCard, FileCheck2, Gauge, Megaphone, RotateCcw, Send, ShieldCheck, TrendingUp, XCircle } from 'lucide-react';
 import { GrowthChart, RevenueChart, SmsTrendChart, StatusDonut } from '@/components/charts/Charts';
 import { Badge, StatusBadge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -18,7 +18,7 @@ import { adminService } from '@/services/adminService';
 import { fmtMoney, fmtNumber, fmtRelative, titleCase } from '@/utils/format';
 import { MessageDrawer, recipientColumns } from '../sms/SmsPages';
 import { RangePicker, useRange } from '../dashboard/ReportsPage';
-import { AdminBusinessSummary } from './BusinessPages';
+import { AdminBusinessSummary, SmsFinancialsModal } from './BusinessPages';
 import { SegmentationSummaryCard } from './SmsConfigurationPage';
 
 export function AdminDashboardPage() {
@@ -77,6 +77,7 @@ export function SmsTrafficPage() {
   const debounced = useDebounce(search);
   const [selected, setSelected] = useState<string | null>(null);
   const [retry, setRetry] = useState<string | null>(null);
+  const [economics, setEconomics] = useState<string | null>(null);
   const q = useQuery({
     queryKey: ['admin', 'sms', { page, status, debounced }],
     queryFn: () => adminService.smsMessages({ page, limit: 25, status: status || undefined, search: debounced || undefined }),
@@ -107,8 +108,15 @@ export function SmsTrafficPage() {
               key: 'act',
               header: '',
               className: 'text-right',
-              cell: (m) => canAdmin('sms.retry') && ['FAILED', 'EXPIRED', 'REJECTED'].includes(m.status) && (
-                <Button size="xs" variant="secondary" icon={<RotateCcw className="h-3 w-3" />} onClick={(e) => { e.stopPropagation(); setRetry(m.id); }}>Retry</Button>
+              cell: (m) => (
+                <span className="flex justify-end gap-1">
+                  {canAdmin('profit.view') && (
+                    <Button size="xs" variant="ghost" icon={<TrendingUp className="h-3 w-3" />} title="Customer revenue, provider cost and gross profit of this SMS" onClick={(e) => { e.stopPropagation(); setEconomics(m.id); }}>Gross profit</Button>
+                  )}
+                  {canAdmin('sms.retry') && ['FAILED', 'EXPIRED', 'REJECTED'].includes(m.status) && (
+                    <Button size="xs" variant="secondary" icon={<RotateCcw className="h-3 w-3" />} onClick={(e) => { e.stopPropagation(); setRetry(m.id); }}>Retry</Button>
+                  )}
+                </span>
               ),
             },
           ]}
@@ -117,6 +125,7 @@ export function SmsTrafficPage() {
         <Pagination pagination={q.data?.pagination} onPage={setPage} />
       </Card>
       <MessageDrawer id={selected} onClose={() => setSelected(null)} fetcher={adminService.smsMessage} />
+      <SmsFinancialsModal id={economics} onClose={() => setEconomics(null)} />
       <ConfirmDialog open={!!retry} onClose={() => setRetry(null)} tone="primary" title="Retry this message?" description="It will be re-submitted to the provider. If its credits were refunded, they are charged again." confirmLabel="Retry" loading={retryM.isPending} onConfirm={() => retry && retryM.mutate(retry)} />
     </div>
   );

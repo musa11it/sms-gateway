@@ -458,5 +458,10 @@ export interface CustomerFinanceRow {
   messagesRouted: number;
   providerUsage: { providerId: string | null; provider: string; messages: number }[];
   providerCost: string;
+  /** Revenue of the credits used for accepted SMS, at the price they were bought at. */
+  smsRevenue: string;
+  grossProfit: string | null;
+  grossMarginPercent: number | null;
+  /** @deprecated same as grossProfit */
   grossMargin: string | null;
 }

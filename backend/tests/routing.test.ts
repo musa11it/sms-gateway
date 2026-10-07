@@ -1,6 +1,7 @@
 import request from 'supertest';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { prisma } from '../src/config/prisma';
+import { Prisma } from '@prisma/client';
 import { dispatchMessage } from '../src/modules/sms/sms.service';
 import { applyLedgerEntry } from '../src/modules/wallet/wallet.service';
 import { app, balanceOf, createActiveOrg, createStaff, resetDatabase } from './helpers';
@@ -73,8 +74,11 @@ describe('provider management', () => {
     expect(lots.map((l) => [l.unitCost.toFixed(2), l.remaining])).toEqual([['8.00', 10], ['5.50', 1000]]);
 
     const { recipients } = await sendAndGetProviders(15);
-    // 10 × 8 + 5 × 5.50 = 107.50 over 15 segments.
-    expect(recipients.every((r) => r.providerCost!.toFixed(4) === '7.1667')).toBe(true);
+    // Each recipient carries the cost of its own lot: 10 × 8 + 5 × 5.50 = 107.50 exactly.
+    const costs = recipients.map((r) => r.providerCost!.toFixed(4)).sort();
+    expect(costs).toEqual([...Array(5).fill('5.5000'), ...Array(10).fill('8.0000')]);
+    expect(recipients.reduce((s, r) => s + Number(r.providerCost), 0)).toBe(107.5);
+    const first = recipients.find((r) => r.providerCost!.toFixed(4) === '8.0000')!;
     const after = await prisma.providerCapacityLot.findMany({ where: { providerId: mtn.id }, orderBy: { createdAt: 'asc' } });
     expect(after.map((l) => l.remaining)).toEqual([0, 995]);
     expect((await provider('MTN')).capacityBalance).toBe(995);
@@ -82,7 +86,7 @@ describe('provider management', () => {
     // A later configured-price change does not touch lots or past messages.
     await patchProvider('MTN', { costPerSms: '20' }).expect(200);
     expect((await prisma.providerCapacityLot.findFirstOrThrow({ where: { providerId: mtn.id, unitCost: 5.5 } })).unitCost.toFixed(2)).toBe('5.50');
-    expect((await prisma.smsRecipient.findUniqueOrThrow({ where: { id: recipients[0].id } })).providerCost!.toFixed(4)).toBe('7.1667');
+    expect((await prisma.smsRecipient.findUniqueOrThrow({ where: { id: first.id } })).providerCost!.toFixed(4)).toBe('8.0000');
 
     const detail = await request(app).get(`/api/v1/admin/providers/${mtn.id}`).set(auth(sa));
     const lot = detail.body.data.lots.find((l: { unitCost: string }) => l.unitCost === '5.5000');
@@ -333,7 +337,8 @@ describe('authorization', () => {
     const sum = (await prisma.smsProvider.aggregate({ _sum: { capacityBalance: true } }))._sum.capacityBalance;
     expect(res.body.data.capacity.remaining).toBe(sum);
     expect(res.body.data.counts.providers).toBeGreaterThanOrEqual(3);
-    const cost = (await prisma.smsRecipient.aggregate({ where: { capacityReleased: false }, _sum: { providerCost: true } }))._sum.providerCost!;
+    // Only SMS a provider accepted (and not refunded) count — the same rule as every finance view.
+    const cost = (await prisma.smsRecipient.aggregate({ where: { status: { in: ['SENT', 'DELIVERED', 'FAILED', 'EXPIRED'] }, refunded: false }, _sum: { providerCost: true } }))._sum.providerCost ?? new Prisma.Decimal(0);
     expect(res.body.data.economics.providerCost).toBe(cost.toDecimalPlaces(2).toFixed(2));
   });
 });
