@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { Router } from 'express';
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
@@ -133,6 +134,32 @@ adminProvidersRouter.patch(
     const body = parse(providerUpdateBody, req.body);
     const updated = await updateProvider(id, body, actorFromRequest(req), metaFromRequest(req));
     return ok(res, serializeProvider(updated), 'Provider updated');
+  }),
+);
+
+/** Check the integration: reads the provider's balance and, if a number is given, sends one real test message. */
+adminProvidersRouter.post(
+  '/:id/test',
+  requirePlatformPermission('providers.manage'),
+  asyncHandler(async (req, res) => {
+    const { id } = parse(uuidParam, req.params);
+    const body = parse(z.object({ phone: z.string().trim().regex(/^\+[1-9]\d{6,14}$/, 'Use international format, e.g. +250788123456').optional(), from: z.string().trim().min(1).max(11).default('TEST') }), req.body ?? {});
+    const p = await prisma.smsProvider.findUnique({ where: { id } });
+    if (!p) throw AppError.notFound('Provider');
+    const adapter = SmsProviderFactory.forProvider(p);
+    if (!adapter) throw AppError.conflict(`No ${SmsProviderFactory.effectiveMode(p).toLowerCase()} adapter is installed for ${p.name}`, 'ADAPTER_NOT_INSTALLED');
+    const result: { adapterKey: string; simulation: boolean; balance: unknown; balanceError: string | null; send: unknown } = { adapterKey: adapter.key, simulation: adapter.isSimulation, balance: null, balanceError: null, send: null };
+    try {
+      result.balance = await adapter.getBalance();
+    } catch (err) {
+      result.balanceError = (err as Error).message;
+    }
+    if (body.phone) {
+      const sent = await adapter.sendSms({ from: body.from, to: body.phone, message: 'Test message from SMS Gateway', encoding: 'GSM7', segments: 1, clientReference: `test-${crypto.randomUUID()}` });
+      result.send = sent.accepted ? { accepted: true, providerMessageId: sent.providerMessageId } : { accepted: false, errorCode: sent.errorCode, errorMessage: sent.errorMessage };
+    }
+    await audit({ actor: actorFromRequest(req), action: 'PROVIDER_TESTED', resource: 'sms_provider', resourceId: id, metadata: { code: p.code, adapter: adapter.key, sentTestMessage: !!body.phone }, meta: metaFromRequest(req) });
+    return ok(res, result);
   }),
 );
 

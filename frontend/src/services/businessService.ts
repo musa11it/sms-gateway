@@ -27,6 +27,10 @@ export interface Provider {
   adapterKey: string;
   adapterInstalled: boolean;
   apiConfigured: boolean;
+  /** How production traffic reaches the provider. HTTP_JSON is configured in the UI (secrets are never returned). */
+  adapterType: 'NONE' | 'HTTP_JSON';
+  adapterConfig: (Record<string, any> & { hasApiKey: boolean; hasCallbackSecret: boolean }) | null;
+  callbackUrl: string;
   notes: string | null;
   lastTransactionAt: string | null;
   lastPurchaseAt?: string | null;
@@ -339,6 +343,8 @@ export const businessService = {
   pricingEconomics: () => get<PricingEconomics>('/admin/pricing/economics'),
   updateProvider: (id: string, body: Record<string, unknown>) => patch<Provider>(`/admin/providers/${id}`, body),
   createProvider: (body: Record<string, unknown>) => post<Provider>('/admin/providers', body),
+  testProvider: (id: string, body: { phone?: string }) =>
+    post<{ adapterKey: string; simulation: boolean; balance: { available: number | null; currency: string } | null; balanceError: string | null; send: { accepted: boolean; providerMessageId?: string; errorCode?: string; errorMessage?: string } | null }>(`/admin/providers/${id}/test`, body),
   purchaseCapacity: (id: string, body: { quantity: number; unitCost?: string; notes?: string }) => post<ProviderPurchase>(`/admin/providers/${id}/purchase`, body),
   adjustCapacity: (id: string, body: { amount: number; reason: string; reference: string; unitCost?: string }) => post(`/admin/providers/${id}/adjust`, body),
   countries: () => get<SmsCountry[]>('/admin/routing/countries'),

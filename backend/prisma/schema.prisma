@@ -677,6 +677,10 @@ model SmsProvider {
   overdraftLimit        Int            @default(0)
   lowCapacityThreshold  Int            @default(10000)
   notes                 String?        @db.Text
+  // How production traffic reaches this provider: "NONE" (simulation only / code adapter) or "HTTP_JSON" (configured below).
+  adapterType           String         @default("NONE")
+  // HTTP_JSON settings (URLs, auth, templates, mappings). The API key is stored encrypted and never returned.
+  adapterConfig         Json?
   lastTransactionAt     DateTime?
   createdAt             DateTime       @default(now())
   updatedAt             DateTime       @updatedAt

@@ -38,6 +38,7 @@ import { adminService } from '@/services/adminService';
 import { businessService, type CountryStatus, type Provider, type ProviderEconomics, type RouteStatus, type RouteSummary, type RoutingRule, type RoutingSimulation, type RoutingStrategy, type SmsCountry, type SmsNetwork } from '@/services/businessService';
 import { cn, fmtDate, fmtDateTime, fmtMoney, fmtNumber, fmtRelative, titleCase } from '@/utils/format';
 import { RangePicker, useRange } from '../dashboard/ReportsPage';
+import { emptyIntegration, integrationFromProvider, integrationPayload, integrationValid, ProviderIntegrationSection, ProviderTestPanel, type IntegrationForm } from './ProviderIntegration';
 
 // ── Shared bits ─────────────────────────────────────────────────────────
 
@@ -142,9 +143,11 @@ export function ProviderFormModal({ provider, open, onClose }: { provider: Provi
   const networks = useQuery({ queryKey: ['admin', 'routing', 'networks'], queryFn: businessService.networks, enabled: open });
   const countries = useQuery({ queryKey: ['admin', 'routing', 'countries'], queryFn: businessService.countries, enabled: open });
   const [form, setForm] = useState<ProviderForm>(emptyForm);
+  const [integration, setIntegration] = useState<IntegrationForm>(emptyIntegration);
   const [loadedFor, setLoadedFor] = useState<string | null | undefined>(undefined);
   if (open && loadedFor !== (provider?.id ?? null)) {
     setLoadedFor(provider?.id ?? null);
+    setIntegration(integrationFromProvider(provider));
     setForm(
       provider
         ? {
@@ -186,6 +189,7 @@ export function ProviderFormModal({ provider, open, onClose }: { provider: Provi
     countryIds: form.countryIds,
     networkIds: form.networkIds,
     notes: form.notes.trim() || null,
+    ...integrationPayload(integration),
     ...(form.reason.trim() ? { reason: form.reason.trim() } : {}),
   };
   const save = useApiMutation(
@@ -198,7 +202,8 @@ export function ProviderFormModal({ provider, open, onClose }: { provider: Provi
     form.name.trim().length >= 2 &&
     decimalRe.test(form.costPerSms.trim()) &&
     (provider || /^[A-Za-z][A-Za-z0-9_]{1,29}$/.test(form.code.trim())) &&
-    [form.priority, form.minimumCapacity, form.lowCapacityThreshold].every((v) => Number.isInteger(Number(v)) && Number(v) >= 0);
+    [form.priority, form.minimumCapacity, form.lowCapacityThreshold].every((v) => Number.isInteger(Number(v)) && Number(v) >= 0) &&
+    integrationValid(integration, provider);
   const costChanged = provider && form.costPerSms.trim() !== provider.costPerSms;
 
   return (
@@ -207,7 +212,7 @@ export function ProviderFormModal({ provider, open, onClose }: { provider: Provi
       onClose={close}
       size="lg"
       title={provider ? `Edit ${provider.name}` : 'New SMS provider'}
-      description={provider ? 'Changes apply to routing immediately and are recorded in the audit log.' : 'A provider only receives traffic once it is active, healthy and its integration adapter is installed.'}
+      description={provider ? 'Changes apply to routing immediately and are recorded in the audit log.' : 'A provider only receives traffic once it is active, healthy and connected (simulation works immediately).'}
       footer={
         <>
           <Button variant="secondary" onClick={close}>Cancel</Button>
@@ -301,11 +306,14 @@ export function ProviderFormModal({ provider, open, onClose }: { provider: Provi
           </div>
         </section>
 
+        <ProviderIntegrationSection provider={provider} value={integration} onChange={setIntegration} />
+        {provider && provider.adapterType === 'HTTP_JSON' && <ProviderTestPanel provider={provider} />}
+
         <section className="grid gap-4">
           <Field label="Notes"><Textarea rows={2} value={form.notes} onChange={set('notes')} placeholder="Contract, account manager, SLA…" /></Field>
           {provider && <Field label="Reason for the change" hint="Recorded in the audit log"><Input value={form.reason} onChange={set('reason')} placeholder="New contract rate from 1 Nov" /></Field>}
         </section>
-        <p className="text-xs text-slate-500">API credentials are configured on the server and are never shown or edited here.</p>
+        <p className="text-xs text-slate-500">API keys are stored encrypted and are never shown again after saving.</p>
       </div>
     </Modal>
   );

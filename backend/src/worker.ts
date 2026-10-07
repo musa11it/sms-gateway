@@ -4,12 +4,15 @@
  */
 import { logger } from './config/logger';
 import { prisma } from './config/prisma';
+import { SmsProviderFactory } from './integrations/sms/SmsProviderFactory';
 import { registerJobHandlers } from './workers/handlers';
 import { queue } from './workers/queue';
 import { startScheduler, stopScheduler } from './workers/scheduler';
 
 async function main() {
   await prisma.$connect();
+  await SmsProviderFactory.refresh();
+  SmsProviderFactory.startAutoRefresh();
   registerJobHandlers();
   startScheduler();
   logger.info('Worker process started');

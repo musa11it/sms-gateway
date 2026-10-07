@@ -12,6 +12,8 @@ async function main() {
   await prisma.$connect();
   const pay = PaymentProviderFactory.getActive();
 
+  await SmsProviderFactory.refresh();
+  SmsProviderFactory.startAutoRefresh();
   const app = createApp();
   const server = app.listen(env.PORT, () => {
     logger.info(`API listening on http://localhost:${env.PORT} (${env.NODE_ENV})`);

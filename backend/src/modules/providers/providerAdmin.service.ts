@@ -1,6 +1,10 @@
 import { Prisma, type SmsProvider } from '@prisma/client';
 import { z } from 'zod';
+import { isProduction } from '../../config/env';
 import { prisma } from '../../config/prisma';
+import { assertSafeUrl, httpJsonConfigSchema, type HttpJsonSecrets } from '../../integrations/sms/HttpJsonSmsProvider';
+import { SmsProviderFactory } from '../../integrations/sms/SmsProviderFactory';
+import { encrypt } from '../../utils/crypto';
 import type { Actor, RequestMeta } from '../../types/actor';
 import { AppError } from '../../utils/errors';
 import { audit } from '../audit-logs/audit.service';
@@ -38,6 +42,11 @@ export const providerConfig = z.object({
   countryIds: z.array(z.string().uuid()).max(300),
   networkIds: z.array(z.string().uuid()).max(500),
   notes: z.string().trim().max(1000).nullable(),
+  // How this provider is reached in production. HTTP_JSON is configured entirely here (no code change).
+  adapterType: z.enum(['NONE', 'HTTP_JSON']),
+  adapterConfig: httpJsonConfigSchema
+    .extend({ apiKey: z.string().min(1).max(500).optional(), callbackSecret: z.string().min(8).max(300).optional() })
+    .nullable(),
 });
 
 export const providerCreateBody = providerConfig
@@ -55,6 +64,8 @@ export const providerCreateBody = providerConfig
     countryIds: providerConfig.shape.countryIds.default([]),
     networkIds: providerConfig.shape.networkIds.default([]),
     notes: providerConfig.shape.notes.optional(),
+    adapterType: providerConfig.shape.adapterType.default('NONE'),
+    adapterConfig: providerConfig.shape.adapterConfig.optional(),
     reason: z.string().trim().max(500).optional(),
   })
   .strict();
@@ -281,14 +292,54 @@ function fieldValue(p: SmsProvider, k: (typeof AUDITED_FIELDS)[number]) {
   return v instanceof Prisma.Decimal ? D(v).toFixed(4) : v;
 }
 
+
+type StoredConfig = Record<string, unknown> & { secrets?: HttpJsonSecrets };
+
+/**
+ * Turns the submitted integration into what is stored: the validated config plus encrypted secrets.
+ * A secret left out keeps its stored value, so editing the URLs never forces re-entering the key.
+ */
+async function buildAdapterData(
+  type: 'NONE' | 'HTTP_JSON',
+  submitted: z.infer<typeof providerConfig>['adapterConfig'] | undefined,
+  existing?: Pick<SmsProvider, 'adapterType' | 'adapterConfig'>,
+): Promise<{ adapterType: 'NONE' | 'HTTP_JSON'; adapterConfig: Prisma.InputJsonValue | typeof Prisma.DbNull }> {
+  if (type === 'NONE') return { adapterType: 'NONE', adapterConfig: Prisma.DbNull };
+  const previous = existing?.adapterType === 'HTTP_JSON' ? ((existing.adapterConfig ?? {}) as StoredConfig) : null;
+  if (!submitted && !previous) throw AppError.unprocessable('Fill in the integration settings', 'ADAPTER_CONFIG_REQUIRED', [{ field: 'adapterConfig', message: 'Required' }]);
+  const { apiKey, callbackSecret, ...config }: z.infer<typeof httpJsonConfigSchema> & { apiKey?: string; callbackSecret?: string } =
+    submitted ?? (({ secrets: _s, ...rest }) => rest)(previous!) as unknown as z.infer<typeof httpJsonConfigSchema>;
+  for (const [field, url] of [['sendUrl', config.sendUrl], ['statusUrl', config.statusUrl], ['balanceUrl', config.balanceUrl]] as const) {
+    if (!url) continue;
+    try {
+      await assertSafeUrl(url.replace(/\{\{providerMessageId\}\}/g, 'x'), !isProduction);
+    } catch (err) {
+      throw AppError.unprocessable(`${field}: ${(err as Error).message}`, 'ADAPTER_URL_REFUSED', [{ field: `adapterConfig.${field}`, message: (err as Error).message }]);
+    }
+  }
+  if (config.callback && !(callbackSecret ?? previous?.secrets?.callbackSecretEncrypted)) {
+    throw AppError.unprocessable('Set a callback secret to accept delivery reports', 'CALLBACK_SECRET_REQUIRED', [{ field: 'adapterConfig.callbackSecret', message: 'Required' }]);
+  }
+  const secrets: HttpJsonSecrets = {
+    apiKeyEncrypted: apiKey ? encrypt(apiKey) : previous?.secrets?.apiKeyEncrypted ?? null,
+    callbackSecretEncrypted: config.callback ? (callbackSecret ? encrypt(callbackSecret) : previous?.secrets?.callbackSecretEncrypted ?? null) : null,
+  };
+  if (config.auth.type !== 'NONE' && !secrets.apiKeyEncrypted) {
+    throw AppError.unprocessable('Enter the API key for this provider', 'API_KEY_REQUIRED', [{ field: 'adapterConfig.apiKey', message: 'Required' }]);
+  }
+  return { adapterType: 'HTTP_JSON', adapterConfig: { ...config, secrets } as unknown as Prisma.InputJsonValue };
+}
+
 export async function createProvider(input: z.infer<typeof providerCreateBody>, actor: Actor, meta?: RequestMeta) {
-  const { networkIds, countryIds, reason, ...data } = input;
+  const { networkIds, countryIds, reason, adapterType, adapterConfig, ...data } = input;
   const networks = await assertNetworks(networkIds);
   const countries = await assertCountries(countryIds);
+  const adapter = await buildAdapterData(adapterType, adapterConfig);
   const p = await prisma.$transaction(async (tx) => {
     const row = await tx.smsProvider.create({
       data: {
         ...data,
+        ...adapter,
         routePrefixes: [],
         healthNote: data.healthNote ?? null,
         notes: data.notes ?? null,
@@ -310,19 +361,21 @@ export async function createProvider(input: z.infer<typeof providerCreateBody>, 
     );
     return row;
   });
+  await SmsProviderFactory.refresh();
   return p;
 }
 
 export async function updateProvider(id: string, input: z.infer<typeof providerUpdateBody>, actor: Actor, meta?: RequestMeta) {
-  const { networkIds, countryIds, reason, ...data } = input;
+  const { networkIds, countryIds, reason, adapterType, adapterConfig, ...data } = input;
   const networks = networkIds ? await assertNetworks(networkIds) : null;
   const countries = countryIds ? await assertCountries(countryIds) : null;
-  return prisma.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx) => {
     const before = await tx.smsProvider.findUnique({ where: { id } });
     if (!before) throw AppError.notFound('Provider');
+    const adapter = adapterType !== undefined || adapterConfig !== undefined ? await buildAdapterData(adapterType ?? (before.adapterType as 'NONE' | 'HTTP_JSON'), adapterConfig, before) : null;
     const beforeNetworks = (await tx.smsProviderNetwork.findMany({ where: { providerId: id } })).map((l) => l.networkId).sort();
     const beforeCountries = (await tx.smsProviderCountry.findMany({ where: { providerId: id } })).map((l) => l.countryId).sort();
-    const updated = await tx.smsProvider.update({ where: { id }, data: { ...data, costPerSms: data.costPerSms ? D(data.costPerSms) : undefined } });
+    const updated = await tx.smsProvider.update({ where: { id }, data: { ...data, ...(adapter ?? {}), costPerSms: data.costPerSms ? D(data.costPerSms) : undefined } });
     if (networks) {
       await tx.smsProviderNetwork.deleteMany({ where: { providerId: id } });
       if (networks.length) await tx.smsProviderNetwork.createMany({ data: networks.map((networkId) => ({ providerId: id, networkId })) });
@@ -337,6 +390,16 @@ export async function updateProvider(id: string, input: z.infer<typeof providerU
       const to = fieldValue(updated, k);
       if (from !== to) changes[k] = { from, to };
     }
+    if (adapter) {
+      // Never log URLs' secrets: only the type, the endpoints and whether keys changed.
+      const view = (a: Pick<SmsProvider, 'adapterType' | 'adapterConfig'>) => {
+        const c = (a.adapterConfig ?? {}) as StoredConfig & { sendUrl?: string };
+        return { type: a.adapterType, sendUrl: c.sendUrl ?? null, apiKey: c.secrets?.apiKeyEncrypted ?? null, callbackSecret: c.secrets?.callbackSecretEncrypted ?? null };
+      };
+      const b = view(before);
+      const a = view(updated);
+      if (JSON.stringify(b) !== JSON.stringify(a)) changes.integration = { from: { type: b.type, sendUrl: b.sendUrl }, to: { type: a.type, sendUrl: a.sendUrl, apiKeyChanged: b.apiKey !== a.apiKey, callbackSecretChanged: b.callbackSecret !== a.callbackSecret } };
+    }
     if (networks && networks.slice().sort().join() !== beforeNetworks.join()) changes.networkIds = { from: beforeNetworks, to: networks.slice().sort() };
     if (countries && countries.slice().sort().join() !== beforeCountries.join()) changes.countryIds = { from: beforeCountries, to: countries.slice().sort() };
     if (Object.keys(changes).length) {
@@ -345,6 +408,8 @@ export async function updateProvider(id: string, input: z.infer<typeof providerU
     }
     return updated;
   });
+  await SmsProviderFactory.refresh();
+  return result;
 }
 
 // ── Routing simulator (read-only) ───────────────────────────────────────

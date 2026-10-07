@@ -1,5 +1,8 @@
 import type { SmsProvider as SmsProviderRow } from '@prisma/client';
-import { env, isTest } from '../../config/env';
+import { env, isProduction, isTest } from '../../config/env';
+import { logger } from '../../config/logger';
+import { prisma } from '../../config/prisma';
+import { HttpJsonSmsProvider, httpJsonConfigSchema, type HttpJsonSecrets } from './HttpJsonSmsProvider';
 import { SimulationSmsProvider } from './SimulationSmsProvider';
 import type { SmsProviderAdapter } from './SmsProvider';
 
@@ -42,18 +45,58 @@ const registry: Record<string, () => SmsProviderAdapter> = {
 
 const instances = new Map<string, SmsProviderAdapter>();
 
+/**
+ * Adapters built from provider rows (created in the admin UI), keyed like the static registry.
+ * Every provider without a code adapter gets a simulator, so a new provider works in simulation
+ * mode straight away; providers configured as HTTP_JSON also get a production adapter.
+ */
+let dynamic = new Map<string, SmsProviderAdapter>();
+let refreshTimer: NodeJS.Timeout | undefined;
+
+function buildDynamic(rows: SmsProviderRow[]) {
+  const next = new Map<string, SmsProviderAdapter>();
+  for (const p of rows) {
+    const code = p.code.toLowerCase();
+    const simKey = `${code}-simulation`;
+    if (!(simKey in registry)) next.set(simKey, sim(simKey, `${p.name} (simulated)`, code.slice(0, 3).toUpperCase(), `${p.code}-SIM`)());
+    if (p.adapterType !== 'HTTP_JSON') continue;
+    const prodKey = `${code}-production`;
+    if (prodKey in registry) continue;
+    const { secrets, ...raw } = (p.adapterConfig ?? {}) as Record<string, unknown> & { secrets?: HttpJsonSecrets };
+    const parsed = httpJsonConfigSchema.safeParse(raw);
+    if (!parsed.success) {
+      logger.warn({ provider: p.code }, 'Provider has an invalid HTTP adapter configuration; it will not be routable');
+      continue;
+    }
+    next.set(prodKey, new HttpJsonSmsProvider({ key: prodKey, network: p.name, config: parsed.data, secrets: secrets ?? {}, allowPrivate: !isProduction }));
+  }
+  return next;
+}
+
 export const SmsProviderFactory = {
   available(): string[] {
-    return Object.keys(registry);
+    return [...new Set([...Object.keys(registry), ...dynamic.keys()])];
+  },
+  /** Rebuild the adapters that come from provider rows. Call at startup, after a provider changes, and periodically. */
+  async refresh(): Promise<void> {
+    dynamic = buildDynamic(await prisma.smsProvider.findMany());
+  },
+  /** Keeps this process in step with provider changes made through another process (API ↔ worker). */
+  startAutoRefresh(everyMs = 30_000) {
+    if (refreshTimer || isTest) return;
+    refreshTimer = setInterval(() => void this.refresh().catch((err) => logger.error({ err }, 'Could not reload provider adapters')), everyMs);
+    refreshTimer.unref();
   },
   has(key: string): boolean {
-    return key in registry;
+    return key in registry || dynamic.has(key);
   },
   get(key: string): SmsProviderAdapter {
+    const fromRow = dynamic.get(key);
+    if (fromRow) return fromRow;
     const existing = instances.get(key);
     if (existing) return existing;
     const make = registry[key];
-    if (!make) throw new Error(`Unknown SMS adapter "${key}". Available: ${Object.keys(registry).join(', ')}`);
+    if (!make) throw new Error(`Unknown SMS adapter "${key}". Available: ${this.available().join(', ')}`);
     const adapter = make();
     instances.set(key, adapter);
     return adapter;

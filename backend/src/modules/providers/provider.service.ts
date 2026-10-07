@@ -1,4 +1,5 @@
 import { Prisma, type CapacityEntryType, type SmsProvider } from '@prisma/client';
+import { env } from '../../config/env';
 import { logger } from '../../config/logger';
 import { prisma, type Tx } from '../../config/prisma';
 import { SmsProviderFactory } from '../../integrations/sms/SmsProviderFactory';
@@ -28,11 +29,20 @@ export function weightedAverageCost(p: Pick<SmsProvider, 'totalSpent' | 'totalPu
   return p.totalPurchased > 0 ? D(p.totalSpent).div(p.totalPurchased) : D(p.costPerSms);
 }
 
+/** The stored integration without its encrypted secrets (only whether they are set). */
+export function publicAdapterConfig(p: Pick<SmsProvider, 'adapterType' | 'adapterConfig'>) {
+  if (p.adapterType !== 'HTTP_JSON' || !p.adapterConfig) return null;
+  const { secrets, ...config } = p.adapterConfig as Record<string, unknown> & { secrets?: { apiKeyEncrypted?: string | null; callbackSecretEncrypted?: string | null } };
+  return { ...config, hasApiKey: !!secrets?.apiKeyEncrypted, hasCallbackSecret: !!secrets?.callbackSecretEncrypted };
+}
+
 export function serializeProvider(p: SmsProvider) {
   const adapterKey = SmsProviderFactory.keyFor(p);
   const available = SmsProviderFactory.has(adapterKey);
   return {
     ...p,
+    adapterConfig: publicAdapterConfig(p),
+    callbackUrl: `${env.API_PUBLIC_URL}/api/v1/callbacks/sms/${SmsProviderFactory.keyFor({ code: p.code, mode: 'PRODUCTION' })}`,
     costPerSms: D(p.costPerSms).toFixed(4),
     totalSpent: D(p.totalSpent).toFixed(2),
     averageCost: weightedAverageCost(p).toFixed(4),
