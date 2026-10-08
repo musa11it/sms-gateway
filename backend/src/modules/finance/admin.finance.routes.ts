@@ -32,6 +32,11 @@ adminFinanceRouter.get(
     const canProfit = req.user!.platformPermissions.has('profit.view');
     if (!canProfit) {
       summary.money.grossMargin = null as unknown as string;
+      summary.money.salesProfit = null as unknown as string;
+      summary.money.costOfSmsSold = null as unknown as string;
+      summary.money.costRecoveredOnRefunds = null as unknown as string;
+      summary.unitEconomics.avgCostPerCredit = null;
+      summary.unitEconomics.profitPerCredit = null;
       summary.money.netProfit = null as unknown as string;
       summary.money.netMarginPercent = null;
       summary.unitEconomics.salesContribution = null as unknown as string;

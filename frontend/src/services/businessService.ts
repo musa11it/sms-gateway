@@ -332,8 +332,8 @@ export interface FinanceOverview {
   currency: string;
   canViewProfit: boolean;
   smsProfit: SmsFigures & { pending: { messages: number; credits: number; revenue: string; providerCost: string } };
-  money: { revenue: string; providerSpend: string; grossMargin: string | null; refunds: string; paymentFees: string; otherExpenses: string; netProfit: string | null; netMarginPercent: number | null };
-  unitEconomics: { salesRevenue: string; estimatedProviderCostOfSales: string; paymentFeesOnSales: string; salesContribution: string | null; costOfSmsDelivered: string };
+  money: { revenue: string; costOfSmsSold: string | null; salesProfit: string | null; grossMargin: string | null; refunds: string; costRecoveredOnRefunds: string | null; paymentFees: string; otherExpenses: string; netProfit: string | null; netMarginPercent: number | null; providerSpend: string; cashReceived: string };
+  unitEconomics: { creditsSold: number; avgSellingPricePerCredit: string | null; avgCostPerCredit: string | null; profitPerCredit: string | null; salesRevenue: string; estimatedProviderCostOfSales: string; paymentFeesOnSales: string; salesContribution: string | null; costOfSmsDelivered: string };
   sms: {
     purchasedFromProviders: number;
     soldToCustomers: number;
@@ -345,7 +345,7 @@ export interface FinanceOverview {
   };
   counts: { payments: number; providerPurchases: number; refunds: number; expenses: number; sales: number };
   formula: Record<string, string>;
-  series: { label: string; revenue: string; providerSpend: string; costs: string; profit: string | null; smsSold: number; smsPurchased: number; smsUsed: number }[];
+  series: { label: string; revenue: string; providerSpend: string; costOfSmsSold: string; costs: string; profit: string | null; smsSold: number; smsPurchased: number; smsUsed: number }[];
   providers: { id: string; code: string; name: string; status: string; purchased: number; spend: string; used: number; remaining: number; lowCapacityThreshold: number }[];
   recentPayments: { id: string; reference: string; organization: { id: string; name: string }; amount: string; fee: string; currency: string; status: string; createdAt: string }[];
   recentProviderPurchases: { id: string; reference: string; provider: { code: string; name: string }; quantity: number; totalCost: string; currency: string; status: string; createdAt: string }[];

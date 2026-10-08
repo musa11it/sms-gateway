@@ -12,14 +12,15 @@ import { REALIZED_STATUSES, figures, profitTotals } from './smsFinancials.servic
  *   Provider cost         = Σ cost of the provider capacity lots those SMS consumed, each lot at its own cost
  *   Gross profit          = SMS revenue − Provider cost;  Gross margin = Gross profit ÷ SMS revenue
  *
- * Cash view (money in / money out in the period):
- *   Customer revenue      = Σ verified customer payments (SUCCESS or later REFUNDED)       [payments]
- *   Provider spend        = Σ successful purchases of SMS capacity from providers           [provider_purchases]
- *   Gross SMS margin      = Customer revenue − Provider spend                                (cash basis)
- *   Refunds               = Σ refunds issued to customers                                   [refunds]
+ * Sales view (the headline profit): profit is made when SMS credits are SOLD, not when stock is bought.
+ *   Sales revenue         = Σ price paid for credit bundles sold in the period               [customer_purchases.revenue]
+ *   Cost of SMS sold      = Σ credits sold × provider unit cost at the time of sale          [customer_purchases.estimatedProviderCost]
+ *   Sales profit          = Sales revenue − Cost of SMS sold                                 (e.g. 1,000 credits sold at 15, cost 6 → 9,000)
+ *   Refunds               = Σ refunds issued to customers, less the cost of the credits taken back
  *   Payment fees          = Σ processing fees reported by the payment provider              [payments.feeAmount]
  *   Other expenses        = Σ recorded operating expenses                                   [expenses]
- *   Net profit            = Gross SMS margin − Refunds − Payment fees − Other expenses
+ *   Net profit            = Sales profit − Refunds (net) − Payment fees − Other expenses
+ * Provider capacity bought is STOCK: it is shown for information but is never a cost until it is sold.
  *
  * Unit economics (accrual view, per sale):
  *   Sale contribution     = revenue − estimated provider cost of the credits − payment fee  [customer_purchases]
@@ -48,30 +49,52 @@ export async function financialSummary(from: Date, to: Date) {
   const segmentsDelivered = -usage.reduce((a, u) => a + (u._sum.amount ?? 0), 0);
 
   const smsProfit = await profitTotals({ from, to });
-  const revenue = dec(payments._sum.amount);
+  // Cost of the credits taken back by refunds: they return to stock, so that part of the sale cost is recovered.
+  const [refundCost] = await prisma.$queryRaw<{ costBack: unknown }[]>`
+    SELECT COALESCE(SUM(COALESCE(c.estimatedProviderCost * r.creditsReversed / NULLIF(c.credits, 0), 0)), 0) AS costBack
+    FROM refunds r LEFT JOIN customer_purchases c ON c.paymentId = r.paymentId
+    WHERE r.createdAt BETWEEN ${from} AND ${to}`;
+  const salesRevenue = dec(sales._sum.revenue);
+  const costOfSmsSold = dec(sales._sum.estimatedProviderCost);
+  const salesProfit = salesRevenue.minus(costOfSmsSold);
   const providerSpend = dec(purchases._sum.totalCost);
   const refundTotal = dec(refunds._sum.amount);
+  const costRecoveredOnRefunds = new Prisma.Decimal(String(refundCost?.costBack ?? 0)).toDecimalPlaces(2);
   const paymentFees = dec(payments._sum.feeAmount);
   const otherExpenses = dec(expenses._sum.amount);
-  const grossMargin = revenue.minus(providerSpend);
-  const netProfit = grossMargin.minus(refundTotal).minus(paymentFees).minus(otherExpenses);
+  const netProfit = salesProfit.minus(refundTotal).plus(costRecoveredOnRefunds).minus(paymentFees).minus(otherExpenses);
+  const soldCredits = sales._sum.credits ?? 0;
 
   return {
     currency: await getSetting('billing.currency'),
     /** Realized SMS gross profit (segment level): the primary profitability figure. */
     smsProfit: smsProfit as Omit<typeof smsProfit, 'grossProfit' | 'grossMarginPercent'> & { grossProfit: string | null; grossMarginPercent: number | null },
     money: {
-      revenue: money(revenue),
-      providerSpend: money(providerSpend),
-      grossMargin: money(grossMargin),
+      /** Sales revenue: what customers paid for the credit bundles sold in the period. */
+      revenue: money(salesRevenue),
+      /** Provider unit cost of the credits sold. */
+      costOfSmsSold: money(costOfSmsSold),
+      /** Sales revenue − cost of SMS sold. */
+      salesProfit: money(salesProfit),
+      /** Same as salesProfit (kept for existing clients). */
+      grossMargin: money(salesProfit),
       refunds: money(refundTotal),
+      costRecoveredOnRefunds: money(costRecoveredOnRefunds),
       paymentFees: money(paymentFees),
       otherExpenses: money(otherExpenses),
       netProfit: money(netProfit),
-      netMarginPercent: revenue.gt(0) ? netProfit.div(revenue).mul(100).toDecimalPlaces(1).toNumber() : null,
+      netMarginPercent: salesRevenue.gt(0) ? netProfit.div(salesRevenue).mul(100).toDecimalPlaces(1).toNumber() : null,
+      /** Information only: capacity bought from providers is stock, not a cost, until it is sold. */
+      providerSpend: money(providerSpend),
+      /** Cash actually received from customers in the period (verified payments). */
+      cashReceived: money(dec(payments._sum.amount)),
     },
     unitEconomics: {
-      salesRevenue: money(dec(sales._sum.revenue)),
+      salesRevenue: money(salesRevenue),
+      creditsSold: soldCredits,
+      avgSellingPricePerCredit: soldCredits ? salesRevenue.div(soldCredits).toFixed(4) : null,
+      avgCostPerCredit: soldCredits ? costOfSmsSold.div(soldCredits).toFixed(4) : null,
+      profitPerCredit: soldCredits ? salesProfit.div(soldCredits).toFixed(4) : null,
       estimatedProviderCostOfSales: money(dec(sales._sum.estimatedProviderCost)),
       paymentFeesOnSales: money(dec(sales._sum.paymentFee)),
       salesContribution: money(dec(sales._sum.contribution)),
@@ -89,8 +112,8 @@ export async function financialSummary(from: Date, to: Date) {
     counts: { payments: payments._count, providerPurchases: purchases._count, refunds: refunds._count, expenses: expenses._count, sales: sales._count },
     formula: {
       smsGrossProfit: 'Revenue of SMS segments accepted by providers (at the price their credits were bought at) − cost of the provider capacity lots they consumed',
-      grossMargin: 'Customer revenue − Provider spend (cash basis)',
-      netProfit: 'Gross SMS margin − Refunds − Payment fees − Other expenses',
+      grossMargin: 'Sales revenue − Cost of SMS sold (credits sold × provider unit cost)',
+      netProfit: 'Sales profit − Refunds (net of cost recovered) − Payment fees − Other expenses. Provider stock purchases are not a cost.',
       saleContribution: 'Sale revenue − Estimated provider cost of credits − Payment fee',
       costBasis: 'Provider cost uses the weighted-average cost of purchased capacity',
     },
@@ -98,23 +121,24 @@ export async function financialSummary(from: Date, to: Date) {
 }
 
 export async function financialSeries(from: Date, to: Date, unit: Unit, tz = DEFAULT_TZ) {
-  type Sums = { label: string; a: Prisma.Decimal | null; b: Prisma.Decimal | null };
+  type Sums = { label: string; a: Prisma.Decimal | null; b: Prisma.Decimal | null; c2?: Prisma.Decimal | null };
   const t = (col: string) => localBucket(Prisma.raw(col), unit, tz, from, to);
   const [payments, purchases, refunds, expenses, sales, usage] = await Promise.all([
     prisma.$queryRaw<Sums[]>`
-      SELECT ${t('p.verifiedAt')} AS label, SUM(p.amount) AS a, SUM(p.feeAmount) AS b FROM payments p
+      SELECT ${t('p.verifiedAt')} AS label, SUM(p.feeAmount) AS a, NULL AS b FROM payments p
       WHERE p.status IN ('SUCCESS','REFUNDED') AND p.verifiedAt BETWEEN ${from} AND ${to} GROUP BY label`,
     prisma.$queryRaw<Sums[]>`
       SELECT ${t('pp.completedAt')} AS label, SUM(pp.totalCost) AS a, SUM(pp.quantity) AS b FROM provider_purchases pp
       WHERE pp.status = 'SUCCESS' AND pp.completedAt BETWEEN ${from} AND ${to} GROUP BY label`,
     prisma.$queryRaw<Sums[]>`
-      SELECT ${t('r.createdAt')} AS label, SUM(r.amount) AS a, NULL AS b FROM refunds r
+      SELECT ${t('r.createdAt')} AS label, SUM(r.amount - COALESCE(c.estimatedProviderCost * r.creditsReversed / NULLIF(c.credits, 0), 0)) AS a, NULL AS b
+      FROM refunds r LEFT JOIN customer_purchases c ON c.paymentId = r.paymentId
       WHERE r.createdAt BETWEEN ${from} AND ${to} GROUP BY label`,
     prisma.$queryRaw<Sums[]>`
       SELECT ${t('e.incurredAt')} AS label, SUM(e.amount) AS a, NULL AS b FROM expenses e
       WHERE e.deletedAt IS NULL AND e.incurredAt BETWEEN ${from} AND ${to} GROUP BY label`,
     prisma.$queryRaw<Sums[]>`
-      SELECT ${t('c.createdAt')} AS label, SUM(c.credits) AS a, NULL AS b FROM customer_purchases c
+      SELECT ${t('c.createdAt')} AS label, SUM(c.credits) AS a, SUM(c.revenue) AS b, SUM(c.estimatedProviderCost) AS c2 FROM customer_purchases c
       WHERE c.createdAt BETWEEN ${from} AND ${to} GROUP BY label`,
     prisma.$queryRaw<Sums[]>`
       SELECT ${t('l.createdAt')} AS label, -SUM(l.amount) AS a, NULL AS b FROM provider_capacity_ledger l
@@ -124,8 +148,9 @@ export async function financialSeries(from: Date, to: Date, unit: Unit, tz = DEF
   const [pay, pur, ref, exp, sold, used] = [payments, purchases, refunds, expenses, sales, usage].map((rows) => fillBuckets(labels, rows));
   const rows = labels.map((label, i) => ({
     label,
-    revenue: pay[i]?.a ?? null,
-    fees: pay[i]?.b ?? null,
+    revenue: sold[i]?.b ?? null,
+    salesCost: sold[i]?.c2 ?? null,
+    fees: pay[i]?.a ?? null,
     spend: pur[i]?.a ?? null,
     purchased: pur[i]?.b ?? null,
     refunds: ref[i]?.a ?? null,
@@ -136,12 +161,16 @@ export async function financialSeries(from: Date, to: Date, unit: Unit, tz = DEF
   return rows.map((r) => {
     const revenue = dec(r.revenue);
     const spend = dec(r.spend);
-    const profit = revenue.minus(spend).minus(dec(r.refunds)).minus(dec(r.fees)).minus(dec(r.expenses));
+    const costOfSales = dec(r.salesCost);
+    // Costs are the cost of the SMS sold plus refunds (net), fees and expenses; stock bought is not a cost.
+    const costs = costOfSales.plus(dec(r.refunds)).plus(dec(r.fees)).plus(dec(r.expenses));
+    const profit = revenue.minus(costs);
     return {
       label: r.label,
       revenue: money(revenue),
       providerSpend: money(spend),
-      costs: money(spend.plus(dec(r.refunds)).plus(dec(r.fees)).plus(dec(r.expenses))),
+      costOfSmsSold: money(costOfSales),
+      costs: money(costs),
       profit: money(profit),
       smsSold: Number(r.sold ?? 0),
       smsPurchased: Number(r.purchased ?? 0),

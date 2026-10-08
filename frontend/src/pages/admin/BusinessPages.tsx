@@ -142,9 +142,9 @@ export function FinancePage() {
       ) : (
         <>
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <StatCard label="Customer payments" icon={<Banknote />} tone="emerald" loading={q.isLoading} value={m(d?.money.revenue)} hint={`Cash received · ${fmtNumber(d?.counts.payments)} verified payments`} />
-            <StatCard label="Provider stock purchases" icon={<ShoppingCart />} tone="amber" loading={q.isLoading} value={m(d?.money.providerSpend)} hint={`Cash paid · ${fmtNumber(d?.counts.providerPurchases)} capacity purchases`} />
-            <StatCard label="Cash margin" icon={<TrendingUp />} tone="brand" loading={q.isLoading} value={m(d?.money.grossMargin)} hint="Payments − stock purchases (cash basis, not gross profit)" />
+            <StatCard label="Sales revenue" icon={<Banknote />} tone="emerald" loading={q.isLoading} value={m(d?.money.revenue)} hint={`${fmtNumber(d?.unitEconomics.creditsSold)} credits sold · ${fmtNumber(d?.counts.sales)} sales`} />
+            <StatCard label="Cost of SMS sold" icon={<ShoppingCart />} tone="slate" loading={q.isLoading} value={m(d?.money.costOfSmsSold)} hint={d?.canViewProfit === false ? 'Requires profit permission' : 'Provider unit cost of the credits sold'} />
+            <StatCard label="Sales profit" icon={<TrendingUp />} tone="emerald" loading={q.isLoading} value={m(d?.money.salesProfit)} hint={d?.unitEconomics.profitPerCredit != null ? `${m(d.unitEconomics.profitPerCredit)} profit per credit` : 'Sales revenue − cost of SMS sold'} />
             <StatCard
               label="Net profit"
               icon={<Calculator />}
@@ -178,23 +178,29 @@ export function FinancePage() {
               </div>
             </Card>
             <Card padded={false}>
-              <CardHeader title="Cash profit calculation" description="Money in and out in the selected period" />
+              <CardHeader title="Profit calculation" description="What we sold against what it cost us, in the selected period" />
               <div className="space-y-2 p-5 text-sm">
                 {[
-                  ['Customer payments', d?.money.revenue, 'plus'],
-                  ['Provider stock purchases', d?.money.providerSpend, 'minus'],
-                  ['Cash margin', d?.money.grossMargin, 'subtotal'],
+                  ['Sales revenue', d?.money.revenue, 'plus'],
+                  ['Cost of SMS sold', d?.money.costOfSmsSold, 'minus'],
+                  ['Sales profit', d?.money.salesProfit, 'subtotal'],
                   ['Refunds', d?.money.refunds, 'minus'],
+                  ['Cost recovered on refunded credits', d?.money.costRecoveredOnRefunds, 'plus'],
                   ['Payment fees', d?.money.paymentFees, 'minus'],
                   ['Other expenses', d?.money.otherExpenses, 'minus'],
                   ['Net profit', d?.money.netProfit, 'total'],
                 ].map(([label, value, kind]) => (
                   <div key={label as string} className={cn('flex justify-between', (kind === 'subtotal' || kind === 'total') && 'border-t border-slate-200 pt-2 font-semibold', kind === 'total' && 'text-base')}>
-                    <span className="text-slate-600">{kind === 'minus' ? '− ' : kind === 'plus' ? '' : ''}{label as string}</span>
+                    <span className="text-slate-600">{kind === 'minus' ? '− ' : ''}{label as string}</span>
                     <span className={cn('tabular-nums', kind === 'minus' && 'text-slate-500')}>{q.isLoading ? '…' : m(value as string | null)}</span>
                   </div>
                 ))}
-                <p className="pt-3 text-xs text-slate-500">Cash view: stock bought in the period counts as a cost even if it is not used yet. SMS gross profit above matches revenue and cost per segment instead. Amounts in {cur}.</p>
+                <div className="mt-3 space-y-1 border-t border-slate-100 pt-3 text-[13px] text-slate-500">
+                  <div className="flex justify-between"><span>Selling price per credit (average)</span><span className="tabular-nums">{q.isLoading ? '…' : m(d?.unitEconomics.avgSellingPricePerCredit)}</span></div>
+                  <div className="flex justify-between"><span>Provider cost per credit (average)</span><span className="tabular-nums">{q.isLoading ? '…' : m(d?.unitEconomics.avgCostPerCredit)}</span></div>
+                  <div className="flex justify-between"><span>Provider stock bought (not a cost)</span><span className="tabular-nums">{q.isLoading ? '…' : m(d?.money.providerSpend)}</span></div>
+                </div>
+                <p className="pt-2 text-[13px] text-slate-500">Profit is made when credits are sold: price paid minus the provider cost of those credits. Buying stock from providers is not a cost until it is sold. Amounts in {cur}.</p>
               </div>
             </Card>
           </div>
@@ -728,7 +734,7 @@ export function AdminBusinessSummary() {
           ['Customer revenue (SMS sent)', d ? fmtMoney(d.smsProfit.revenue, cur) : '—', Banknote],
           ['Provider cost', d ? fmtMoney(d.smsProfit.providerCost, cur) : '—', ShoppingCart],
           ['Gross profit', d?.smsProfit.grossProfit != null ? `${fmtMoney(d.smsProfit.grossProfit, cur)} · ${d.smsProfit.grossMarginPercent}%` : '—', TrendingUp],
-          ['Net cash profit', d?.money.netProfit != null ? fmtMoney(d.money.netProfit, cur) : '—', Calculator],
+          ['Net profit', d?.money.netProfit != null ? fmtMoney(d.money.netProfit, cur) : '—', Calculator],
           ['SMS sold / used', d ? `${fmtNumber(d.sms.soldToCustomers)} / ${fmtNumber(d.sms.usedByCustomers)}` : '—', Coins],
           ['Provider capacity', d ? fmtNumber(d.sms.providerCapacityRemaining) : '—', Boxes],
         ].map(([label, value, Icon]) => {

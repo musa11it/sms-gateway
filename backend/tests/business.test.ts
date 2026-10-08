@@ -162,24 +162,30 @@ describe('finance', () => {
       .send({ category: 'INFRASTRUCTURE', description: 'Hosting', amount: '2000', incurredAt: new Date().toISOString() })
       .expect(201);
 
+    // Profit is made when credits are SOLD: stock bought from providers (11,000) is not a cost until it is sold.
+    const cost = sale.estimatedProviderCost;
+    const salesProfit = sale.revenue.minus(cost);
     const s = await financialSummary(from, new Date());
     expect(s.money.revenue).toBe('13000.00');
-    expect(s.money.providerSpend).toBe('11000.00');
-    expect(s.money.grossMargin).toBe('2000.00');
+    expect(s.money.costOfSmsSold).toBe(cost.toFixed(2));
+    expect(s.money.salesProfit).toBe(salesProfit.toFixed(2));
+    expect(s.money.providerSpend).toBe('11000.00'); // information only
     expect(s.money.paymentFees).toBe('195.00');
     expect(s.money.otherExpenses).toBe('2000.00');
-    expect(s.money.netProfit).toBe('-195.00'); // 13000 − 11000 − 0 − 195 − 2000
+    expect(s.money.netProfit).toBe(salesProfit.minus(195).minus(2000).toFixed(2));
+    expect(s.unitEconomics.profitPerCredit).toBe(salesProfit.div(1000).toFixed(4));
     expect(s.sms.soldToCustomers).toBe(1000);
     expect(s.sms.purchasedFromProviders).toBe(1000);
 
-    // Refund is recorded as its own ledger row and reduces profit.
+    // A refund gives back the money; the credits return to stock, so the cost of those credits is recovered.
     const finance = await createStaff('FINANCE');
     await request(app).post(`/api/v1/admin/billing/payments/${payment.id}/refund`).set(auth(finance.token)).send({ reason: 'Customer request' }).expect(200);
     const refund = await prisma.refund.findUniqueOrThrow({ where: { paymentId: payment.id } });
     expect(refund).toMatchObject({ creditsReversed: 1000 });
     const after = await financialSummary(from, new Date());
     expect(after.money.refunds).toBe('13000.00');
-    expect(after.money.netProfit).toBe('-13195.00');
+    expect(after.money.costRecoveredOnRefunds).toBe(cost.toFixed(2));
+    expect(after.money.netProfit).toBe('-2195.00'); // sale fully undone; fee and expense remain
   });
 
   it('profit figures require profit.view; support cannot see finance at all', async () => {
