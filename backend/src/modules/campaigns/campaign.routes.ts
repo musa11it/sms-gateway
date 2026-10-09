@@ -21,6 +21,8 @@ const body = z.object({
   phones: z.array(z.string().trim().min(3).max(30)).max(50_000).optional(),
   scheduledAt: z.coerce.date().optional().nullable(),
   timezone: z.string().max(64).optional(),
+  // Destination networks the campaign is limited to (empty = any configured network).
+  networkIds: z.array(z.string().uuid()).max(50).optional().nullable(),
 });
 
 campaignRouter.get(
@@ -147,6 +149,7 @@ campaignRouter.post(
         groupIds: c.groups.map((g) => g.groupId),
         phones: c.recipients.map((r) => r.phone),
         timezone: c.timezone,
+        networkIds: Array.isArray(c.networkIds) ? (c.networkIds as string[]) : null,
       },
       actorFromRequest(req),
       metaFromRequest(req),

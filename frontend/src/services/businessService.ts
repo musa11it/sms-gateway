@@ -1,5 +1,5 @@
 import { del, downloadFile, get, getPage, http, patch, post } from '@/api/client';
-import type { CustomerFinanceRow, Paginated } from '@/api/types';
+import type { CountryDirectory, CustomerFinanceRow, DestinationCountry, NetworkQuote, Paginated } from '@/api/types';
 
 /** Supply side, finance and platform-owner business data (Super Admin console). */
 
@@ -148,6 +148,13 @@ export interface SmsNetwork {
   prefixes: string[];
   nationalNumberLengths: number[];
   isActive: boolean;
+  status?: 'ACTIVE' | 'MAINTENANCE' | 'INACTIVE';
+  inMaintenance?: boolean;
+  maintenanceNote?: string | null;
+  requiresSenderRegistration?: boolean;
+  supportsOutbound?: boolean;
+  supportsInbound?: boolean;
+  sortOrder?: number;
   providerCount?: number;
   providers: { id: string; name: string; code: string }[];
 }
@@ -461,6 +468,14 @@ export const businessService = {
 };
 
 export const siteService = {
+  /** Public pricing page data: countries, services, networks, customer selling prices, availability. */
+  destinations: () => get<{ countries: DestinationCountry[]; currency: string }>('/site/destinations'),
+  /** Searchable, light country list; `defaultIsoCode` = the home country (`prefer` = ISO code or name). */
+  countries: (params: { search?: string; limit?: number; prefer?: string }) => get<CountryDirectory>('/site/countries', params),
+  /** One country with its telecoms, prices and availability. */
+  country: (isoCode: string) => get<DestinationCountry>(`/site/countries/${isoCode}`),
+  /** Public calculator (same engine as checkout, without account purchase history). */
+  quote: (items: { networkId: string; quantity: number }[]) => post<NetworkQuote>('/site/quote', { items }),
   pricing: () => get<{ id: string; name: string | null; minQuantity: number; maxQuantity: number | null; unitPrice: string; currency: string }[]>('/site/pricing'),
   contact: (body: { name: string; email: string; phone?: string; company?: string; message: string; website?: string }) => post<{ id: string }>('/site/contact', body),
 };

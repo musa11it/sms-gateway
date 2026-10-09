@@ -9,6 +9,8 @@ import { asyncHandler, created, ok, paginated, paginationSchema, parse, toSkipTa
 import { getSetting } from '../settings/settings.service';
 import { streamInvoicePdf } from '../invoices/invoicePdf';
 import * as svc from './payment.service';
+import { calculateSmsPurchasePrice } from '../pricing/pricing.service';
+import { quoteNetworkPurchase } from '../pricing/networkPricing.service';
 
 export const paymentRouter = Router();
 
@@ -19,10 +21,24 @@ paymentRouter.get(
     const q = parse(paginationSchema.extend({ status: z.enum(['PENDING', 'PROCESSING', 'SUCCESS', 'FAILED', 'CANCELLED', 'REFUNDED']).optional() }), req.query);
     const where: Prisma.PaymentWhereInput = { organizationId: req.org!.id, ...(q.status ? { status: q.status } : {}) };
     const [items, total] = await Promise.all([
-      prisma.payment.findMany({ where, orderBy: { createdAt: 'desc' }, ...toSkipTake(q), include: { invoice: { select: { id: true, number: true } } } }),
+      prisma.payment.findMany({ where, orderBy: { createdAt: 'desc' }, ...toSkipTake(q), include: { invoice: { select: { id: true, number: true } }, items: true } }),
       prisma.payment.count({ where }),
     ]);
     return paginated(res, items.map(svc.serializePayment), q.page, q.limit, total);
+  }),
+);
+
+/**
+ * The exact quote checkout will charge this organization: same engine as POST /payments, including
+ * monthly-volume tiers (which count this organization's purchases this month). Informational only.
+ */
+paymentRouter.post(
+  '/quote',
+  requireOrgPermission('wallet.purchase', 'payments.create'),
+  asyncHandler(async (req, res) => {
+    const body = parse(z.object({ items: z.unknown().optional(), quantity: z.unknown().optional() }).strict(), req.body);
+    if (body.items !== undefined) return ok(res, await quoteNetworkPurchase(body.items, prisma, { organizationId: req.org!.id }));
+    return ok(res, await calculateSmsPurchasePrice(body.quantity, prisma, { organizationId: req.org!.id }));
   }),
 );
 
@@ -31,19 +47,31 @@ paymentRouter.post(
   requireOrgPermission('wallet.purchase', 'payments.create'),
   asyncHandler(async (req, res) => {
     const body = parse(
-      // Any quantity, priced by the active pricing tier. Client-sent prices are ignored; fixed packages are retired.
+      // Either `items` (SMS for destination networks: [{ networkId, quantity }]) or `quantity` (general
+      // credits). Prices, totals and discounts are always computed by the server: client-sent ones are rejected.
       z
         .object({
           packageId: z.unknown().optional(),
-          quantity: z.unknown(),
+          quantity: z.unknown().optional(),
+          items: z.unknown().optional(),
           method: z.enum(['MOBILE_MONEY', 'CARD', 'BANK_TRANSFER']),
           payerPhone: z.string().trim().max(30).optional().nullable(),
+          unitPrice: z.unknown().optional(),
+          amount: z.unknown().optional(),
+          total: z.unknown().optional(),
+          discount: z.unknown().optional(),
         })
         .refine((b) => b.packageId === undefined, { message: 'SMS packages are no longer sold. Enter the quantity of SMS credits to buy.', path: ['packageId'] })
-        .refine((b) => b.quantity !== undefined, { message: 'Enter the quantity of SMS credits to buy', path: ['quantity'] }),
+        // Network purchases refuse client prices outright; the original quantity API keeps ignoring them (existing contract).
+        .refine((b) => b.items === undefined || (b.unitPrice === undefined && b.amount === undefined && b.total === undefined && b.discount === undefined), {
+          message: 'Prices are calculated by the server and cannot be submitted',
+          path: ['amount'],
+        })
+        .refine((b) => b.quantity !== undefined || b.items !== undefined, { message: 'Enter the quantity of SMS to buy', path: ['quantity'] })
+        .refine((b) => b.quantity === undefined || b.items === undefined, { message: 'Send either items (per network) or quantity (general credits), not both', path: ['items'] }),
       req.body,
     );
-    const result = await svc.createPayment(req.org!.id, { quantity: body.quantity, method: body.method, payerPhone: body.payerPhone }, actorFromRequest(req), metaFromRequest(req));
+    const result = await svc.createPayment(req.org!.id, { quantity: body.quantity, items: body.items, method: body.method, payerPhone: body.payerPhone }, actorFromRequest(req), metaFromRequest(req));
     return created(res, result, 'Payment initiated');
   }),
 );
@@ -53,7 +81,7 @@ paymentRouter.get(
   requireOrgPermission('payments.view'),
   asyncHandler(async (req, res) => {
     const { id } = parse(uuidParam, req.params);
-    const p = await prisma.payment.findFirst({ where: { id, organizationId: req.org!.id }, include: { invoice: { select: { id: true, number: true } } } });
+    const p = await prisma.payment.findFirst({ where: { id, organizationId: req.org!.id }, include: { invoice: { select: { id: true, number: true } }, items: true } });
     if (!p) throw AppError.notFound('Payment');
     return ok(res, svc.serializePayment(p));
   }),
@@ -68,7 +96,7 @@ paymentRouter.post(
     const p = await prisma.payment.findFirst({ where: { id, organizationId: req.org!.id } });
     if (!p) throw AppError.notFound('Payment');
     await svc.verifyAndApply(p.id, actorFromRequest(req), metaFromRequest(req));
-    const updated = await prisma.payment.findUniqueOrThrow({ where: { id }, include: { invoice: { select: { id: true, number: true } } } });
+    const updated = await prisma.payment.findUniqueOrThrow({ where: { id }, include: { invoice: { select: { id: true, number: true } }, items: true } });
     return ok(res, svc.serializePayment(updated));
   }),
 );

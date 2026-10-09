@@ -13,19 +13,25 @@ import { queue } from '../../workers/queue';
 import { audit } from '../audit-logs/audit.service';
 import { notifyOrganization } from '../notifications/notification.service';
 import { getSetting } from '../settings/settings.service';
-import { readConsumption } from '../wallet/creditLots';
+import { readConsumption, type NetworkScope } from '../wallet/creditLots';
 import { applyLedgerEntry, scheduleLowBalanceCheck } from '../wallet/wallet.service';
 import { recipientRevenue } from '../finance/smsFinancials.service';
 import { checkDestination } from '../providers/destination.service';
 import { releaseMessageCapacity, releaseRecipientCapacity, routeAndReserve } from '../providers/provider.service';
 import { loadRoutingContext } from '../providers/routing.service';
 import { checkAllocationAlert, reserveSenderCredits } from '../senders/allocation.service';
+import { assertSenderCompatible, senderCompatibility, type NetworkRef } from '../senders/senderNetworks.service';
 import { emitWebhookEvent } from '../webhooks/webhook.service';
 import { analyzeMessage, assertSendable } from './segmentation.service';
 
 export interface RecipientInput {
   phone: string;
   contactId?: string | null;
+}
+
+/** A validated recipient and the destination network its number belongs to (null = no configured network). */
+export interface PreparedRecipient extends RecipientInput {
+  networkId: string | null;
 }
 
 export interface SendSmsInput {
@@ -43,6 +49,11 @@ export interface SendSmsInput {
   clientReference?: string | null;
   campaignId?: string | null;
   apiKeyId?: string | null;
+  /**
+   * Destination networks the customer chose to send to. When given, recipients on any other network
+   * (or on no configured network) are refused — the selection is a delivery constraint, not a hint.
+   */
+  networkIds?: string[] | null;
 }
 
 // ── Quote (pure, server-side cost calculation) ──────────────────────────
@@ -52,11 +63,16 @@ export interface SendSmsInput {
  * number must be valid for its country's numbering plan and the country must be configured for
  * sending (destination.service). Invalid/unsupported numbers are returned with the reason.
  */
-export async function prepareRecipients(organizationId: string, raw: (string | RecipientInput)[]) {
+export async function prepareRecipients(organizationId: string, raw: (string | RecipientInput)[], opts: { networkIds?: string[] | null } = {}) {
   const cc = await getSetting('sms.defaultCountryCode');
   const ctx = await loadRoutingContext(prisma);
+  const selected = opts.networkIds?.length ? new Set(opts.networkIds) : null;
+  if (selected) {
+    const unknown = [...selected].filter((id) => !ctx.networks.some((n) => n.id === id));
+    if (unknown.length) throw AppError.unprocessable('One or more selected networks are not available for sending', 'NETWORK_NOT_AVAILABLE', [{ field: 'networkIds', message: 'Unknown or unavailable network' }]);
+  }
   const invalid: FieldError[] = [];
-  const unique = new Map<string, RecipientInput>();
+  const unique = new Map<string, PreparedRecipient>();
   raw.forEach((r, i) => {
     const input = typeof r === 'string' ? { phone: r } : r;
     const phone = normalizePhone(input.phone, cc);
@@ -66,7 +82,9 @@ export async function prepareRecipients(organizationId: string, raw: (string | R
     }
     const dest = checkDestination(ctx, phone);
     if (!dest.ok) invalid.push({ field: `recipients.${i}`, message: `${phone}: ${dest.reason}` });
-    else if (!unique.has(dest.phone)) unique.set(dest.phone, { phone: dest.phone, contactId: input.contactId ?? null });
+    else if (selected && (!dest.network || !selected.has(dest.network.id))) {
+      invalid.push({ field: `recipients.${i}`, message: `${phone}: ${dest.network ? dest.network.name : `${dest.countryName} (no configured network)`} is not one of the selected networks` });
+    } else if (!unique.has(dest.phone)) unique.set(dest.phone, { phone: dest.phone, contactId: input.contactId ?? null, networkId: dest.network?.id ?? null });
   });
 
   // Honour opt-outs: never send to unsubscribed or blocked contacts.
@@ -78,7 +96,39 @@ export async function prepareRecipients(organizationId: string, raw: (string | R
     : [];
   for (const c of optedOut) unique.delete(c.phone);
 
-  return { recipients: [...unique.values()], invalid, duplicates: raw.length - invalid.length - unique.size - optedOut.length, optedOut: optedOut.length };
+  return { recipients: [...unique.values()], invalid, duplicates: raw.length - invalid.length - unique.size - optedOut.length, optedOut: optedOut.length, networks: ctx.networks };
+}
+
+/**
+ * Recipients grouped by destination network, in a stable order (configured networks by name, then
+ * numbers outside any configured network). Sends use this order so every group's credits, sender
+ * check and debit scope line up with its recipients.
+ */
+export function groupByNetwork(recipients: PreparedRecipient[], networks: { id: string; name: string; requiresSenderRegistration: boolean; countryCode: string }[]) {
+  const groups = new Map<string | null, PreparedRecipient[]>();
+  for (const r of recipients) groups.set(r.networkId, [...(groups.get(r.networkId) ?? []), r]);
+  return [...groups.entries()]
+    .map(([networkId, list]) => ({ networkId, network: networkId ? (networks.find((n) => n.id === networkId) ?? null) : null, recipients: list }))
+    .sort((a, b) => (a.network ? 0 : 1) - (b.network ? 0 : 1) || (a.network?.name ?? '').localeCompare(b.network?.name ?? ''));
+}
+
+/** Debit scopes for grouped recipients: each group pays from credits valid for its network. */
+export function networkScopes(groups: ReturnType<typeof groupByNetwork>, creditsPerRecipient: number): NetworkScope[] {
+  return groups.map((g) => ({ networkId: g.networkId, credits: g.recipients.length * creditsPerRecipient, label: g.network?.name ?? 'numbers outside a configured network' }));
+}
+
+/** Sender compatibility per group (null for numbers outside a configured network: no network rule applies). */
+export async function senderCompatibilityFor(sender: { id: string; status: string }, groups: ReturnType<typeof groupByNetwork>) {
+  const nets = groups.filter((g) => g.network).map((g) => g.network as NetworkRef);
+  const checks = await senderCompatibility(prisma, sender, nets);
+  return groups.map((g) => (g.network ? (checks.find((c) => c.networkId === g.networkId) ?? null) : null));
+}
+
+/** Per-network credits the organization can spend: its own network lots + general lots. */
+export async function spendableByNetwork(organizationId: string, networkIds: (string | null)[]) {
+  const lots = await prisma.smsCreditLot.groupBy({ by: ['networkId'], where: { organizationId, remaining: { gt: 0 } }, _sum: { remaining: true } });
+  const general = lots.find((l) => l.networkId === null)?._sum.remaining ?? 0;
+  return new Map(networkIds.map((id) => [id, general + (id ? (lots.find((l) => l.networkId === id)?._sum.remaining ?? 0) : 0)]));
 }
 
 /** Server-side cost of a message: the active segmentation rules × recipients. Used by every send path. */
@@ -121,7 +171,7 @@ export async function sendSms(input: SendSmsInput) {
   const body = input.message;
   if (!body || !body.trim()) throw AppError.unprocessable('Message cannot be empty', 'EMPTY_MESSAGE', [{ field: 'message', message: 'Required' }]);
 
-  const prepared = await prepareRecipients(org.id, input.recipients);
+  const prepared = await prepareRecipients(org.id, input.recipients, { networkIds: input.networkIds });
   if (prepared.invalid.length && input.source !== 'CAMPAIGN') {
     // Nothing is reserved or charged: the whole request is refused with a reason per number.
     const n = prepared.invalid.length;
@@ -135,6 +185,13 @@ export async function sendSms(input: SendSmsInput) {
 
   const q = await quote(body, prepared.recipients.length);
   await assertSendable(q);
+
+  // Group by destination network: the sender ID must be valid on every network (checked per network,
+  // before anything is reserved or charged), and each group is charged from credits valid there.
+  const groups = groupByNetwork(prepared.recipients, prepared.networks);
+  await assertSenderCompatible(prisma, sender, groups.filter((g) => g.network).map((g) => g.network as NetworkRef));
+  const ordered = groups.flatMap((g) => g.recipients);
+  const scopes = networkScopes(groups, q.creditsPerRecipient);
 
   const hourlyLimit = org.smsHourlyLimit ?? (await getSetting('rateLimits.smsRecipientsPerHour'));
   if (hourlyLimit > 0) {
@@ -179,7 +236,7 @@ export async function sendSms(input: SendSmsInput) {
         });
         // Route each destination to an upstream provider and reserve provider capacity
         // (in segments) atomically with the customer's wallet debit below.
-        const routes = await routeAndReserve(tx, { reservationRef: messageId, phones: prepared.recipients.map((r) => r.phone), segmentsPerRecipient: q.segments, actor: input.actor });
+        const routes = await routeAndReserve(tx, { reservationRef: messageId, phones: ordered.map((r) => r.phone), segmentsPerRecipient: q.segments, actor: input.actor });
         // Sender IDs with a credit allocation draw from it; others may only use unreserved credits.
         ({ allocationId } = await reserveSenderCredits(tx, { organizationId: org.id, senderId: sender.id, senderName: sender.name, credits: q.totalCredits }));
         // Credits are deducted when the message is accepted (reserved for scheduled sends;
@@ -191,12 +248,14 @@ export async function sendSms(input: SendSmsInput) {
           reference: `sms:${messageId}`,
           description: `${input.source === 'CAMPAIGN' ? 'Campaign' : 'SMS'} to ${prepared.recipients.length.toLocaleString()} recipient(s) × ${q.segments} segment(s)`,
           createdById: actorUserId(input.actor),
-          metadata: { messageId, recipients: prepared.recipients.length, segments: q.segments, segmentationVersion: q.segmentationVersion, source: input.source, ...(allocationId ? { allocationId } : {}) },
+          metadata: { messageId, recipients: prepared.recipients.length, segments: q.segments, segmentationVersion: q.segmentationVersion, source: input.source, networks: scopes, ...(allocationId ? { allocationId } : {}) },
+          networkScopes: scopes,
         });
         // Each recipient's credits, in order, from the credit lots the debit consumed (price frozen per lot).
-        const revenues = recipientRevenue(readConsumption(debit.transaction.metadata), q.creditsPerRecipient, prepared.recipients.length);
+        // Recipients are in network-group order, the same order the scoped debit consumed lots in.
+        const revenues = recipientRevenue(readConsumption(debit.transaction.metadata), q.creditsPerRecipient, ordered.length);
         await tx.smsRecipient.createMany({
-          data: prepared.recipients.map((r, i) => {
+          data: ordered.map((r, i) => {
             const route = routes.get(r.phone)!;
             return {
               messageId,
@@ -226,7 +285,18 @@ export async function sendSms(input: SendSmsInput) {
             resource: 'sms_message',
             resourceId: messageId,
             organizationId: org.id,
-            metadata: { recipients: prepared.recipients.length, encoding: q.encoding, characters: q.characterCount, segments: q.segments, segmentationVersion: q.segmentationVersion, credits: q.totalCredits, sender: sender.name, source: input.source, scheduledAt: scheduled },
+            metadata: {
+              recipients: prepared.recipients.length,
+              encoding: q.encoding,
+              characters: q.characterCount,
+              segments: q.segments,
+              segmentationVersion: q.segmentationVersion,
+              credits: q.totalCredits,
+              sender: sender.name,
+              source: input.source,
+              scheduledAt: scheduled,
+              networks: groups.map((g) => ({ networkId: g.networkId, network: g.network?.name ?? null, recipients: g.recipients.length })),
+            },
             meta: input.meta,
           },
           tx,
@@ -510,6 +580,12 @@ export async function retryRecipient(recipientId: string, actor: Actor, meta?: R
   const org = await prisma.organization.findUniqueOrThrow({ where: { id: r.organizationId } });
   if (org.status !== 'ACTIVE') throw AppError.conflict('Organization is not active', 'ORGANIZATION_NOT_ACTIVE');
 
+  // Same rules as the original send: the sender ID must still be valid on the recipient's network.
+  if (r.networkId) {
+    const [network, sender] = await Promise.all([prisma.smsNetwork.findUnique({ where: { id: r.networkId } }), prisma.senderId.findUnique({ where: { id: r.message.senderId } })]);
+    if (network && sender) await assertSenderCompatible(prisma, sender, [network]);
+  }
+
   await prisma.$transaction(async (tx) => {
     let recharge: { revenue?: Prisma.Decimal; revenueLots?: Prisma.InputJsonValue } = {};
     if (r.refunded) {
@@ -522,6 +598,8 @@ export async function retryRecipient(recipientId: string, actor: Actor, meta?: R
         description: `Retry of message to ${r.phone}`,
         createdById: actorUserId(actor),
         metadata: { recipientId: r.id, ...(allocationId ? { allocationId } : {}) },
+        // Paid from credits valid for the recipient's network, like the original send.
+        networkScopes: [{ networkId: r.networkId, credits: r.credits }],
       });
       // The re-charge draws from today's lots: revenue follows the credits actually used.
       const [rev] = recipientRevenue(readConsumption(debit.transaction.metadata), r.credits, 1);

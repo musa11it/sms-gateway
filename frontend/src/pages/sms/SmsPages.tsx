@@ -17,6 +17,7 @@ import { useDebounce } from '@/hooks/useDebounce';
 import { contactService } from '@/services/contactService';
 import { senderService } from '@/services/senderService';
 import { smsService } from '@/services/smsService';
+import { NetworkPicker } from '@/components/sms/Destinations';
 import { cn, fmtDateTime, fmtNumber, fmtRelative, titleCase } from '@/utils/format';
 import { MessageEstimateBar, useMessageEstimate } from '@/components/sms/MessageEstimate';
 
@@ -63,6 +64,10 @@ export function SendSmsPage() {
   const [scheduledAt, setScheduledAt] = useState('');
   const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID());
   const [confirm, setConfirm] = useState(false);
+  // Optional delivery constraint: only these destination networks (empty = any configured network).
+  const [networkIds, setNetworkIds] = useState<string[]>([]);
+  const eligible = useQuery({ queryKey: ['senders', 'eligible', networkIds], queryFn: () => senderService.eligible(networkIds), enabled: networkIds.length > 0 });
+  const blockedSender = (id: string) => eligible.data?.find((e) => e.id === id && !e.compatible);
 
   useEffect(() => {
     if (!senderId && approved.length) setSenderId(approved[0].id);
@@ -70,7 +75,7 @@ export function SendSmsPage() {
 
   const numbers = useMemo(() => parseNumbers(numbersText), [numbersText]);
   const { estimate, pending: estimating } = useMessageEstimate(message);
-  const quoteInput = useDebounce({ message, recipients: numbers, groupIds }, 400);
+  const quoteInput = useDebounce({ message, recipients: numbers, groupIds, networkIds: networkIds.length ? networkIds : undefined, senderId: senderId || undefined }, 400);
   const quote = useQuery({
     queryKey: ['sms-quote', quoteInput],
     queryFn: () => smsService.quote(quoteInput),
@@ -89,6 +94,7 @@ export function SendSmsPage() {
         scheduledAt: schedule && scheduledAt ? new Date(scheduledAt).toISOString() : null,
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         idempotencyKey,
+        networkIds: networkIds.length ? networkIds : undefined,
       }),
     {
       success: (d) => (d.status === 'SCHEDULED' ? 'Message scheduled' : `Message queued for ${fmtNumber(d.recipientCount)} recipient(s)`),
@@ -117,7 +123,9 @@ export function SendSmsPage() {
     );
 
   const hasRecipients = numbers.length > 0 || groupIds.length > 0;
-  const canSend = !!senderId && message.trim().length > 0 && hasRecipients && (!schedule || !!scheduledAt) && !!q && q.recipientCount > 0 && q.invalid.length === 0 && q.sufficientBalance && !estimate?.tooLong;
+  const canSend =
+    !!senderId && message.trim().length > 0 && hasRecipients && (!schedule || !!scheduledAt) && !!q && q.recipientCount > 0 && q.invalid.length === 0 && q.sufficientBalance && q.senderCompatible !== false && !estimate?.tooLong;
+  const senderProblems = (q?.byNetwork ?? []).filter((n) => n.sender && !n.sender.compatible);
   const senderName = approved.find((s) => s.id === senderId)?.name ?? '';
 
   return (
@@ -125,15 +133,27 @@ export function SendSmsPage() {
       <PageHeader title="Send SMS" description="Compose a message to individual numbers or whole contact groups." breadcrumbs={[{ label: 'Messaging' }, { label: 'Send SMS' }]} />
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
         <Card className="space-y-6 p-6">
-          <Field label="Sender ID" required hint="Only approved sender IDs are listed.">
+          <NetworkPicker selected={networkIds} onChange={setNetworkIds} label="Networks (optional)" />
+
+          <Field label="Sender ID" required hint={networkIds.length ? 'Only sender IDs approved for these networks can be used.' : undefined}>
             <Select value={senderId} onChange={(e) => setSenderId(e.target.value)}>
-              {approved.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                </option>
-              ))}
+              {approved.map((s) => {
+                const blocked = blockedSender(s.id);
+                return (
+                  <option key={s.id} value={s.id} disabled={!!blocked}>
+                    {s.name}
+                    {blocked ? ` — not approved for ${blocked.networks.filter((n) => !n.compatible).map((n) => n.networkName).join(', ')}` : ''}
+                  </option>
+                );
+              })}
             </Select>
           </Field>
+          {senderProblems.length > 0 && (
+            <Alert tone="danger" title="This sender ID cannot be used for every recipient">
+              {senderProblems.map((n) => `${n.networkName}: ${n.sender!.reason}`).join(' · ')}. Choose another sender ID, send to these networks separately, or{' '}
+              <Link to="/app/senders" className="link">request registration</Link>.
+            </Alert>
+          )}
 
           <div>
             <p className="label">Recipients</p>
@@ -206,6 +226,23 @@ export function SendSmsPage() {
                 <div className="flex justify-between"><dt className="text-slate-500">Recipients</dt><dd className="font-medium tabular-nums">{fmtNumber(q.recipientCount)}</dd></div>
                 <div className="flex justify-between"><dt className="text-slate-500">Encoding</dt><dd className="font-medium">{q.encoding === 'GSM7' ? 'GSM-7' : 'Unicode'}</dd></div>
                 <div className="flex justify-between"><dt className="text-slate-500">Segments per recipient</dt><dd className="font-medium tabular-nums">{q.segments}</dd></div>
+                {(q.byNetwork?.length ?? 0) > 0 && (
+                  <div className="rounded-lg bg-slate-50 p-2 ring-1 ring-inset ring-slate-100">
+                    <p className="mb-1 text-xs font-medium text-slate-500">By destination network</p>
+                    {q.byNetwork!.map((n) => (
+                      <div key={n.networkId ?? 'other'} className="flex items-start justify-between gap-2 py-0.5 text-xs">
+                        <span className="text-slate-700">
+                          {n.networkName ?? 'Other numbers'} · {fmtNumber(n.recipients)}
+                          {n.sender && !n.sender.compatible && <span className="block text-red-600">Sender ID {n.sender.reason}</span>}
+                        </span>
+                        <span className={cn('text-right tabular-nums', !n.sufficientCredits && 'font-semibold text-red-600')}>
+                          {fmtNumber(n.credits)} cr
+                          <span className="block text-slate-400">{fmtNumber(n.availableCredits)} available</span>
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {(q.duplicates > 0 || q.optedOut > 0) && (
                   <div className="flex justify-between text-xs"><dt className="text-slate-500">Skipped</dt><dd>{q.duplicates} duplicate · {q.optedOut} opted-out</dd></div>
                 )}
@@ -217,7 +254,9 @@ export function SendSmsPage() {
             )}
             {q && !q.sufficientBalance && (
               <Alert tone="warning" className="mt-3" action={can('wallet.purchase') && <LinkButton to="/app/wallet/buy" size="xs">Buy SMS</LinkButton>}>
-                Not enough credits.
+                {q.byNetwork?.some((n) => !n.sufficientCredits)
+                  ? `Not enough credits for ${q.byNetwork.filter((n) => !n.sufficientCredits).map((n) => n.networkName ?? 'other numbers').join(', ')}. Credits bought for one network cannot be used for another.`
+                  : 'Not enough credits.'}
               </Alert>
             )}
             <Button size="lg" className="mt-4 w-full" disabled={!canSend} loading={send.isPending} onClick={() => setConfirm(true)} icon={schedule ? <CalendarClock className="h-4 w-4" /> : <Send className="h-4 w-4" />}>

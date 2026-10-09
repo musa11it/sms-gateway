@@ -29,7 +29,10 @@ export type RoutingNetwork = SmsNetwork & { prefixList: string[] };
 
 export interface RoutingContext {
   providers: RoutingProvider[];
+  /** Active networks of active countries (maintenance ones included: detection reports them). */
   networks: RoutingNetwork[];
+  /** Deactivated networks: their numbers are recognised and refused, never routed as "no network". */
+  inactiveNetworks?: RoutingNetwork[];
   countries: SmsCountry[];
   rules: SmsRoutingRule[];
 }
@@ -82,7 +85,7 @@ export async function loadRoutingContext(db: Db): Promise<RoutingContext> {
     db.smsProviderNetwork.findMany(),
     db.smsProviderCountry.findMany(),
     db.smsCountry.findMany({ orderBy: { name: 'asc' } }),
-    db.smsNetwork.findMany({ where: { isActive: true }, orderBy: [{ countryCode: 'asc' }, { name: 'asc' }] }),
+    db.smsNetwork.findMany({ orderBy: [{ countryCode: 'asc' }, { name: 'asc' }] }),
     db.smsRoutingRule.findMany({ where: { isActive: true }, orderBy: [{ priority: 'asc' }, { createdAt: 'asc' }] }),
   ]);
   // Networks of inactive countries are not routable.
@@ -94,7 +97,8 @@ export async function loadRoutingContext(db: Db): Promise<RoutingContext> {
       countryIds: countryLinks.filter((l) => l.providerId === p.id).map((l) => l.countryId),
     })),
     countries,
-    networks: networks.filter((n) => activeCountries.has(n.countryCode)).map((n) => ({ ...n, prefixList: stringList(n.prefixes) })),
+    networks: networks.filter((n) => n.isActive && activeCountries.has(n.countryCode)).map((n) => ({ ...n, prefixList: stringList(n.prefixes) })),
+    inactiveNetworks: networks.filter((n) => !n.isActive).map((n) => ({ ...n, prefixList: stringList(n.prefixes) })),
     rules,
   };
 }

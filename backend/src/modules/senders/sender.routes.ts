@@ -6,6 +6,7 @@ import { actorFromRequest, metaFromRequest } from '../../types/actor';
 import { asyncHandler, created, ok, parse, uuidParam } from '../../utils/http';
 import * as allocations from './allocation.service';
 import * as svc from './sender.service';
+import * as networks from './senderNetworks.service';
 
 export const senderRouter = Router();
 
@@ -14,6 +15,8 @@ const requestBody = z.object({
   purpose: z.string().trim().min(10, 'Describe the purpose in at least 10 characters').max(1000),
   sampleMessage: z.string().trim().max(640).optional().nullable(),
   useCase: z.string().trim().max(80).optional().nullable(),
+  // Telecoms this sender ID will send to (e.g. MTN only, Airtel only, or both). Empty = any network.
+  networkIds: z.array(z.string().uuid()).max(20).optional(),
 });
 
 senderRouter.get(
@@ -26,6 +29,53 @@ senderRouter.get(
       orderBy: [{ status: 'asc' }, { createdAt: 'desc' }],
     });
     return ok(res, senders);
+  }),
+);
+
+// ── Destination network compatibility ───────────────────────────────────
+
+/**
+ * Sender IDs usable for every given destination network (comma-separated ids), each with its per-network
+ * status, so the composer offers only compatible sender IDs and explains why the others cannot be used.
+ */
+senderRouter.get(
+  '/eligible',
+  requireOrgPermission('senders.view'),
+  asyncHandler(async (req, res) => {
+    const { networkIds } = parse(z.object({ networkIds: z.string().trim().max(2000).optional() }), req.query);
+    const ids = networkIds ? [...new Set(networkIds.split(',').map((s) => s.trim()).filter(Boolean))] : [];
+    const parsedIds = parse(z.array(z.string().uuid()).max(50), ids);
+    const nets = await prisma.smsNetwork.findMany({ where: { id: { in: parsedIds } } });
+    if (nets.length !== parsedIds.length) return ok(res, []);
+    const senders = await prisma.senderId.findMany({ where: { organizationId: req.org!.id, status: 'APPROVED' }, orderBy: { name: 'asc' } });
+    const out = [];
+    for (const s of senders) {
+      const checks = await networks.senderCompatibility(prisma, s, nets);
+      out.push({ id: s.id, name: s.name, compatible: checks.every((c) => c.compatible), networks: checks });
+    }
+    return ok(res, out);
+  }),
+);
+
+senderRouter.get(
+  '/:id/networks',
+  requireOrgPermission('senders.view'),
+  asyncHandler(async (req, res) => {
+    const { id } = parse(uuidParam, req.params);
+    const sender = await prisma.senderId.findFirst({ where: { id, organizationId: req.org!.id } });
+    if (!sender) return ok(res, []);
+    return ok(res, await networks.senderNetworkOverview(prisma, sender));
+  }),
+);
+
+/** Ask for the sender ID to be registered on destination networks that require it. */
+senderRouter.post(
+  '/:id/networks',
+  requireOrgPermission('senders.request'),
+  asyncHandler(async (req, res) => {
+    const { id } = parse(uuidParam, req.params);
+    const { networkIds } = parse(z.object({ networkIds: z.array(z.string().uuid()).min(1).max(50) }), req.body);
+    return ok(res, await networks.requestSenderNetworks(req.org!.id, id, networkIds, actorFromRequest(req), metaFromRequest(req)), 'Network registration requested');
   }),
 );
 

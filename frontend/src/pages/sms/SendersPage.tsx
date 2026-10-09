@@ -3,9 +3,9 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useQuery } from '@tanstack/react-query';
 import { z } from 'zod';
-import { BadgeCheck, Bell, PieChart, Plus, RotateCcw, ShieldCheck, Trash2 } from 'lucide-react';
+import { BadgeCheck, Bell, PieChart, Plus, Radio, RotateCcw, ShieldCheck, Trash2 } from 'lucide-react';
 import type { AllocationOverview, SenderAllocation, SenderId } from '@/api/types';
-import { StatusBadge } from '@/components/ui/Badge';
+import { Badge, StatusBadge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Alert, EmptyState, ErrorState, TableSkeleton } from '@/components/ui/Feedback';
@@ -15,6 +15,7 @@ import { PageHeader, ProgressBar } from '@/components/ui/Misc';
 import { useApiMutation } from '@/hooks/useApiMutation';
 import { useMe, usePermissions } from '@/hooks/useAuth';
 import { senderService } from '@/services/senderService';
+import { NetworkPicker } from '@/components/sms/Destinations';
 import { fmtDate, fmtNumber } from '@/utils/format';
 import { handleFormError } from '@/utils/forms';
 
@@ -39,13 +40,25 @@ function SenderForm({ open, onClose, editing }: { open: boolean; onClose: () => 
       ? { name: editing.name, purpose: editing.purpose, useCase: editing.useCase ?? '', sampleMessage: editing.sampleMessage ?? '' }
       : { name: '', purpose: '', useCase: 'Transactional', sampleMessage: '' },
   });
-  const save = useApiMutation((v: V) => (editing ? senderService.update(editing.id, v) : senderService.request(v)), {
+  // Telecoms this sender ID is for (empty = any network).
+  const [networkIds, setNetworkIds] = useState<string[]>([]);
+  const current = useQuery({ queryKey: ['senders', editing?.id, 'networks'], queryFn: () => senderService.networks(editing!.id), enabled: open && !!editing?.restrictToNetworks });
+  const [loadedFor, setLoadedFor] = useState<string | null | undefined>(undefined);
+  if (open && loadedFor !== (editing?.id ?? null) && (!editing?.restrictToNetworks || current.data)) {
+    setLoadedFor(editing?.id ?? null);
+    setNetworkIds(editing?.restrictToNetworks ? (current.data ?? []).filter((r) => r.requested).map((r) => r.networkId) : []);
+  }
+  const close = () => {
+    setLoadedFor(undefined);
+    onClose();
+  };
+  const save = useApiMutation((v: V) => (editing ? senderService.update(editing.id, { ...v, networkIds }) : senderService.request({ ...v, networkIds })), {
     success: editing ? 'Sender ID updated' : 'Sender ID submitted for review',
     invalidate: [['senders']],
     silentError: true,
     onSuccess: () => {
       form.reset();
-      onClose();
+      close();
     },
   });
   const e = form.formState.errors;
@@ -53,12 +66,11 @@ function SenderForm({ open, onClose, editing }: { open: boolean; onClose: () => 
   return (
     <Modal
       open={open}
-      onClose={onClose}
+      onClose={close}
       title={editing ? `Edit ${editing.name}` : 'Request a sender ID'}
-      description="The name recipients see as the sender. Our team reviews every request."
       footer={
         <>
-          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button variant="secondary" onClick={close}>Cancel</Button>
           <Button loading={save.isPending} onClick={form.handleSubmit((v) => save.mutate(v, { onError: (err) => handleFormError(err, form.setError) }))}>
             {editing ? 'Save changes' : 'Submit request'}
           </Button>
@@ -80,9 +92,13 @@ function SenderForm({ open, onClose, editing }: { open: boolean; onClose: () => 
         <Field label="Purpose" required error={e.purpose?.message} hint="Who receives these messages and why?">
           <Textarea rows={3} {...form.register('purpose')} invalid={!!e.purpose} />
         </Field>
-        <Field label="Sample message" hint="Helps reviewers approve faster.">
+        <Field label="Sample message">
           <Textarea rows={2} {...form.register('sampleMessage')} />
         </Field>
+        <div className="rounded-xl bg-slate-50 p-3 ring-1 ring-inset ring-slate-100">
+          <NetworkPicker selected={networkIds} onChange={setNetworkIds} label="Send to" />
+          <p className="mt-2 text-xs text-slate-500">{networkIds.length ? `Only ${networkIds.length === 1 ? 'this network' : 'these networks'}` : 'None selected = any network'}</p>
+        </div>
       </div>
     </Modal>
   );
@@ -151,6 +167,7 @@ export function SendersPage() {
                   <strong>Reviewer note:</strong> {s.reviewNote}
                 </Alert>
               )}
+              {s.status !== 'REJECTED' && <SenderNetworksBlock senderId={s.id} canRequest={can('senders.request') && s.status === 'APPROVED'} />}
               {s.status === 'APPROVED' && allocations.data && (
                 <AllocationBlock allocation={allocationOf(s.id)} canManage={can('senders.allocate')} onManage={() => setAllocating(s)} />
               )}
@@ -170,6 +187,50 @@ export function SendersPage() {
       <SenderForm open={open} onClose={() => setOpen(false)} editing={editing} />
       <AllocationModal sender={allocating} allocation={allocating ? allocationOf(allocating.id) : undefined} overview={allocations.data} onClose={() => setAllocating(null)} />
       <ConfirmDialog open={!!withdraw} onClose={() => setWithdraw(null)} title={`Withdraw "${withdraw?.name}"?`} description="The request will be removed." confirmLabel="Withdraw" loading={del.isPending} onConfirm={() => withdraw && del.mutate(withdraw.id)} />
+    </div>
+  );
+}
+
+// ── Destination network registration ────────────────────────────────────
+
+const NETWORK_STATUS: Record<string, { label: string; color: 'green' | 'amber' | 'red' | 'gray' }> = {
+  APPROVED: { label: 'Approved', color: 'green' },
+  PENDING: { label: 'Pending', color: 'amber' },
+  REJECTED: { label: 'Rejected', color: 'red' },
+  SUSPENDED: { label: 'Suspended', color: 'red' },
+  NOT_REGISTERED: { label: 'Not registered', color: 'gray' },
+};
+
+/** Networks that require sender registration, with this sender's status on each (others accept any approved sender ID). */
+function SenderNetworksBlock({ senderId, canRequest }: { senderId: string; canRequest: boolean }) {
+  const q = useQuery({ queryKey: ['senders', senderId, 'networks'], queryFn: () => senderService.networks(senderId) });
+  const request = useApiMutation((ids: string[]) => senderService.requestNetworks(senderId, ids), { success: 'Registration requested', invalidate: [['senders', senderId, 'networks'], ['senders', 'eligible']] });
+  const restricted = (q.data ?? []).some((r) => r.requested);
+  const rows = (q.data ?? []).filter((r) => (restricted ? r.requested : r.requiresRegistration));
+  if (!rows.length) return null;
+  const requestable = restricted ? [] : rows.filter((r) => r.status === 'NOT_REGISTERED' || r.status === 'REJECTED');
+  return (
+    <div className="mt-4 rounded-lg bg-slate-50 p-3 ring-1 ring-inset ring-slate-100">
+      <p className="flex items-center gap-1.5 text-xs font-medium text-slate-600"><Radio className="h-3.5 w-3.5" /> {restricted ? 'Sends to' : 'Registration needed'}</p>
+      <ul className="mt-2 space-y-1.5">
+        {rows.map((r) => {
+          const st = NETWORK_STATUS[r.status] ?? { label: r.status, color: 'gray' as const };
+          return (
+            <li key={r.networkId} className="flex items-start justify-between gap-2 text-xs">
+              <span className="text-slate-700">
+                {r.networkName}
+                {r.note && ['REJECTED', 'SUSPENDED'].includes(r.status) && <span className="block text-slate-500">{r.note}</span>}
+              </span>
+              <Badge color={st.color}>{st.label}</Badge>
+            </li>
+          );
+        })}
+      </ul>
+      {canRequest && requestable.length > 0 && (
+        <Button size="xs" variant="secondary" className="mt-3" loading={request.isPending} onClick={() => request.mutate(requestable.map((r) => r.networkId))}>
+          Request registration on {requestable.length === 1 ? requestable[0].networkName : `${requestable.length} networks`}
+        </Button>
+      )}
     </div>
   );
 }

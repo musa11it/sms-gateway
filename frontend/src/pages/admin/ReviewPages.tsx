@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { Check, Eye, FileCheck2, FileText, Info, RefreshCcw, ShieldCheck, X } from 'lucide-react';
+import { Check, Eye, FileCheck2, FileText, Info, Radio, RefreshCcw, ShieldCheck, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { downloadFile, errorMessage } from '@/api/client';
 import type { SenderId } from '@/api/types';
@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/Button';
 import { Card, CardHeader } from '@/components/ui/Card';
 import { Alert, EmptyState, ErrorState, PageLoader } from '@/components/ui/Feedback';
 import { Input, Select } from '@/components/ui/Form';
-import { ConfirmDialog } from '@/components/ui/Overlay';
+import { ConfirmDialog, Drawer } from '@/components/ui/Overlay';
 import { DataTable, Pagination } from '@/components/ui/Table';
 import { DescriptionList, PageHeader, Tabs } from '@/components/ui/Misc';
 import { useApiMutation } from '@/hooks/useApiMutation';
@@ -225,8 +225,65 @@ const SENDER_ACTIONS: Record<string, { label: string; perm: string; tone: 'succe
   reactivate: { label: 'Reactivate', perm: 'senders.suspend', tone: 'success', needsNote: false, from: ['SUSPENDED'] },
 };
 
+const NETWORK_ACTIONS = [
+  { status: 'APPROVED' as const, label: 'Approve', perm: 'senders.approve', from: ['NOT_REGISTERED', 'PENDING', 'REJECTED', 'SUSPENDED', 'NOT_REQUIRED'] },
+  { status: 'REJECTED' as const, label: 'Reject', perm: 'senders.reject', from: ['NOT_REGISTERED', 'PENDING'] },
+  { status: 'SUSPENDED' as const, label: 'Suspend', perm: 'senders.suspend', from: ['APPROVED'] },
+];
+
+const NETWORK_STATUS_COLOR: Record<string, 'green' | 'amber' | 'red' | 'gray'> = { APPROVED: 'green', PENDING: 'amber', REJECTED: 'red', SUSPENDED: 'red', NOT_REGISTERED: 'gray', NOT_REQUIRED: 'gray', SENDER_NOT_APPROVED: 'gray' };
+
+/** A sender ID's approval on every destination network. An approval is the only proof of compatibility. */
+function SenderNetworksDrawer({ sender, onClose }: { sender: SenderId | null; onClose: () => void }) {
+  const { canAdmin } = usePermissions();
+  const q = useQuery({ queryKey: ['admin', 'senders', sender?.id, 'networks'], queryFn: () => adminService.senderNetworks(sender!.id), enabled: !!sender });
+  const [note, setNote] = useState('');
+  const set = useApiMutation((v: { networkId: string; status: 'APPROVED' | 'REJECTED' | 'SUSPENDED' }) => adminService.setSenderNetwork(sender!.id, v.networkId, { status: v.status, note: note.trim() || undefined }), {
+    success: (_d, v) => `${titleCase(v.status)} on the network`,
+    invalidate: [['admin', 'senders']],
+    onSuccess: () => setNote(''),
+  });
+  return (
+    <Drawer open={!!sender} onClose={onClose} title={`${sender?.name ?? ''} · destination networks`} description="Networks marked “registration required” only accept this sender ID after an approval here.">
+      {q.isLoading ? (
+        <PageLoader />
+      ) : q.error ? (
+        <ErrorState error={q.error} />
+      ) : (
+        <div className="space-y-4">
+          <Input placeholder="Optional note to the customer (used for the next action)" value={note} onChange={(e) => setNote(e.target.value)} maxLength={1000} />
+          <ul className="divide-y divide-slate-100 rounded-xl ring-1 ring-slate-200">
+            {q.data!.map((r) => (
+              <li key={r.networkId} className="flex flex-wrap items-center justify-between gap-2 p-3">
+                <span className="min-w-0">
+                  <span className="block text-sm font-medium text-slate-900">{r.networkName} <span className="text-xs text-slate-400">{r.countryCode}</span></span>
+                  <span className="text-xs text-slate-500">
+                    {r.requiresRegistration ? 'Registration required' : 'Any approved sender ID'}
+                    {r.requestedAt && r.status === 'PENDING' ? ` · requested ${fmtRelative(r.requestedAt)}` : ''}
+                    {r.note ? ` · “${r.note}”` : ''}
+                  </span>
+                </span>
+                <span className="flex flex-wrap items-center gap-1">
+                  <Badge color={NETWORK_STATUS_COLOR[r.status] ?? 'gray'}>{titleCase(r.status)}</Badge>
+                  {r.requiresRegistration &&
+                    NETWORK_ACTIONS.filter((a) => a.from.includes(r.status) && canAdmin(a.perm)).map((a) => (
+                      <Button key={a.status} size="xs" variant={a.status === 'APPROVED' ? 'success' : 'secondary'} className={a.status !== 'APPROVED' ? 'text-red-600' : undefined} loading={set.isPending && set.variables?.networkId === r.networkId && set.variables.status === a.status} onClick={() => set.mutate({ networkId: r.networkId, status: a.status })}>
+                        {a.label}
+                      </Button>
+                    ))}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </Drawer>
+  );
+}
+
 export function SenderReviewPage() {
   const { canAdmin } = usePermissions();
+  const [networksFor, setNetworksFor] = useState<SenderId | null>(null);
   const [status, setStatus] = useState('PENDING');
   const [search, setSearch] = useState('');
   const debounced = useDebounce(search);
@@ -265,7 +322,22 @@ export function SenderReviewPage() {
           loading={q.isLoading}
           error={q.error}
           columns={[
-            { key: 'n', header: 'Sender ID', cell: (s) => <span className="font-mono text-[15px] font-semibold text-slate-900">{s.name}</span> },
+            {
+              key: 'n',
+              header: 'Sender ID',
+              cell: (s) => (
+                <span>
+                  <span className="font-mono text-[15px] font-semibold text-slate-900">{s.name}</span>
+                  <span className="mt-1 flex flex-wrap gap-1">
+                    {s.restrictToNetworks && s.networks?.length ? (
+                      s.networks.map((n) => <Badge key={n.network.id} color={n.status === 'APPROVED' ? 'green' : n.status === 'PENDING' ? 'amber' : 'red'}>{n.network.name}</Badge>)
+                    ) : (
+                      <Badge color="gray">Any network</Badge>
+                    )}
+                  </span>
+                </span>
+              ),
+            },
             { key: 'o', header: 'Organization', cell: (s) => <span><Link to={`/admin/organizations/${s.organization?.id}`} className="link">{s.organization?.name}</Link><span className="ml-2"><StatusBadge status={s.organization?.status ?? ''} /></span></span> },
             { key: 'p', header: 'Purpose', cell: (s) => <span className="block max-w-xs whitespace-normal text-xs text-slate-600">{s.useCase && <Badge className="mb-1">{s.useCase}</Badge>}<span className="block">{s.purpose}</span>{s.sampleMessage && <span className="mt-1 block italic text-slate-400">“{s.sampleMessage}”</span>}</span> },
             { key: 's', header: 'Status', cell: (s) => <StatusBadge status={s.status} /> },
@@ -276,6 +348,9 @@ export function SenderReviewPage() {
               className: 'text-right',
               cell: (s) => (
                 <span className="flex flex-wrap justify-end gap-1">
+                  {s.status === 'APPROVED' && (
+                    <Button size="xs" variant="ghost" icon={<Radio className="h-3 w-3" />} onClick={() => setNetworksFor(s)}>Networks</Button>
+                  )}
                   {Object.entries(SENDER_ACTIONS)
                     .filter(([, c]) => c.from.includes(s.status) && canAdmin(c.perm))
                     .map(([k, c]) => (
@@ -296,13 +371,20 @@ export function SenderReviewPage() {
         onClose={() => setAction(null)}
         tone={cfg?.tone ?? 'primary'}
         title={`${cfg?.label} "${action?.sender.name}"?`}
-        description={action?.action === 'approve' ? 'The organization will be able to send SMS with this sender ID.' : undefined}
+        description={
+          action?.action === 'approve'
+            ? action.sender.restrictToNetworks && action.sender.networks?.length
+              ? `Approves it for ${action.sender.networks.map((n) => n.network.name).join(' and ')}.`
+              : 'Approves it for any network.'
+            : undefined
+        }
         requireReason={cfg?.needsNote ? true : 'optional'}
         reasonLabel="Note to customer"
         confirmLabel={cfg?.label}
         loading={act.isPending}
         onConfirm={(n) => act.mutate(n)}
       />
+      <SenderNetworksDrawer sender={networksFor} onClose={() => setNetworksFor(null)} />
     </div>
   );
 }

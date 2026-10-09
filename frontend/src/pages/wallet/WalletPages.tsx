@@ -10,13 +10,27 @@ import { Alert, EmptyState, ErrorState, PageLoader, Skeleton } from '@/component
 import { Field, Input, Select } from '@/components/ui/Form';
 import { Modal } from '@/components/ui/Overlay';
 import { DataTable, Pagination } from '@/components/ui/Table';
-import { PageHeader } from '@/components/ui/Misc';
+import { PageHeader, SegmentedControl } from '@/components/ui/Misc';
 import { errorMessage } from '@/api/client';
 import { useApiMutation } from '@/hooks/useApiMutation';
 import { useDebounce } from '@/hooks/useDebounce';
 import { usePermissions } from '@/hooks/useAuth';
 import { invoiceService, paymentService, walletService, type NextAction } from '@/services/walletService';
 import { cn, fmtDate, fmtDateTime, fmtMoney, fmtNumber, titleCase } from '@/utils/format';
+import { NetworkBalancesCard, NetworkPurchase } from './NetworkPurchase';
+import { siteService } from '@/services/businessService';
+import { PricingExplorer } from '../site/PricingExplorer';
+
+/** Customer view of the public pricing page, with purchase actions for buyers. */
+export function AppPricingPage() {
+  const { can } = usePermissions();
+  return (
+    <div className="space-y-6">
+      <PageHeader title="Pricing" description="Compare each network’s price per SMS segment, then buy SMS for the networks you send to." breadcrumbs={[{ label: 'Wallet' }, { label: 'Pricing' }]} />
+      <PricingExplorer loggedIn canPurchase={can('wallet.purchase')} />
+    </div>
+  );
+}
 
 // ── Buy SMS ─────────────────────────────────────────────────────────────
 
@@ -51,6 +65,23 @@ function CheckoutModal({ payment, nextAction, simulation, onClose }: { payment: 
           <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-emerald-100"><CheckCircle2 className="h-8 w-8 text-emerald-600" /></div>
           <p className="mt-4 text-lg font-semibold text-slate-900">Payment confirmed</p>
           <p className="mt-1 text-sm text-slate-500">{fmtNumber(p.credits)} credits were added to your wallet after the provider verified the payment.</p>
+          {!!p.items?.length && (
+            <div className="mx-auto mt-4 max-w-sm rounded-xl bg-slate-50 p-3 text-left text-sm ring-1 ring-inset ring-slate-100">
+              <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Receipt · {p.reference}</p>
+              {p.items.map((i) => (
+                <div key={i.id} className="mt-2 flex justify-between gap-3">
+                  <span>
+                    {i.networkName}
+                    <span className="block text-xs text-slate-500">
+                      {fmtNumber(i.quantity)} SMS × {fmtMoney(i.unitPrice, p.currency)}
+                    </span>
+                  </span>
+                  <span className="tabular-nums">{fmtMoney(i.subtotal, p.currency)}</span>
+                </div>
+              ))}
+              <div className="mt-2 flex justify-between border-t border-slate-200 pt-2 font-semibold"><span>Total paid</span><span className="tabular-nums">{fmtMoney(p.amount, p.currency)}</span></div>
+            </div>
+          )}
           <div className="mt-6 flex justify-center gap-2">
             {p.invoice && <Button variant="secondary" icon={<FileText className="h-4 w-4" />} onClick={() => navigate(`/app/wallet/invoices/${p.invoice!.id}`)}>View invoice {p.invoice.number}</Button>}
             <Button onClick={() => navigate('/app/sms/send')}>Send SMS</Button>
@@ -121,6 +152,12 @@ const tierRange = (t: { minQuantity: number; maxQuantity: number | null }) =>
 export function BuySmsPage() {
   const tiers = useQuery({ queryKey: ['pricing', 'tiers'], queryFn: walletService.tiers });
   const wallet = useQuery({ queryKey: ['wallet'], queryFn: walletService.wallet });
+  const destinations = useQuery({ queryKey: ['site', 'countries', 'any'], queryFn: () => siteService.countries({ limit: 1 }) });
+  const balances = useQuery({ queryKey: ['wallet', 'balances'], queryFn: walletService.balances });
+  const hasNetworks = !!destinations.data?.defaultIsoCode;
+  // Buying by destination network is the default whenever a network is on sale; general credits stay available if priced.
+  const [modeChoice, setMode] = useState<'network' | 'general' | null>(null);
+  // Arriving from the Pricing page (?country=RW&items=<networkId>:<qty>,…) opens the network purchase prefilled.
   const [quantityText, setQuantityText] = useState('1000');
   const [method, setMethod] = useState<'MOBILE_MONEY' | 'CARD'>('MOBILE_MONEY');
   const [phone, setPhone] = useState('');
@@ -154,14 +191,27 @@ export function BuySmsPage() {
     ? { credits: quote.data!.quantity, total: quote.data!.total, currency: quote.data!.currency, unit: quote.data!.unitPrice, label: `Range ${quote.data!.tier.label}` }
     : null;
   const canPay = !!summary && !(method === 'MOBILE_MONEY' && phone.trim().length < 9);
-  const loading = tiers.isLoading;
+  const loading = tiers.isLoading || destinations.isLoading;
+  const mode = modeChoice ?? (hasNetworks || !(tiers.data?.length ?? 0) ? 'network' : 'general');
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Buy SMS"
-        description="Buy any amount of SMS credits. Your quantity determines the applicable discounted rate."
+        description="Buy more, pay less."
         breadcrumbs={[{ label: 'Wallet' }, { label: 'Buy SMS' }]}
+        actions={
+          hasNetworks && hasTiers ? (
+            <SegmentedControl
+              options={[
+                { value: 'network', label: 'By network' },
+                { value: 'general', label: 'General credits' },
+              ]}
+              value={mode}
+              onChange={setMode}
+            />
+          ) : undefined
+        }
       />
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard label="Current balance" icon={<Wallet />} value={fmtNumber(wallet.data?.balance)} loading={wallet.isLoading} hint={wallet.data?.reserved ? `credits · ${fmtNumber(wallet.data.reserved)} reserved for messages in progress` : 'credits'} />
@@ -181,8 +231,12 @@ export function BuySmsPage() {
         />
       </div>
 
+      <NetworkBalancesCard balances={balances.data} loading={balances.isLoading} />
+
       {loading ? (
         <Skeleton className="h-72 rounded-xl" />
+      ) : mode === 'network' ? (
+        <NetworkPurchase onCheckout={setCheckout} />
       ) : tiers.error ? (
         <Card><ErrorState error={tiers.error} /></Card>
       ) : !hasTiers ? (
@@ -192,8 +246,8 @@ export function BuySmsPage() {
           <Card className="grid gap-6 p-6 lg:grid-cols-[1fr_340px]">
               <div className="space-y-5">
                 <div>
-                  <h2 className="text-base font-semibold text-slate-900">Buy SMS credits</h2>
-                  <p className="mt-1 text-sm text-slate-500">Enter any whole number of SMS. The whole purchase is charged at the rate of the tier your quantity falls in.</p>
+                  <h2 className="text-base font-semibold text-slate-900">Buy general SMS credits</h2>
+                  <p className="mt-1 text-sm text-slate-500">General credits can be used for any destination network. Enter any whole number of SMS; the whole purchase is charged at the rate of the tier your quantity falls in.</p>
                 </div>
                 <Field label="Quantity (SMS credits)" error={quantityText.trim() !== '' && !quantityValid ? `Enter a whole number between 1 and ${fmtNumber(MAX_QUANTITY)}` : undefined}>
                   <Input

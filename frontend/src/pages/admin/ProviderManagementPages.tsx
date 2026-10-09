@@ -1077,7 +1077,7 @@ function ProviderPicker({ providers, value, onChange, hint }: { providers: Provi
   );
 }
 
-function CountryModal({ country, open, onClose, providers }: { country: SmsCountry | null; open: boolean; onClose: () => void; providers: Provider[] }) {
+export function CountryModal({ country, open, onClose, providers }: { country: SmsCountry | null; open: boolean; onClose: () => void; providers: Provider[] }) {
   const empty = { isoCode: '', name: '', validationMode: 'STRICT' as 'STRICT' | 'LENGTH', lengths: '', isActive: true, providerIds: [] as string[] };
   const [form, setForm] = useState(empty);
   const [loadedFor, setLoadedFor] = useState<string | null | undefined>(undefined);
@@ -1099,7 +1099,7 @@ function CountryModal({ country, open, onClose, providers }: { country: SmsCount
   };
   const save = useApiMutation(() => (country ? businessService.updateCountry(country.id, body) : businessService.createCountry(body)), {
     success: country ? 'Country updated' : 'Country added',
-    invalidate: [['admin', 'routing'], ['admin', 'providers']],
+    invalidate: [['admin', 'routing'], ['admin', 'providers'], ['admin', 'pricing']],
     onSuccess: close,
   });
   const valid = (country || /^[A-Za-z]{2}$/.test(form.isoCode.trim())) && lengthsValid(form.lengths);
@@ -1135,16 +1135,29 @@ function CountryModal({ country, open, onClose, providers }: { country: SmsCount
   );
 }
 
-function NetworkModal({ network, open, onClose, countries, providers }: { network: SmsNetwork | null; open: boolean; onClose: () => void; countries: SmsCountry[]; providers: Provider[] }) {
-  const empty = { code: '', name: '', countryCode: '', prefixes: '', lengths: '', isActive: true, providerIds: [] as string[] };
+export function NetworkModal({ network, open, onClose, countries, providers, defaultCountryCode }: { network: SmsNetwork | null; open: boolean; onClose: () => void; countries: SmsCountry[]; providers: Provider[]; defaultCountryCode?: string }) {
+  const empty = { code: '', name: '', countryCode: '', prefixes: '', lengths: '', isActive: true, providerIds: [] as string[], inMaintenance: false, maintenanceNote: '', requiresSenderRegistration: false, supportsOutbound: true, sortOrder: '0' };
   const [form, setForm] = useState(empty);
   const [loadedFor, setLoadedFor] = useState<string | null | undefined>(undefined);
   if (open && loadedFor !== (network?.id ?? null)) {
     setLoadedFor(network?.id ?? null);
     setForm(
       network
-        ? { code: network.code, name: network.name, countryCode: network.countryCode, prefixes: network.prefixes.join(', '), lengths: network.nationalNumberLengths.join(', '), isActive: network.isActive, providerIds: network.providers.map((p) => p.id) }
-        : { ...empty, countryCode: countries.find((c) => c.isActive)?.isoCode ?? '' },
+        ? {
+            code: network.code,
+            name: network.name,
+            countryCode: network.countryCode,
+            prefixes: network.prefixes.join(', '),
+            lengths: network.nationalNumberLengths.join(', '),
+            isActive: network.isActive,
+            providerIds: network.providers.map((p) => p.id),
+            inMaintenance: !!network.inMaintenance,
+            maintenanceNote: network.maintenanceNote ?? '',
+            requiresSenderRegistration: !!network.requiresSenderRegistration,
+            supportsOutbound: network.supportsOutbound ?? true,
+            sortOrder: String(network.sortOrder ?? 0),
+          }
+        : { ...empty, countryCode: defaultCountryCode ?? countries.find((c) => c.isActive)?.isoCode ?? '' },
     );
   }
   const close = () => {
@@ -1161,10 +1174,23 @@ function NetworkModal({ network, open, onClose, countries, providers }: { networ
       : cc && prefixes.find((p) => !p.startsWith(cc) || p === cc)
         ? `Each prefix must start with ${cc} and be longer than it`
         : undefined;
-  const body = { code: form.code.trim().toUpperCase(), name: form.name.trim(), countryCode: form.countryCode, prefixes, nationalNumberLengths: parseLengths(form.lengths), isActive: form.isActive, providerIds: form.providerIds };
+  const body = {
+    code: form.code.trim().toUpperCase(),
+    name: form.name.trim(),
+    countryCode: form.countryCode,
+    prefixes,
+    nationalNumberLengths: parseLengths(form.lengths),
+    isActive: form.isActive,
+    providerIds: form.providerIds,
+    inMaintenance: form.inMaintenance,
+    maintenanceNote: form.maintenanceNote.trim() || null,
+    requiresSenderRegistration: form.requiresSenderRegistration,
+    supportsOutbound: form.supportsOutbound,
+    sortOrder: Number(form.sortOrder) || 0,
+  };
   const save = useApiMutation(() => (network ? businessService.updateNetwork(network.id, body) : businessService.createNetwork(body)), {
     success: network ? 'Network updated' : 'Network created',
-    invalidate: [['admin', 'routing'], ['admin', 'providers']],
+    invalidate: [['admin', 'routing'], ['admin', 'providers'], ['admin', 'pricing']],
     onSuccess: close,
   });
   const valid = body.code.length >= 2 && body.name.length >= 2 && !!country && prefixes.length > 0 && !prefixError && lengthsValid(form.lengths);
@@ -1195,7 +1221,20 @@ function NetworkModal({ network, open, onClose, countries, providers }: { networ
           </Field>
         </div>
         <ProviderPicker providers={providers} value={form.providerIds} onChange={(providerIds) => setForm((f) => ({ ...f, providerIds }))} hint="Providers serving the whole country can always deliver here too." />
-        <Checkbox label="Active" checked={form.isActive} onChange={(e) => setForm((f) => ({ ...f, isActive: e.target.checked }))} />
+        <div className="grid gap-3 rounded-xl border border-slate-200 p-4 sm:grid-cols-2">
+          <Checkbox label="Active" description="Inactive networks are hidden from customers; their numbers are refused." checked={form.isActive} onChange={(e) => setForm((f) => ({ ...f, isActive: e.target.checked }))} />
+          <Checkbox label="Outbound SMS offered" description="Customers can buy and send SMS to this network." checked={form.supportsOutbound} onChange={(e) => setForm((f) => ({ ...f, supportsOutbound: e.target.checked }))} />
+          <Checkbox label="Sender ID registration required" description="Sender IDs need an approval for this network before sending." checked={form.requiresSenderRegistration} onChange={(e) => setForm((f) => ({ ...f, requiresSenderRegistration: e.target.checked }))} />
+          <Checkbox label="In maintenance" description="Temporarily stops purchases and sends; balances and history are kept." checked={form.inMaintenance} onChange={(e) => setForm((f) => ({ ...f, inMaintenance: e.target.checked }))} />
+          {form.inMaintenance && (
+            <Field label="Maintenance note" hint="Shown to customers" className="sm:col-span-2">
+              <Input value={form.maintenanceNote} maxLength={500} onChange={(e) => setForm((f) => ({ ...f, maintenanceNote: e.target.value }))} placeholder="Operator upgrade until 18:00" />
+            </Field>
+          )}
+          <Field label="Display order" hint="Lower numbers are listed first">
+            <Input inputMode="numeric" value={form.sortOrder} onChange={(e) => setForm((f) => ({ ...f, sortOrder: e.target.value }))} className="max-w-[120px]" />
+          </Field>
+        </div>
       </div>
     </Modal>
   );
@@ -1476,7 +1515,16 @@ export function RoutingRulesPage() {
                 );
               },
             },
-            { key: 's', header: 'Status', cell: (n) => <StatusBadge status={n.isActive ? 'ACTIVE' : 'INACTIVE'} /> },
+            {
+              key: 's',
+              header: 'Status',
+              cell: (n) => (
+                <span className="flex flex-wrap items-center gap-1">
+                  <StatusBadge status={n.status ?? (n.isActive ? 'ACTIVE' : 'INACTIVE')} />
+                  {n.requiresSenderRegistration && <Badge color="gray">Sender registration</Badge>}
+                </span>
+              ),
+            },
             {
               key: 'x',
               header: '',
@@ -1513,7 +1561,11 @@ export function RoutingRulesPage() {
         onClose={() => setToggleNetwork(null)}
         tone={toggleNetwork?.isActive ? 'danger' : 'primary'}
         title={toggleNetwork?.isActive ? `Disable ${toggleNetwork?.name}?` : `Enable ${toggleNetwork?.name}?`}
-        description={toggleNetwork?.isActive ? `Numbers on ${toggleNetwork?.prefixes.join(', ')} stop matching this network; only providers serving the whole country can still deliver to them. History is kept.` : 'Numbers on its prefixes are matched to this network again.'}
+        description={
+          toggleNetwork?.isActive
+            ? `Numbers on ${toggleNetwork?.prefixes.join(', ')} are refused (nothing charged) and the network disappears from the purchase page. Customer balances and history are kept. For a temporary stop, use maintenance instead.`
+            : 'Numbers on its prefixes are matched to this network again and it can be bought if priced.'
+        }
         confirmLabel={toggleNetwork?.isActive ? 'Disable network' : 'Enable network'}
         loading={toggleNetworkM.isPending}
         onConfirm={() => toggleNetwork && toggleNetworkM.mutate(toggleNetwork)}

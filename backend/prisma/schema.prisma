@@ -505,20 +505,22 @@ model VerificationDocument {
 // ─────────────────────────────────────────────────────────────
 
 model SenderId {
-  id             String       @id @default(uuid()) @db.Char(36)
-  organizationId String       @db.Char(36)
-  name           String
-  status         SenderStatus @default(PENDING)
-  purpose        String       @db.Text
-  sampleMessage  String?      @db.Text
-  useCase        String?      @db.Text
-  reviewNote     String?      @db.Text
-  requestedById  String       @db.Char(36)
-  reviewedById   String?      @db.Char(36)
-  reviewedAt     DateTime?
-  approvedAt     DateTime?
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
+  id                 String       @id @default(uuid()) @db.Char(36)
+  organizationId     String       @db.Char(36)
+  name               String
+  status             SenderStatus @default(PENDING)
+  purpose            String       @db.Text
+  sampleMessage      String?      @db.Text
+  useCase            String?      @db.Text
+  reviewNote         String?      @db.Text
+  // Requested for specific telecoms: usable only on networks where its SenderIdNetwork row is APPROVED.
+  restrictToNetworks Boolean      @default(false)
+  requestedById      String       @db.Char(36)
+  reviewedById       String?      @db.Char(36)
+  reviewedAt         DateTime?
+  approvedAt         DateTime?
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
 
   organization  Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   smsMessages   SmsMessage[]
@@ -526,6 +528,7 @@ model SenderId {
   reviews       SenderIdReview[]
   registrations SenderIdRegistration[]
   allocation    SenderIdAllocation?
+  networks      SenderIdNetwork[]
 
   @@unique([organizationId, name])
   @@index([status])
@@ -566,6 +569,36 @@ model SenderIdRegistration {
 
   @@unique([senderId, providerId])
   @@map("sender_id_registrations")
+}
+
+enum SenderNetworkStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  SUSPENDED
+}
+
+// Approval of a sender ID on one destination network. Only consulted for networks with
+// requiresSenderRegistration; an APPROVED row is the only proof of compatibility (never the name).
+model SenderIdNetwork {
+  id             String              @id @default(uuid()) @db.Char(36)
+  senderId       String              @db.Char(36)
+  organizationId String              @db.Char(36)
+  networkId      String              @db.Char(36)
+  status         SenderNetworkStatus @default(PENDING)
+  note           String?             @db.Text
+  reviewedById   String?             @db.Char(36)
+  reviewedAt     DateTime?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  sender  SenderId   @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  network SmsNetwork @relation(fields: [networkId], references: [id], onDelete: Restrict)
+
+  @@unique([senderId, networkId])
+  @@index([organizationId])
+  @@index([networkId, status])
+  @@map("sender_id_networks")
 }
 
 // Part of the organization's wallet reserved for one sender ID. It is a reservation of real wallet
@@ -740,24 +773,38 @@ model SmsProviderCountry {
 
 // Destination networks (country + mobile network, identified by E.164 prefixes). Database-driven.
 model SmsNetwork {
-  id                    String   @id @default(uuid()) @db.Char(36)
-  code                  String   @unique
-  name                  String
-  countryCode           String   @db.Char(2)
+  id                         String   @id @default(uuid()) @db.Char(36)
+  code                       String   @unique
+  name                       String
+  countryCode                String   @db.Char(2)
   // Copy of the country name (kept in sync); the country row is authoritative.
-  countryName           String
+  countryName                String
   // E.164 prefixes (JSON array of strings, e.g. ["+25078", "+25079"]).
-  prefixes              Json
+  prefixes                   Json
   // Optional extra rule: accepted national number lengths for this network (null/empty = country rules).
-  nationalNumberLengths Json?
-  isActive              Boolean  @default(true)
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
+  nationalNumberLengths      Json?
+  isActive                   Boolean  @default(true)
+  // Temporarily closed: nothing can be bought for it or sent to it (history kept). isActive=false retires it.
+  inMaintenance              Boolean  @default(false)
+  maintenanceNote            String?  @db.Text
+  // Sender IDs need an APPROVED per-network registration (SenderIdNetwork) before sending here.
+  requiresSenderRegistration Boolean  @default(false)
+  // Message directions the platform actually offers on this network (inbound is not implemented yet).
+  supportsOutbound           Boolean  @default(true)
+  supportsInbound            Boolean  @default(false)
+  sortOrder                  Int      @default(0)
+  createdAt                  DateTime @default(now())
+  updatedAt                  DateTime @updatedAt
 
-  country    SmsCountry           @relation(fields: [countryCode], references: [isoCode], onDelete: Restrict)
-  providers  SmsProviderNetwork[]
-  rules      SmsRoutingRule[]
-  recipients SmsRecipient[]
+  country         SmsCountry           @relation(fields: [countryCode], references: [isoCode], onDelete: Restrict)
+  providers       SmsProviderNetwork[]
+  rules           SmsRoutingRule[]
+  recipients      SmsRecipient[]
+  pricingTiers    SmsPricingTier[]
+  creditLots      SmsCreditLot[]
+  paymentItems    PaymentItem[]
+  senderApprovals SenderIdNetwork[]
+  priceLists      SmsPriceList[]
 
   @@index([countryCode])
   @@map("sms_networks")
@@ -966,25 +1013,94 @@ model SmsPackage {
 
 // Volume pricing for any-quantity purchases. The tier containing the purchased quantity sets the
 // unit price for the whole purchase (simple tier price, not graduated). Active tiers never overlap.
+// Each tier belongs to one price list: general credits (networkId null, usable on any network) or one
+// destination network (credits usable only there). Active tiers of the same list never overlap in
+// quantity during overlapping effective periods, so at most one tier prices a purchase.
 model SmsPricingTier {
-  id          String   @id @default(uuid()) @db.Char(36)
-  name        String?
-  minQuantity Int
+  id            String           @id @default(uuid()) @db.Char(36)
+  name          String?
+  // null = general credits (any network)
+  networkId     String?          @db.Char(36)
+  service       SmsService       @default(BULK_SMS)
+  direction     MessageDirection @default(OUTBOUND)
+  minQuantity   Int
   // null = no upper bound
-  maxQuantity Int?
-  unitPrice   Decimal  @db.Decimal(14, 4)
-  currency    String   @default("RWF")
-  isActive    Boolean  @default(true)
-  sortOrder   Int      @default(0)
-  createdById String?  @db.Char(36)
-  updatedById String?  @db.Char(36)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  maxQuantity   Int?
+  unitPrice     Decimal          @db.Decimal(14, 4)
+  currency      String           @default("RWF")
+  isActive      Boolean          @default(true)
+  sortOrder     Int              @default(0)
+  // Effective period (null = open-ended). Lets a new price be scheduled without editing the current one.
+  effectiveFrom DateTime?
+  effectiveTo   DateTime?
+  createdById   String?          @db.Char(36)
+  updatedById   String?          @db.Char(36)
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
 
-  payments Payment[]
+  network      SmsNetwork?   @relation(fields: [networkId], references: [id], onDelete: Restrict)
+  payments     Payment[]
+  paymentItems PaymentItem[]
 
   @@index([isActive, minQuantity])
+  @@index([networkId, direction, isActive])
   @@map("sms_pricing_tiers")
+}
+
+enum MessageDirection {
+  OUTBOUND
+  INBOUND
+}
+
+// SMS products the platform actually sells. Only Bulk SMS is implemented; add a value only together
+// with a working service.
+enum SmsService {
+  BULK_SMS
+}
+
+// What selects the tier of a purchase.
+enum PricingMetric {
+  // The quantity bought in this purchase line.
+  PURCHASE_QUANTITY
+  // The quantity bought for the same price list in the current calendar month (UTC), this line included.
+  MONTHLY_PURCHASE_QUANTITY
+}
+
+// How tier rates apply to the units of a purchase.
+enum RateApplication {
+  // Every unit is charged at the rate of the tier the (end) volume falls in.
+  WHOLE_PURCHASE
+  // Each unit is charged at the rate of the tier its own position falls in (incremental/graduated).
+  GRADUATED
+}
+
+// Pricing configuration of one price list: general credits (networkId null) or one destination network,
+// for one service and direction. Its tiers are the SmsPricingTier rows with the same network, service and
+// direction. A missing row means the defaults (purchase quantity, whole purchase, active). There are no fees.
+model SmsPriceList {
+  id                  String           @id @default(uuid()) @db.Char(36)
+  // "<networkId|general>:<service>:<direction>", unique (MySQL unique indexes ignore NULL networkId).
+  scopeKey            String           @unique
+  networkId           String?          @db.Char(36)
+  service             SmsService       @default(BULK_SMS)
+  direction           MessageDirection @default(OUTBOUND)
+  pricingMetric       PricingMetric    @default(PURCHASE_QUANTITY)
+  rateApplication     RateApplication  @default(WHOLE_PURCHASE)
+  minPurchaseQuantity Int?
+  maxPurchaseQuantity Int?
+  // Shown to customers next to the prices (limitations, notes).
+  customerNotes       String?          @db.Text
+  isActive            Boolean          @default(true)
+  createdById         String?          @db.Char(36)
+  updatedById         String?          @db.Char(36)
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+
+  network      SmsNetwork?   @relation(fields: [networkId], references: [id], onDelete: Restrict)
+  paymentItems PaymentItem[]
+
+  @@index([networkId])
+  @@map("sms_price_lists")
 }
 
 // A batch of credits in a wallet with its own expiry. The wallet balance always equals the sum of
@@ -1001,15 +1117,20 @@ model SmsCreditLot {
   // Selling price of one credit in this lot, frozen at purchase (null = credits given for free, e.g.
   // admin credit). Revenue of every SMS segment drawn from the lot uses this price, never today's.
   unitPrice           Decimal?              @db.Decimal(14, 4)
+  // Destination network the credits were bought for (null = general credits, usable on any network).
+  // Network credits are only ever spent on recipients of that network; they are never moved or merged.
+  networkId           String?               @db.Char(36)
   // null = never expires
   expiresAt           DateTime?
   expiredAt           DateTime?
   createdAt           DateTime              @default(now())
   updatedAt           DateTime              @updatedAt
 
-  wallet Wallet @relation(fields: [walletId], references: [id], onDelete: Restrict)
+  wallet  Wallet      @relation(fields: [walletId], references: [id], onDelete: Restrict)
+  network SmsNetwork? @relation(fields: [networkId], references: [id], onDelete: Restrict)
 
   @@index([walletId, remaining, expiresAt])
+  @@index([walletId, networkId, remaining])
   @@index([expiresAt, remaining])
   @@map("sms_credit_lots")
 }
@@ -1054,10 +1175,47 @@ model Payment {
   events       PaymentEvent[]
   purchase     CustomerPurchase?
   refund       Refund?
+  items        PaymentItem[]
 
   @@index([organizationId, createdAt])
   @@index([status])
   @@map("payments")
+}
+
+// One destination-network line of a purchase, priced by the server at checkout and frozen here.
+// On success each line becomes its own network credit lot (wallet reference payment:<paymentId>:<itemId>).
+model PaymentItem {
+  id                 String           @id @default(uuid()) @db.Char(36)
+  paymentId          String           @db.Char(36)
+  networkId          String           @db.Char(36)
+  // Snapshot of the destination at checkout (names may change later).
+  networkName        String
+  countryCode        String           @db.Char(2)
+  direction          MessageDirection @default(OUTBOUND)
+  quantity           Int
+  pricingTierId      String           @db.Char(36)
+  tierMinQuantity    Int
+  tierMaxQuantity    Int?
+  // Average price per SMS of the line (subtotal ÷ quantity, 4 dp): the selling price frozen on its credit lot.
+  unitPrice          Decimal          @db.Decimal(14, 4)
+  subtotal           Decimal          @db.Decimal(14, 2)
+  // Pricing rule applied at checkout (snapshot).
+  priceListId        String?          @db.Char(36)
+  pricingMetric      PricingMetric    @default(PURCHASE_QUANTITY)
+  rateApplication    RateApplication  @default(WHOLE_PURCHASE)
+  // Volume already counted by the metric before this line (monthly metric), and the per-tier split.
+  metricVolumeBefore Int              @default(0)
+  breakdown          Json?
+  createdAt          DateTime         @default(now())
+
+  payment     Payment        @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  network     SmsNetwork     @relation(fields: [networkId], references: [id], onDelete: Restrict)
+  pricingTier SmsPricingTier @relation(fields: [pricingTierId], references: [id], onDelete: Restrict)
+  priceList   SmsPriceList?  @relation(fields: [priceListId], references: [id], onDelete: Restrict)
+
+  @@unique([paymentId, networkId])
+  @@index([networkId])
+  @@map("payment_items")
 }
 
 // Raw provider notifications, deduplicated for webhook idempotency.
@@ -1282,6 +1440,8 @@ model Campaign {
   scheduledAt    DateTime?
   timezone       String         @default("Africa/Kigali")
   failureReason  String?        @db.Text
+  // Destination networks the campaign is limited to (JSON array of network ids; null = any configured network).
+  networkIds     Json?
   createdById    String         @db.Char(36)
   launchedAt     DateTime?
   completedAt    DateTime?

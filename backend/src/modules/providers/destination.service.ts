@@ -10,11 +10,13 @@ import type { Destination, RoutingContext } from './routing.service';
  *   2. Identify the country and require it to be configured and active (database).
  *   3. Apply the country's/network's extra length rules, if any.
  *   4. Identify the network by the longest matching E.164 prefix among the country's active networks.
+ *   5. Refuse numbers of a network that is deactivated, in maintenance or not offering outbound SMS —
+ *      they are never re-routed as "no network" to a country-wide provider.
  *
  * Whether a provider can serve the result is decided afterwards by the routing engine.
  */
 
-export type DestinationErrorCode = 'INVALID_NUMBER' | 'UNSUPPORTED_COUNTRY';
+export type DestinationErrorCode = 'INVALID_NUMBER' | 'UNSUPPORTED_COUNTRY' | 'NETWORK_UNAVAILABLE' | 'NETWORK_MAINTENANCE';
 
 export type DestinationCheck =
   | ({ ok: true; phone: string; countryName: string; nationalNumber: string } & Destination)
@@ -66,16 +68,28 @@ export function checkDestination(ctx: RoutingContext, phone: string): Destinatio
   }
 
   // 3. Network by longest prefix within the country.
-  let network: RoutingContext['networks'][number] | null = null;
-  let best = 0;
-  for (const n of ctx.networks) {
-    if (n.countryCode !== iso) continue;
-    for (const p of n.prefixList) {
-      if (e164.startsWith(p) && p.length > best) {
-        network = n;
-        best = p.length;
+  const longest = (list: RoutingContext['networks']) => {
+    let found: RoutingContext['networks'][number] | null = null;
+    let best = 0;
+    for (const n of list) {
+      if (n.countryCode !== iso) continue;
+      for (const p of n.prefixList) {
+        if (e164.startsWith(p) && p.length > best) {
+          found = n;
+          best = p.length;
+        }
       }
     }
+    return found;
+  };
+  const network = longest(ctx.networks);
+  if (!network) {
+    const retired = longest(ctx.inactiveNetworks ?? []);
+    if (retired) return { ok: false, phone: e164, code: 'NETWORK_UNAVAILABLE', reason: `Destination not available: ${retired.name} is not currently offered`, countryCode: iso };
+  } else if (network.inMaintenance) {
+    return { ok: false, phone: e164, code: 'NETWORK_MAINTENANCE', reason: `${network.name} is temporarily unavailable (maintenance)${network.maintenanceNote ? `: ${network.maintenanceNote}` : ''}`, countryCode: iso };
+  } else if (!network.supportsOutbound) {
+    return { ok: false, phone: e164, code: 'NETWORK_UNAVAILABLE', reason: `Destination not available: ${network.name} does not offer outbound SMS`, countryCode: iso };
   }
 
   // 4. Extra length rules (network rule overrides the country rule).

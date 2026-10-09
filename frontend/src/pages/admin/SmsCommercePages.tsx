@@ -1,19 +1,18 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { Banknote, Calculator, Coins, Layers, Pencil, Plus, Power, Receipt, Search, Trash2, TrendingUp } from 'lucide-react';
+import { Banknote, Calculator, Coins, Layers, Receipt, Search, TrendingUp } from 'lucide-react';
 import type { PricingTier } from '@/api/types';
 import { errorMessage } from '@/api/client';
-import { Badge, StatusBadge } from '@/components/ui/Badge';
+import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Card, CardHeader, StatCard } from '@/components/ui/Card';
 import { Alert, EmptyState, ErrorState, TableSkeleton } from '@/components/ui/Feedback';
-import { Checkbox, Field, Input } from '@/components/ui/Form';
-import { ConfirmDialog, Modal } from '@/components/ui/Overlay';
+import { Checkbox, Field, Input, Select } from '@/components/ui/Form';
+import { ConfirmDialog, Drawer, Modal } from '@/components/ui/Overlay';
 import { DataTable } from '@/components/ui/Table';
 import { PageHeader } from '@/components/ui/Misc';
 import { useApiMutation } from '@/hooks/useApiMutation';
-import { usePermissions } from '@/hooks/useAuth';
 import { useDebounce } from '@/hooks/useDebounce';
 import { adminService } from '@/services/adminService';
 import { businessService, type PricingEconomics } from '@/services/businessService';
@@ -22,11 +21,11 @@ import { RangePicker, useRange } from '../dashboard/ReportsPage';
 
 // ── SMS pricing tiers ───────────────────────────────────────────────────
 
-const range = (t: Pick<PricingTier, 'minQuantity' | 'maxQuantity'>) =>
+export const range = (t: Pick<PricingTier, 'minQuantity' | 'maxQuantity'>) =>
   t.maxQuantity === null ? `${fmtNumber(t.minQuantity)}+` : `${fmtNumber(t.minQuantity)} – ${fmtNumber(t.maxQuantity)}`;
 
 /** Quantity ranges no active tier covers (customers cannot buy those amounts). */
-function coverageGaps(tiers: PricingTier[]): string[] {
+export function coverageGaps(tiers: PricingTier[]): string[] {
   const active = tiers.filter((t) => t.isActive).sort((a, b) => a.minQuantity - b.minQuantity);
   if (!active.length) return ['every quantity'];
   const gaps: string[] = [];
@@ -40,15 +39,31 @@ function coverageGaps(tiers: PricingTier[]): string[] {
   return gaps;
 }
 
-function TierModal({ tier, open, onClose }: { tier: PricingTier | null; open: boolean; onClose: () => void }) {
-  const empty = { name: '', minQuantity: '', maxQuantity: '', unitPrice: '', currency: 'RWF', sortOrder: '0', isActive: true };
+/** datetime-local value for an ISO date (local time), or '' */
+const toLocalInput = (iso: string | null | undefined) => (iso ? new Date(new Date(iso).getTime() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 16) : '');
+
+/** Is the tier priced today (inside its effective period)? */
+export const effectiveNow = (t: PricingTier) => (!t.effectiveFrom || new Date(t.effectiveFrom) <= new Date()) && (!t.effectiveTo || new Date(t.effectiveTo) > new Date());
+
+export function TierModal({ tier, open, onClose, networkId, listLabel }: { tier: PricingTier | null; open: boolean; onClose: () => void; networkId: string | null; listLabel: string }) {
+  const empty = { name: '', minQuantity: '', maxQuantity: '', unitPrice: '', currency: 'RWF', sortOrder: '0', isActive: true, effectiveFrom: '', effectiveTo: '' };
   const [form, setForm] = useState(empty);
   const [loadedFor, setLoadedFor] = useState<string | null | undefined>(undefined);
   if (open && loadedFor !== (tier?.id ?? null)) {
     setLoadedFor(tier?.id ?? null);
     setForm(
       tier
-        ? { name: tier.name ?? '', minQuantity: String(tier.minQuantity), maxQuantity: tier.maxQuantity === null ? '' : String(tier.maxQuantity), unitPrice: tier.unitPrice, currency: tier.currency, sortOrder: String(tier.sortOrder), isActive: tier.isActive }
+        ? {
+            name: tier.name ?? '',
+            minQuantity: String(tier.minQuantity),
+            maxQuantity: tier.maxQuantity === null ? '' : String(tier.maxQuantity),
+            unitPrice: tier.unitPrice,
+            currency: tier.currency,
+            sortOrder: String(tier.sortOrder),
+            isActive: tier.isActive,
+            effectiveFrom: toLocalInput(tier.effectiveFrom),
+            effectiveTo: toLocalInput(tier.effectiveTo),
+          }
         : empty,
     );
   }
@@ -59,9 +74,21 @@ function TierModal({ tier, open, onClose }: { tier: PricingTier | null; open: bo
     minQuantity: form.minQuantity && (!Number.isInteger(min) || min < 1) ? 'Whole number ≥ 1' : undefined,
     maxQuantity: max !== null && (!Number.isInteger(max) || max < min) ? 'Must be ≥ minimum' : undefined,
     unitPrice: form.unitPrice && !/^\d{1,10}(\.\d{1,4})?$/.test(form.unitPrice) ? 'Amount such as 9 or 8.50' : undefined,
+    effectiveTo: form.effectiveFrom && form.effectiveTo && new Date(form.effectiveTo) <= new Date(form.effectiveFrom) ? 'Must be after the start' : undefined,
   };
   const valid = !!form.minQuantity && !!form.unitPrice && !Object.values(errors).some(Boolean);
-  const body = { name: form.name.trim() || null, minQuantity: min, maxQuantity: max, unitPrice: form.unitPrice, currency: form.currency.toUpperCase(), sortOrder: Number(form.sortOrder) || 0, isActive: form.isActive };
+  const body = {
+    name: form.name.trim() || null,
+    minQuantity: min,
+    maxQuantity: max,
+    unitPrice: form.unitPrice,
+    currency: form.currency.toUpperCase(),
+    sortOrder: Number(form.sortOrder) || 0,
+    isActive: form.isActive,
+    effectiveFrom: form.effectiveFrom ? new Date(form.effectiveFrom).toISOString() : null,
+    effectiveTo: form.effectiveTo ? new Date(form.effectiveTo).toISOString() : null,
+    ...(tier ? {} : { networkId }),
+  };
   const save = useApiMutation(() => (tier ? adminService.updatePricingTier(tier.id, body) : adminService.createPricingTier(body)), {
     success: tier ? 'Pricing tier updated' : 'Pricing tier created',
     invalidate: [['admin', 'pricing'], ['pricing']],
@@ -73,6 +100,7 @@ function TierModal({ tier, open, onClose }: { tier: PricingTier | null; open: bo
       open={open}
       onClose={close}
       title={tier ? `Edit tier ${range(tier)}` : 'New pricing tier'}
+      description={`Price list: ${listLabel}`}
       footer={<><Button variant="secondary" onClick={close}>Cancel</Button><Button disabled={!valid} loading={save.isPending} onClick={() => save.mutate(undefined)}>Save</Button></>}
     >
       <div className="grid gap-4 sm:grid-cols-2">
@@ -82,14 +110,18 @@ function TierModal({ tier, open, onClose }: { tier: PricingTier | null; open: bo
         <Field label="Currency"><Input value={form.currency} onChange={set('currency')} maxLength={3} /></Field>
         <Field label="Label" hint="Optional, e.g. Business"><Input value={form.name} onChange={set('name')} /></Field>
         <Field label="Display order"><Input type="number" min={0} value={form.sortOrder} onChange={set('sortOrder')} /></Field>
-        <Checkbox className="sm:col-span-2" label="Active" description="Active tiers price customer purchases. Active ranges may not overlap." checked={form.isActive} onChange={(e) => setForm((f) => ({ ...f, isActive: e.target.checked }))} />
+        <Field label="Effective from" hint="Empty = immediately"><Input type="datetime-local" value={form.effectiveFrom} onChange={set('effectiveFrom')} /></Field>
+        <Field label="Effective until" hint="Empty = no end" error={errors.effectiveTo}><Input type="datetime-local" value={form.effectiveTo} onChange={set('effectiveTo')} invalid={!!errors.effectiveTo} /></Field>
+        <Checkbox className="sm:col-span-2" label="Active" description="Active tiers price customer purchases. Active ranges of one price list may not overlap in the same period." checked={form.isActive} onChange={(e) => setForm((f) => ({ ...f, isActive: e.target.checked }))} />
       </div>
-      <p className="mt-4 text-xs text-slate-500">The tier containing the purchased quantity sets the price of the whole purchase. Changes apply to new purchases only — past purchases keep the price they were charged. Every change is audit logged.</p>
+      <p className="mt-4 text-xs text-slate-500">
+        The tier containing the purchased quantity sets the price of the whole purchase. To change a price on a date, end this tier then and add the new one starting at the same moment. Past purchases always keep the price they were charged. Every change is audit logged.
+      </p>
     </Modal>
   );
 }
 
-function QuotePreview() {
+export function QuotePreview() {
   const [quantity, setQuantity] = useState('7500');
   const n = Number(quantity);
   const debounced = useDebounce(Number.isInteger(n) && n > 0 ? n : null, 300);
@@ -113,86 +145,147 @@ function QuotePreview() {
   );
 }
 
-export function PricingTiersPage() {
-  const { canAdmin } = usePermissions();
-  const canManage = canAdmin('packages.manage');
-  const q = useQuery({ queryKey: ['admin', 'pricing', 'tiers'], queryFn: adminService.pricingTiers });
-  const [modal, setModal] = useState<{ open: boolean; tier: PricingTier | null }>({ open: false, tier: null });
-  const [confirm, setConfirm] = useState<{ kind: 'delete' | 'deactivate'; tier: PricingTier } | null>(null);
-  const toggle = useApiMutation((t: PricingTier) => adminService.updatePricingTier(t.id, { isActive: !t.isActive }), {
-    success: (t) => (t.isActive ? 'Tier activated' : 'Tier deactivated'),
-    invalidate: [['admin', 'pricing'], ['pricing']],
-    onSuccess: () => setConfirm(null),
-  });
-  const remove = useApiMutation((t: PricingTier) => adminService.deletePricingTier(t.id), { success: 'Tier deleted', invalidate: [['admin', 'pricing'], ['pricing']], onSuccess: () => setConfirm(null) });
-  const gaps = q.data ? coverageGaps(q.data) : [];
-
+/** Pricing configuration of the selected price list: basis, rate application, limits, fee, notes, status. */
+export function PriceListCard({ networkId, listLabel, canManage }: { networkId: string | null; listLabel: string; canManage: boolean; countryCode?: string | null }) {
+  const q = useQuery({ queryKey: ['admin', 'pricing', 'list', networkId], queryFn: () => adminService.priceList(networkId) });
+  const [open, setOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const c = q.data;
+  const save = useApiMutation((body: Record<string, unknown>) => adminService.savePriceList({ networkId, ...body }), { success: 'Saved', invalidate: [['admin', 'pricing'], ['pricing'], ['site']] });
+  const limit = (v: string) => (v.trim() ? Number(v) : null);
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title="SMS pricing"
-        description="Customers buy any amount of credits. The range their quantity falls in sets the price for the whole purchase — use the profit planner to set each range’s price from your real costs."
-        actions={canManage && <Button icon={<Plus className="h-4 w-4" />} onClick={() => setModal({ open: true, tier: null })}>New tier</Button>}
-      />
-      {q.data && gaps.length > 0 && (
-        <Alert tone="warning" title="Some quantities have no price">
-          No active tier covers {gaps.join(', ')} SMS. Customers cannot buy these amounts until a tier covers them.
-        </Alert>
+    <Card padded={false}>
+      <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="flex w-full items-center justify-between px-5 py-3 text-left">
+        <span className="text-sm font-medium text-slate-700">Advanced</span>
+        <span className="text-xs text-slate-500">
+          {c ? `${c.rateApplication === 'GRADUATED' ? 'Graduated' : 'Whole purchase'} · ${c.pricingMetric === 'MONTHLY_PURCHASE_QUANTITY' ? 'monthly volume' : 'per purchase'}${c.isActive ? '' : ' · paused'}` : ''} {open ? '▴' : '▾'}
+        </span>
+      </button>
+      {open && c && (
+        <div className="grid gap-4 border-t border-slate-100 p-5 sm:grid-cols-2">
+          <Field label="Price applies to">
+            <Select value={c.rateApplication} disabled={!canManage} onChange={(e) => save.mutate({ rateApplication: e.target.value })}>
+              <option value="WHOLE_PURCHASE">Whole purchase</option>
+              <option value="GRADUATED">Each range separately</option>
+            </Select>
+          </Field>
+          <Field label="Range is counted by">
+            <Select value={c.pricingMetric} disabled={!canManage} onChange={(e) => save.mutate({ pricingMetric: e.target.value })}>
+              <option value="PURCHASE_QUANTITY">This purchase</option>
+              <option value="MONTHLY_PURCHASE_QUANTITY">This month’s purchases</option>
+            </Select>
+          </Field>
+          <Field label="Minimum per purchase">
+            <Input key={`min-${c.minPurchaseQuantity}`} inputMode="numeric" defaultValue={c.minPurchaseQuantity ?? ''} disabled={!canManage} placeholder="None" onBlur={(e) => limit(e.target.value) !== c.minPurchaseQuantity && save.mutate({ minPurchaseQuantity: limit(e.target.value) })} />
+          </Field>
+          <Field label="Maximum per purchase">
+            <Input key={`max-${c.maxPurchaseQuantity}`} inputMode="numeric" defaultValue={c.maxPurchaseQuantity ?? ''} disabled={!canManage} placeholder="None" onBlur={(e) => limit(e.target.value) !== c.maxPurchaseQuantity && save.mutate({ maxPurchaseQuantity: limit(e.target.value) })} />
+          </Field>
+          <div className="flex items-center justify-between gap-3 sm:col-span-2">
+            <Checkbox label="On sale" checked={c.isActive} disabled={!canManage} onChange={(e) => save.mutate({ isActive: e.target.checked })} />
+            <Button size="sm" variant="ghost" onClick={() => setHistoryOpen(true)}>History</Button>
+          </div>
+        </div>
       )}
-      <QuotePreview />
-      {canAdmin('profit.view') && <ProfitPlanner />}
+      <PricingHistoryDrawer open={historyOpen} onClose={() => setHistoryOpen(false)} networkId={networkId ?? 'general'} listLabel={listLabel} />
+    </Card>
+  );
+}
+
+
+function PricingHistoryDrawer({ open, onClose, networkId, listLabel }: { open: boolean; onClose: () => void; networkId: string; listLabel: string }) {
+  const q = useQuery({ queryKey: ['admin', 'pricing', 'history', networkId], queryFn: () => adminService.pricingHistory({ page: 1, limit: 50, networkId }), enabled: open });
+  return (
+    <Drawer open={open} onClose={onClose} title="Price change history" description={listLabel}>
       {q.isLoading ? (
-        <Card padded={false}><TableSkeleton rows={4} /></Card>
-      ) : q.error ? (
-        <Card><ErrorState error={q.error} onRetry={() => void q.refetch()} /></Card>
+        <TableSkeleton rows={4} />
+      ) : !q.data?.data.length ? (
+        <EmptyState title="No changes recorded" className="py-8" />
       ) : (
-        <Card padded={false}>
-          <CardHeader title="Pricing tiers" description="Prices come only from here — never from the app or the customer." />
-          <DataTable
-            rows={q.data}
-            columns={[
-              { key: 'r', header: 'Quantity', cell: (t) => <span><span className="font-medium tabular-nums text-slate-900">{range(t)}</span>{t.name && <span className="block text-xs text-slate-500">{t.name}</span>}</span> },
-              { key: 'min', header: 'Minimum', cell: (t) => <span className="tabular-nums">{fmtNumber(t.minQuantity)}</span> },
-              { key: 'max', header: 'Maximum', cell: (t) => <span className="tabular-nums">{t.maxQuantity === null ? 'No limit' : fmtNumber(t.maxQuantity)}</span> },
-              { key: 'p', header: 'Price / SMS', cell: (t) => <span className="font-semibold tabular-nums">{fmtMoney(t.unitPrice, t.currency)}</span> },
-              { key: 'c', header: 'Currency', cell: (t) => t.currency },
-              { key: 's', header: 'Status', cell: (t) => <StatusBadge status={t.isActive ? 'ACTIVE' : 'INACTIVE'} /> },
-              { key: 'o', header: 'Order', cell: (t) => <span className="tabular-nums text-slate-500">{t.sortOrder}</span> },
-              { key: 'n', header: 'Purchases', cell: (t) => <span className="tabular-nums">{fmtNumber(t.purchaseCount ?? 0)}</span> },
-              { key: 'u', header: 'Updated', cell: (t) => <span className="text-xs text-slate-500">{fmtDateTime(t.updatedAt)}</span> },
-              {
-                key: 'a',
-                header: '',
-                className: 'text-right',
-                cell: (t) =>
-                  canManage && (
-                    <span className="flex justify-end gap-1">
-                      <Button size="xs" variant="secondary" icon={<Pencil className="h-3 w-3" />} onClick={() => setModal({ open: true, tier: t })}>Edit</Button>
-                      {t.isActive ? (
-                        <Button size="xs" variant="ghost" icon={<Power className="h-3 w-3" />} onClick={() => setConfirm({ kind: 'deactivate', tier: t })}>Deactivate</Button>
-                      ) : (
-                        <Button size="xs" variant="ghost" icon={<Power className="h-3 w-3" />} loading={toggle.isPending && toggle.variables?.id === t.id} onClick={() => toggle.mutate(t)}>Activate</Button>
-                      )}
-                      {!t.purchaseCount && <Button size="xs" variant="ghost" className="text-red-600" icon={<Trash2 className="h-3 w-3" />} aria-label="Delete tier" onClick={() => setConfirm({ kind: 'delete', tier: t })} />}
-                    </span>
-                  ),
-              },
-            ]}
-            empty={<EmptyState icon={<Layers />} title="No pricing tiers" description="Create tiers so customers can buy any quantity of SMS." />}
-          />
-        </Card>
+        <ul className="space-y-3">
+          {q.data.data.map((h) => (
+            <li key={h.id} className="rounded-lg p-3 text-sm ring-1 ring-slate-200">
+              <p className="font-medium text-slate-900">{h.action.replace(/_/g, ' ').toLowerCase()}</p>
+              <p className="text-xs text-slate-500">{fmtDateTime(h.createdAt)} · {h.actor?.fullName ?? h.actorEmail ?? 'System'}</p>
+              {(h.metadata as { reason?: string } | null)?.reason && <p className="mt-1 text-xs text-slate-600">Reason: {(h.metadata as { reason: string }).reason}</p>}
+            </li>
+          ))}
+        </ul>
       )}
-      <TierModal open={modal.open} tier={modal.tier} onClose={() => setModal({ open: false, tier: null })} />
-      <ConfirmDialog
-        open={!!confirm}
-        onClose={() => setConfirm(null)}
-        title={confirm?.kind === 'delete' ? `Delete tier ${confirm ? range(confirm.tier) : ''}?` : `Deactivate tier ${confirm ? range(confirm.tier) : ''}?`}
-        description={confirm?.kind === 'delete' ? 'This tier was never used by a purchase, so it can be removed permanently.' : 'Customers will no longer be able to buy quantities in this range until another tier covers it. Past purchases are not affected.'}
-        confirmLabel={confirm?.kind === 'delete' ? 'Delete' : 'Deactivate'}
-        loading={toggle.isPending || remove.isPending}
-        onConfirm={() => confirm && (confirm.kind === 'delete' ? remove.mutate(confirm.tier) : toggle.mutate(confirm.tier))}
+    </Drawer>
+  );
+}
+
+const AVAILABILITY_COLOR: Record<string, 'green' | 'amber' | 'gray' | 'red'> = { AVAILABLE: 'green', OUT_OF_STOCK: 'amber', MAINTENANCE: 'amber', NO_ROUTE: 'red', NO_PRICE: 'gray', OUTBOUND_UNAVAILABLE: 'gray' };
+
+/** Every destination network as customers see it right now. */
+export function NetworkAvailabilityCard({ onPick }: { onPick: (networkId: string) => void }) {
+  const q = useQuery({ queryKey: ['admin', 'pricing', 'networks'], queryFn: adminService.pricingNetworks });
+  return (
+    <Card padded={false}>
+      <CardHeader title="Destination networks" description="What customers can buy right now, decided by each network’s price list and the routing engine (eligible, healthy providers with usable capacity)." />
+      <DataTable
+        rows={q.data}
+        loading={q.isLoading}
+        error={q.error}
+        columns={[
+          { key: 'n', header: 'Network', cell: (n) => <span><span className="font-medium">{n.name}</span><span className="block font-mono text-xs text-slate-400">{n.code}</span></span> },
+          { key: 'c', header: 'Country', cell: (n) => `${n.countryName} (${n.countryCode})` },
+          { key: 'a', header: 'Customer availability', cell: (n) => <span className="flex flex-col gap-0.5"><Badge color={AVAILABILITY_COLOR[n.availability] ?? 'gray'} dot>{n.availability.replace(/_/g, ' ').toLowerCase()}</Badge>{!n.available && <span className="text-xs text-slate-500">{n.availabilityText}</span>}</span> },
+          { key: 'p', header: 'Selling price', cell: (n) => (n.fromPrice ? <span className="tabular-nums">{n.tiers.length > 1 ? 'from ' : ''}{fmtMoney(n.fromPrice, n.currency ?? undefined)}</span> : <span className="text-slate-400">—</span>) },
+          { key: 's', header: 'Sender IDs', cell: (n) => (n.requiresSenderRegistration ? <Badge color="gray">Registration required</Badge> : <span className="text-xs text-slate-500">Any approved</span>) },
+          { key: 'k', header: 'Usable provider capacity', cell: (n) => (n.usableProviderCapacity === null ? <span className="text-slate-400">—</span> : <span className="tabular-nums">{fmtNumber(n.usableProviderCapacity)}</span>) },
+          { key: 'x', header: '', className: 'text-right', cell: (n) => <Button size="xs" variant="secondary" onClick={() => onPick(n.id)}>Prices</Button> },
+        ]}
+        empty={<EmptyState icon={<Layers />} title="No destination networks" description="Add countries and networks under Routing first." />}
       />
-    </div>
+    </Card>
+  );
+}
+
+/** Provider stock, historical cost and consumption per destination network. */
+export function InventoryByDestination() {
+  const q = useQuery({ queryKey: ['admin', 'pricing', 'inventory'], queryFn: adminService.networkInventory });
+  if (q.isLoading) return <Card padded={false}><TableSkeleton rows={3} /></Card>;
+  if (q.error) return <Card><ErrorState error={q.error} /></Card>;
+  return (
+    <Card padded={false}>
+      <CardHeader
+        title="Provider inventory by destination"
+        description="Only providers that explicitly serve a network (or its whole country) count as stock for it. Capacity is shared by every destination a provider serves; consumption is for the last 30 days at the costs frozen on each message."
+      />
+      <div className="divide-y divide-slate-100">
+        {q.data!.networks.map((n) => (
+          <div key={n.networkId} className="px-5 py-4">
+            <p className="text-sm font-semibold text-slate-900">{n.name} <span className="font-mono text-xs font-normal text-slate-400">{n.code}</span> {n.status === 'MAINTENANCE' && <Badge color="amber">Maintenance</Badge>}</p>
+            {n.providers.length ? (
+              <div className="mt-2 overflow-x-auto">
+                <table className="w-full min-w-[640px] text-xs">
+                  <thead className="text-left text-slate-500">
+                    <tr><th className="py-1 font-medium">Provider</th><th className="font-medium">Capability</th><th className="text-right font-medium">Capacity</th><th className="text-right font-medium">Avg. remaining cost</th><th className="text-right font-medium">Quoted cost</th><th className="text-right font-medium">Used (30d)</th><th className="text-right font-medium">Cost of used</th></tr>
+                  </thead>
+                  <tbody>
+                    {n.providers.map((p) => (
+                      <tr key={p.providerId} className="border-t border-slate-100">
+                        <td className="py-1.5">{p.name} <span className="text-slate-400">· {p.status.toLowerCase()}{p.health !== 'HEALTHY' ? `, ${p.health.toLowerCase()}` : ''}</span></td>
+                        <td>{p.capability === 'NETWORK' ? 'This network' : 'Whole country'}</td>
+                        <td className="text-right tabular-nums">{fmtNumber(p.capacityBalance)}</td>
+                        <td className="text-right tabular-nums">{p.averageRemainingCost ?? '—'}</td>
+                        <td className="text-right tabular-nums">{p.currentQuotedCost ?? '—'}</td>
+                        <td className="text-right tabular-nums">{fmtNumber(p.consumed.credits)}</td>
+                        <td className="text-right tabular-nums">{p.consumed.providerCost ?? '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="mt-1 text-xs text-red-600">No provider serves this network — it cannot be bought or sent to.</p>
+            )}
+          </div>
+        ))}
+      </div>
+    </Card>
   );
 }
 
@@ -298,7 +391,7 @@ function targetPrice(cost: number, feePercent: number, margin: number): number |
   return keep > 0 ? Math.ceil((cost / keep) * 100) / 100 : null;
 }
 
-function ProfitPlanner() {
+export function ProfitPlanner() {
   const q = useQuery({ queryKey: ['admin', 'pricing', 'economics'], queryFn: businessService.pricingEconomics });
   const [margins, setMargins] = useState<Record<string, string>>({});
   const [defaultMargin, setDefaultMargin] = useState('25');

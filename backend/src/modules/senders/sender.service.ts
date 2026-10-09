@@ -8,6 +8,7 @@ import { audit } from '../audit-logs/audit.service';
 import { notifyOrganization, notifyStaff } from '../notifications/notification.service';
 import { registerSenderWithProviders } from '../providers/provider.service';
 import { logger } from '../../config/logger';
+import { activeNetworks, approveRequestedNetworks } from './senderNetworks.service';
 
 /** Alphanumeric sender IDs: 3–11 chars, letters/digits/space/.-&, at least one letter (GSM rules). */
 export const senderNameSchema = z
@@ -31,18 +32,30 @@ async function assertNameAvailable(organizationId: string, name: string, exclude
 
 export async function requestSender(
   organizationId: string,
-  input: { name: string; purpose: string; sampleMessage?: string | null; useCase?: string | null },
+  input: { name: string; purpose: string; sampleMessage?: string | null; useCase?: string | null; networkIds?: string[] },
   actor: Actor,
   meta?: RequestMeta,
 ) {
   const org = await prisma.organization.findUniqueOrThrow({ where: { id: organizationId } });
+  // The telecoms the sender ID will send to (empty = any network, the original behaviour).
+  const networks = input.networkIds?.length ? await activeNetworks(prisma, input.networkIds) : [];
   if (org.status === 'SUSPENDED') throw AppError.forbidden('Organization is suspended', 'ORGANIZATION_SUSPENDED');
   if (org.status !== 'ACTIVE') throw AppError.forbidden('Your organization must be approved before requesting sender IDs', 'ORGANIZATION_NOT_APPROVED');
   await assertNameAvailable(organizationId, input.name);
   const sender = await prisma.senderId.create({
-    data: { organizationId, name: input.name, purpose: input.purpose, sampleMessage: input.sampleMessage, useCase: input.useCase, requestedById: actorUserId(actor)!, status: 'PENDING' },
+    data: {
+      organizationId,
+      name: input.name,
+      purpose: input.purpose,
+      sampleMessage: input.sampleMessage,
+      useCase: input.useCase,
+      requestedById: actorUserId(actor)!,
+      status: 'PENDING',
+      restrictToNetworks: networks.length > 0,
+      networks: networks.length ? { create: networks.map((n) => ({ organizationId, networkId: n.id, status: 'PENDING' as const })) } : undefined,
+    },
   });
-  await audit({ actor, action: 'SENDER_REQUESTED', resource: 'sender_id', resourceId: sender.id, organizationId, metadata: { name: sender.name }, meta });
+  await audit({ actor, action: 'SENDER_REQUESTED', resource: 'sender_id', resourceId: sender.id, organizationId, metadata: { name: sender.name, networks: networks.map((n) => n.name) }, meta });
   await notifyStaff('senders.review', { type: 'SENDER_REQUESTED', title: 'New sender ID request', body: `${org.name} requested "${sender.name}"`, link: '/admin/senders' });
   return sender;
 }
@@ -50,7 +63,7 @@ export async function requestSender(
 export async function updateSenderRequest(
   organizationId: string,
   id: string,
-  input: { name?: string; purpose?: string; sampleMessage?: string | null; useCase?: string | null },
+  input: { name?: string; purpose?: string; sampleMessage?: string | null; useCase?: string | null; networkIds?: string[] },
   actor: Actor,
   meta?: RequestMeta,
 ) {
@@ -58,7 +71,18 @@ export async function updateSenderRequest(
   if (!s) throw AppError.notFound('Sender ID');
   if (!['PENDING', 'NEEDS_INFORMATION', 'REJECTED'].includes(s.status)) throw AppError.conflict('This sender ID can no longer be edited', 'SENDER_NOT_EDITABLE');
   if (input.name && input.name !== s.name) await assertNameAvailable(organizationId, input.name, id);
-  const updated = await prisma.senderId.update({ where: { id }, data: input });
+  const { networkIds, ...data } = input;
+  const networks = networkIds?.length ? await activeNetworks(prisma, networkIds) : [];
+  const updated = await prisma.$transaction(async (tx) => {
+    if (networkIds !== undefined) {
+      // Replace the requested telecoms (still under review, so nothing approved is lost).
+      await tx.senderIdNetwork.deleteMany({ where: { senderId: id, networkId: { notIn: networks.map((n) => n.id) } } });
+      for (const n of networks) {
+        await tx.senderIdNetwork.upsert({ where: { senderId_networkId: { senderId: id, networkId: n.id } }, create: { senderId: id, organizationId, networkId: n.id, status: 'PENDING' }, update: {} });
+      }
+    }
+    return tx.senderId.update({ where: { id }, data: { ...data, ...(networkIds !== undefined ? { restrictToNetworks: networks.length > 0 } : {}) } });
+  });
   await audit({ actor, action: 'SENDER_UPDATED', resource: 'sender_id', resourceId: id, organizationId, meta });
   return updated;
 }
@@ -124,6 +148,7 @@ export async function reviewSender(id: string, action: SenderReviewAction, note:
     });
     if (claimed.count === 0) throw AppError.conflict('Sender ID was modified concurrently, reload and try again', 'CONCURRENT_UPDATE');
     await tx.senderIdReview.create({ data: { senderId: id, organizationId: s.organizationId, reviewerId: actorUserId(actor), action, fromStatus: s.status, toStatus: t.to, note: note ?? null } });
+    if (action === 'approve') await approveRequestedNetworks(tx, id, actorUserId(actor));
     await audit({ actor, action: t.action, resource: 'sender_id', resourceId: id, organizationId: s.organizationId, metadata: { name: s.name, from: s.status, to: t.to, note }, meta }, tx);
     return tx.senderId.findUniqueOrThrow({ where: { id } });
   });
