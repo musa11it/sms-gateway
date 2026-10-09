@@ -8,6 +8,8 @@ export interface CampaignInput {
   groupIds?: string[];
   contactIds?: string[];
   phones?: string[];
+  /** Destination networks the campaign is limited to (empty = any configured network). */
+  networkIds?: string[] | null;
 }
 
 export const campaignService = {

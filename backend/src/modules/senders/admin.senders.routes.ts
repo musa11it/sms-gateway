@@ -7,6 +7,7 @@ import { actorFromRequest, metaFromRequest } from '../../types/actor';
 import { AppError } from '../../utils/errors';
 import { asyncHandler, ok, paginated, paginationSchema, parse, toSkipTake, uuidParam } from '../../utils/http';
 import { reviewSender, type SenderReviewAction } from './sender.service';
+import { SENDER_NETWORK_PERMISSION, senderNetworkOverview, setSenderNetworkStatus } from './senderNetworks.service';
 
 export const adminSendersRouter = Router();
 
@@ -28,7 +29,12 @@ adminSendersRouter.get(
       ...(q.search ? { OR: [{ name: { contains: q.search } }, { organization: { name: { contains: q.search } } }] } : {}),
     };
     const [items, total] = await Promise.all([
-      prisma.senderId.findMany({ where, orderBy: { createdAt: 'desc' }, ...toSkipTake(q), include: { organization: { select: { id: true, name: true, status: true } } } }),
+      prisma.senderId.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        ...toSkipTake(q),
+        include: { organization: { select: { id: true, name: true, status: true } }, networks: { select: { status: true, network: { select: { id: true, name: true } } } } },
+      }),
       prisma.senderId.count({ where }),
     ]);
     return paginated(res, items, q.page, q.limit, total);
@@ -43,6 +49,30 @@ const PERMISSION_FOR: Record<SenderReviewAction, string> = {
   suspend: 'senders.suspend',
   reactivate: 'senders.suspend',
 };
+
+/** A sender ID's status on every active destination network. */
+adminSendersRouter.get(
+  '/:id/networks',
+  requirePlatformPermission('senders.view'),
+  asyncHandler(async (req, res) => {
+    const { id } = parse(uuidParam, req.params);
+    const sender = await prisma.senderId.findUnique({ where: { id } });
+    if (!sender) throw AppError.notFound('Sender ID');
+    return ok(res, await senderNetworkOverview(prisma, sender));
+  }),
+);
+
+/** Approve, reject, suspend or reset (PENDING) a sender ID on one destination network. */
+adminSendersRouter.put(
+  '/:id/networks/:networkId',
+  asyncHandler(async (req, res, next) => {
+    const { id, networkId } = parse(z.object({ id: z.string().uuid(), networkId: z.string().uuid() }), req.params);
+    const { status, note } = parse(z.object({ status: z.enum(['PENDING', 'APPROVED', 'REJECTED', 'SUSPENDED']), note: z.string().trim().max(1000).optional() }), req.body);
+    if (!req.user!.platformPermissions.has(SENDER_NETWORK_PERMISSION[status])) return next(AppError.forbidden(undefined, 'PERMISSION_DENIED'));
+    const row = await setSenderNetworkStatus(id, networkId, status, note, actorFromRequest(req), metaFromRequest(req));
+    return ok(res, row, `Sender ID ${status.toLowerCase()} on the network`);
+  }),
+);
 
 adminSendersRouter.post(
   '/:id/:action',
@@ -66,6 +96,7 @@ adminSendersRouter.get(
         organization: true,
         reviews: { orderBy: { createdAt: 'desc' } },
         registrations: { include: { provider: { select: { code: true, name: true } } } },
+        networks: { include: { network: { select: { id: true, name: true, code: true, countryCode: true, requiresSenderRegistration: true } } } },
       },
     });
     if (!s) throw AppError.notFound('Sender ID');

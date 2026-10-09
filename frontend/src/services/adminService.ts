@@ -1,24 +1,5 @@
 import { del, get, getPage, http, patch, post, put } from '@/api/client';
-import type {
-  ApiKey,
-  AuditLog,
-  Campaign,
-  Invoice,
-  Organization,
-  Payment,
-  PermissionDef,
-  PriceQuote,
-  PricingTier,
-  SegmentationConfig,
-  Role,
-  SenderId,
-  SeriesPoint,
-  SmsRecipient,
-  SmsTotals,
-  UserStatus,
-  VerificationStatus,
-  WalletTransaction,
-} from '@/api/types';
+import type { ApiKey, AuditLog, Campaign, CatalogNetwork, Invoice, Organization, Payment, PermissionDef, PriceQuote, PricingTier, Role, SegmentationConfig, SenderId, SenderNetworkRow, SeriesPoint, SmsRecipient, SmsTotals, UserStatus, VerificationStatus, WalletTransaction } from '@/api/types';
 import type { VerificationItem, VerificationOverview, VerificationRequirement } from '@/services/organizationService';
 
 export interface AdminUser {
@@ -233,6 +214,16 @@ export const adminService = {
   invoices: (params: P) => getPage<Invoice>('/admin/billing/invoices', params),
   invoice: (id: string) => get<Invoice>(`/admin/billing/invoices/${id}`),
   pricingTiers: () => get<PricingTier[]>('/admin/pricing/tiers'),
+  /** Every destination network as customers see it, plus usable provider capacity (providers.view only). */
+  pricingNetworks: () => get<(CatalogNetwork & { countryName: string; usableProviderCapacity: number | null })[]>('/admin/pricing/networks'),
+  networkInventory: () => get<NetworkInventory>('/admin/pricing/networks/inventory'),
+  priceList: (networkId: string | null) => get<PriceListConfig>('/admin/pricing/lists/current', networkId ? { networkId } : {}),
+  savePriceList: (body: Record<string, unknown>) => put<PriceListConfig>('/admin/pricing/lists', body),
+  /** Replace a price list's prices with a ladder of { minQuantity, unitPrice, name? } steps. */
+  savePriceLadder: (body: { networkId: string | null; steps: { minQuantity: number; unitPrice: string; name?: string | null }[] }) => put<PricingTier[]>('/admin/pricing/ladder', body),
+  pricingHistory: (params: { page: number; limit?: number; networkId?: string }) => getPage<AuditLog>('/admin/pricing/history', params),
+  senderNetworks: (senderId: string) => get<SenderNetworkRow[]>(`/admin/senders/${senderId}/networks`),
+  setSenderNetwork: (senderId: string, networkId: string, body: { status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'SUSPENDED'; note?: string }) => put(`/admin/senders/${senderId}/networks/${networkId}`, body),
   createPricingTier: (body: Record<string, unknown>) => post<PricingTier>('/admin/pricing/tiers', body),
   updatePricingTier: (id: string, body: Record<string, unknown>) => patch<PricingTier>(`/admin/pricing/tiers/${id}`, body),
   deletePricingTier: (id: string) => del(`/admin/pricing/tiers/${id}`),
@@ -277,3 +268,40 @@ export const adminService = {
   rotateIntegration: (id: string, overlapMinutes: number) => post<{ integration: IntegrationClient; secret: string }>(`/admin/integrations/${id}/rotate`, { overlapMinutes }),
   integrationActivity: (id: string) => get<IntegrationActivity[]>(`/admin/integrations/${id}/activity`),
 };
+
+export interface NetworkInventory {
+  from: string;
+  to: string;
+  networks: {
+    networkId: string;
+    name: string;
+    code: string;
+    countryCode: string;
+    status: 'ACTIVE' | 'MAINTENANCE';
+    providers: {
+      providerId: string;
+      name: string;
+      type: string;
+      status: string;
+      health: string;
+      capability: 'NETWORK' | 'COUNTRY';
+      capacityBalance: number;
+      remainingLotCapacity: number;
+      averageRemainingCost: string | null;
+      currentQuotedCost: string | null;
+      consumed: { messages: number; credits: number; providerCost: string | null };
+    }[];
+  }[];
+}
+
+export interface PriceListConfig {
+  id: string | null;
+  pricingMetric: 'PURCHASE_QUANTITY' | 'MONTHLY_PURCHASE_QUANTITY';
+  rateApplication: 'WHOLE_PURCHASE' | 'GRADUATED';
+  minPurchaseQuantity: number | null;
+  maxPurchaseQuantity: number | null;
+  customerNotes: string | null;
+  isActive: boolean;
+  metricText?: string;
+  rateText?: string;
+}

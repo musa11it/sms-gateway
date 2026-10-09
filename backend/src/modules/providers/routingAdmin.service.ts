@@ -123,6 +123,7 @@ export async function deleteCountry(id: string, actor: Actor, meta?: RequestMeta
     }
     const messages = await tx.smsRecipient.count({ where: { OR: [{ countryCode: country.isoCode }, { networkId: { in: networkIds } }] } });
     if (messages) throw AppError.conflict(`${messages.toLocaleString()} messages were sent to ${country.name}; disable it instead so their history stays accurate.`, 'COUNTRY_HAS_HISTORY');
+    await assertNoCommerceHistory(tx, networkIds, country.name);
     await tx.smsNetwork.deleteMany({ where: { id: { in: networkIds } } });
     await tx.smsCountry.delete({ where: { id } });
     await audit(
@@ -134,6 +135,20 @@ export async function deleteCountry(id: string, actor: Actor, meta?: RequestMeta
 
 // ── Networks ─────────────────────────────────────────────────────────────
 
+/** Prices, sales, customer credits and sender approvals keep a network's history: deactivate it instead of deleting. */
+async function assertNoCommerceHistory(tx: Tx, networkIds: string[], label: string) {
+  if (!networkIds.length) return;
+  const [tiers, items, lots, approvals] = await Promise.all([
+    tx.smsPricingTier.count({ where: { networkId: { in: networkIds } } }),
+    tx.paymentItem.count({ where: { networkId: { in: networkIds } } }),
+    tx.smsCreditLot.count({ where: { networkId: { in: networkIds } } }),
+    tx.senderIdNetwork.count({ where: { networkId: { in: networkIds } } }),
+  ]);
+  if (items || lots) throw AppError.conflict(`SMS for ${label} has been sold to customers; deactivate it instead so balances and history stay accurate.`, 'NETWORK_HAS_HISTORY');
+  if (tiers) throw AppError.conflict(`${label} has selling prices; delete or move them first, or deactivate it instead.`, 'NETWORK_HAS_PRICES');
+  if (approvals) throw AppError.conflict(`Sender IDs are registered on ${label}; deactivate it instead.`, 'NETWORK_HAS_SENDER_APPROVALS');
+}
+
 export const networkBody = z
   .object({
     code: z.string().trim().toUpperCase().regex(/^[A-Z0-9][A-Z0-9_-]{1,29}$/, 'Letters, digits, - and _ (e.g. RW-MTN)'),
@@ -142,10 +157,21 @@ export const networkBody = z
     prefixes: z.array(prefix).min(1, 'At least one valid prefix is required').max(50),
     nationalNumberLengths: lengthList.optional(),
     isActive: z.boolean().default(true),
+    // Temporarily closed for purchases and sends (history and balances kept).
+    inMaintenance: z.boolean().optional(),
+    maintenanceNote: z.string().trim().max(500).nullable().optional(),
+    // Sender IDs need an approved registration on this network before sending to it.
+    requiresSenderRegistration: z.boolean().optional(),
+    supportsOutbound: z.boolean().optional(),
+    supportsInbound: z.boolean().optional(),
+    sortOrder: z.coerce.number().int().min(0).max(1000).optional(),
     // Providers that can deliver to this network.
     providerIds: z.array(z.string().uuid()).max(100).optional(),
   })
   .strict();
+
+/** Customer-facing state of a network (purchases and sends follow it). */
+export const networkState = (n: Pick<SmsNetwork, 'isActive' | 'inMaintenance'>) => (!n.isActive ? 'INACTIVE' : n.inMaintenance ? 'MAINTENANCE' : 'ACTIVE');
 
 type NetworkRow = SmsNetwork & { _count?: { providers: number }; providers?: { provider: { id: string; name: string; code: string } }[] };
 
@@ -160,6 +186,13 @@ export function serializeNetwork(n: NetworkRow) {
     prefixes: stringList(n.prefixes),
     nationalNumberLengths: Array.isArray(n.nationalNumberLengths) ? (n.nationalNumberLengths as number[]) : [],
     isActive: n.isActive,
+    status: networkState(n),
+    inMaintenance: n.inMaintenance,
+    maintenanceNote: n.maintenanceNote,
+    requiresSenderRegistration: n.requiresSenderRegistration,
+    supportsOutbound: n.supportsOutbound,
+    supportsInbound: n.supportsInbound,
+    sortOrder: n.sortOrder,
     providerCount: n._count?.providers ?? n.providers?.length,
     providers: n.providers?.map((p) => p.provider) ?? [],
     updatedAt: n.updatedAt,
@@ -220,7 +253,17 @@ export async function updateNetwork(id: string, input: Partial<z.infer<typeof ne
     await tx.smsNetwork.update({ where: { id }, data: { ...data, countryName: country.name, ...(nationalNumberLengths ? { nationalNumberLengths } : {}) } });
     if (providerIds) await setNetworkProviders(tx, id, providerIds);
     const row = await tx.smsNetwork.findUniqueOrThrow({ where: { id }, include: networkInclude });
-    await audit({ actor, action: 'ROUTING_NETWORK_UPDATED', resource: 'sms_network', resourceId: id, metadata: { before: serializeNetwork(before), after: serializeNetwork(row) }, meta }, tx);
+    const action =
+      row.inMaintenance !== before.inMaintenance
+        ? row.inMaintenance
+          ? 'ROUTING_NETWORK_MAINTENANCE_STARTED'
+          : 'ROUTING_NETWORK_MAINTENANCE_ENDED'
+        : row.isActive !== before.isActive
+          ? row.isActive
+            ? 'ROUTING_NETWORK_ACTIVATED'
+            : 'ROUTING_NETWORK_DEACTIVATED'
+          : 'ROUTING_NETWORK_UPDATED';
+    await audit({ actor, action, resource: 'sms_network', resourceId: id, metadata: { before: serializeNetwork(before), after: serializeNetwork(row) }, meta }, tx);
     return row;
   });
 }
@@ -242,6 +285,7 @@ export async function deleteNetwork(id: string, actor: Actor, meta?: RequestMeta
     if (messages) {
       throw AppError.conflict(`${messages.toLocaleString()} messages were routed to ${network.name}; deactivate it instead so their history stays accurate.`, 'NETWORK_HAS_HISTORY');
     }
+    await assertNoCommerceHistory(tx, [id], network.name);
     await tx.smsNetwork.delete({ where: { id } });
     await audit({ actor, action: 'ROUTING_NETWORK_DELETED', resource: 'sms_network', resourceId: id, metadata: { network: serializeNetwork(network), providerLinksRemoved: network._count.providers }, meta }, tx);
   });

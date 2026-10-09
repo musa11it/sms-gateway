@@ -38,12 +38,13 @@ import { Button, LinkButton } from '@/components/ui/Button';
 import { Field, Input, Textarea } from '@/components/ui/Form';
 import { useAuthStore } from '@/stores/authStore';
 import { siteService } from '@/services/businessService';
+import { PricingExplorer } from './PricingExplorer';
 import { cn, fmtMoney, fmtNumber } from '@/utils/format';
 
 const NAV = [
   ['Services', '#services'],
   ['How it works', '#how'],
-  ['Pricing', '#pricing'],
+  ['Pricing', '/pricing'],
   ['Developers', '#developers'],
   ['FAQ', '#faq'],
   ['Contact', '#contact'],
@@ -57,7 +58,7 @@ function SiteHeader() {
       <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6">
         <Link to="/"><Logo /></Link>
         <nav className="hidden items-center gap-7 text-sm font-medium text-slate-600 lg:flex">
-          {NAV.map(([l, h]) => <a key={h} href={h} className="hover:text-slate-900">{l}</a>)}
+          {NAV.map(([l, h]) => (h.startsWith('/') ? <Link key={h} to={h} className="hover:text-slate-900">{l}</Link> : <a key={h} href={`/${h}`} className="hover:text-slate-900">{l}</a>))}
         </nav>
         <div className="hidden items-center gap-2 lg:flex">
           {loggedIn ? (
@@ -95,7 +96,7 @@ function SiteFooter() {
           <p className="mt-4 text-sm leading-relaxed text-slate-500">SMS management and messaging for businesses, organizations and developers.</p>
         </div>
         {[
-          ['Product', [['Services', '/#services'], ['Pricing', '/#pricing'], ['Developers', '/#developers'], ['Documentation', '/app/developer/docs']]],
+          ['Product', [['Services', '/#services'], ['Pricing', '/pricing'], ['Developers', '/#developers'], ['Documentation', '/app/developer/docs']]],
           ['Company', [['About', '/#about'], ['Contact', '/#contact'], ['FAQ', '/#faq']]],
           ['Account', [['Log in', '/login'], ['Register', '/register'], ['Privacy policy', '/privacy'], ['Terms of service', '/terms']]],
         ].map(([title, links]) => (
@@ -190,7 +191,17 @@ const FAQS = [
   ['Can my team use the same account?', 'Yes. Invite team members and give each person a role — owner, manager, finance, marketing, developer or staff — with exactly the access they need.'],
 ];
 
+/** Country/telecom pricing when destination networks are priced; otherwise the general credit ranges. */
 function Pricing() {
+  const loggedIn = !!useAuthStore((s) => s.accessToken);
+  // Only a one-row lookup: the explorer then loads a single country at a time.
+  const any = useQuery({ queryKey: ['site', 'countries', 'any'], queryFn: () => siteService.countries({ limit: 1 }), staleTime: 60_000 });
+  if (any.isLoading) return <div className="h-80 animate-pulse rounded-2xl bg-slate-100" />;
+  if (any.data?.defaultIsoCode) return <PricingExplorer loggedIn={loggedIn} />;
+  return <GeneralPricing />;
+}
+
+function GeneralPricing() {
   const q = useQuery({ queryKey: ['site', 'pricing'], queryFn: siteService.pricing, staleTime: 60_000 });
   if (q.isLoading) return <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-4">{[0, 1, 2, 3].map((i) => <div key={i} className="h-56 animate-pulse rounded-2xl bg-slate-100" />)}</div>;
   if (q.error || !q.data?.length) return <p className="text-center text-sm text-slate-500">Pricing is currently unavailable. <a href="#contact" className="link">Contact us</a> for a quote.</p>;
@@ -383,7 +394,7 @@ export function LandingPage() {
         </div>
       </Section>
 
-      <Section id="pricing" eyebrow="Pricing" title="Buy any amount — the more you buy, the less each SMS costs" subtitle="Your quantity sets the rate for the whole purchase. 1 credit = 1 SMS segment to one recipient." className="bg-slate-50">
+      <Section id="pricing" eyebrow="Pricing" title="Simple prices for every network" subtitle="Pick a country. Buy more, pay less." className="bg-slate-50">
         <Pricing />
         <p className="mt-8 text-center text-sm text-slate-500">Need a larger volume? <a href="#contact" className="link">Talk to us</a>.</p>
       </Section>
@@ -406,6 +417,25 @@ export function LandingPage() {
       <Section id="contact" eyebrow="Contact" title="Talk to our team" subtitle="Questions about pricing, verification or integration? Send us a message.">
         <div className="mx-auto max-w-3xl"><ContactForm /></div>
       </Section>
+      <SiteFooter />
+    </div>
+  );
+}
+
+/** Full pricing page: country → service → telecom prices and a calculator, all from the backend. */
+export function PricingPage() {
+  const loggedIn = !!useAuthStore((s) => s.accessToken);
+  return (
+    <div className="bg-slate-50">
+      <SiteHeader />
+      <main className="mx-auto max-w-7xl px-4 py-12 sm:px-6 sm:py-16">
+        <p className="text-sm font-semibold uppercase tracking-wide text-brand-700">Pricing</p>
+        <h1 className="mt-2 text-3xl font-semibold tracking-tight text-slate-900 sm:text-5xl">Simple prices for every network</h1>
+        <p className="mt-3 max-w-xl text-lg text-slate-600">Pick a country. Buy more, pay less. No fees.</p>
+        <div className="mt-10">
+          <PricingExplorer loggedIn={loggedIn} />
+        </div>
+      </main>
       <SiteFooter />
     </div>
   );

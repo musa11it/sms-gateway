@@ -13,9 +13,22 @@ import * as sms from './sms.service';
 
 export const smsRouter = Router();
 
-/** Provider cost and routing decisions are internal to the platform: never sent to customers. */
-function customerRecipient<T extends { providerCost?: unknown; providerId?: unknown; routingRuleId?: unknown; networkId?: unknown; capacityReleased?: unknown }>(r: T) {
-  const { providerCost: _cost, providerId: _provider, routingRuleId: _rule, networkId: _network, capacityReleased: _released, ...rest } = r;
+/** Provider cost, stock lots, routing decisions and internal revenue accounting are platform-only: never sent to customers. */
+function customerRecipient<
+  T extends { providerCost?: unknown; providerId?: unknown; routingRuleId?: unknown; networkId?: unknown; capacityReleased?: unknown; costLots?: unknown; revenue?: unknown; revenueLots?: unknown; routingNote?: unknown },
+>(r: T) {
+  const {
+    providerCost: _cost,
+    providerId: _provider,
+    routingRuleId: _rule,
+    networkId: _network,
+    capacityReleased: _released,
+    costLots: _costLots,
+    revenue: _revenue,
+    revenueLots: _revenueLots,
+    routingNote: _routingNote,
+    ...rest
+  } = r;
   return rest;
 }
 
@@ -29,6 +42,8 @@ const sendBody = z
     scheduledAt: z.coerce.date().optional().nullable(),
     timezone: z.string().max(64).optional().nullable(),
     idempotencyKey: z.string().trim().min(8).max(100).optional(),
+    // Destination networks to send to; recipients on other networks are refused (optional).
+    networkIds: z.array(z.string().uuid()).max(50).optional(),
   })
   .refine((b) => b.recipients.length || b.contactIds?.length || b.groupIds?.length, { message: 'Add at least one recipient', path: ['recipients'] })
   .refine((b) => !b.scheduledAt || b.scheduledAt.getTime() > Date.now(), { message: 'Scheduled time must be in the future', path: ['scheduledAt'] });
@@ -54,13 +69,33 @@ smsRouter.post(
         recipients: z.array(z.string().max(30)).max(100_000).optional().default([]),
         contactIds: z.array(z.string().uuid()).max(100_000).optional(),
         groupIds: z.array(z.string().uuid()).max(100).optional(),
+        networkIds: z.array(z.string().uuid()).max(50).optional(),
+        senderId: z.string().uuid().optional(),
       }),
       req.body,
     );
     const audience = await resolveAudience(req.org!.id, { phones: body.recipients, contactIds: body.contactIds, groupIds: body.groupIds });
-    const prepared = await sms.prepareRecipients(req.org!.id, audience);
+    const prepared = await sms.prepareRecipients(req.org!.id, audience, { networkIds: body.networkIds });
     const q = await sms.quote(body.message, prepared.recipients.length);
     const wallet = await prisma.wallet.findUnique({ where: { organizationId: req.org!.id } });
+    // Per destination network: recipients, credits needed, credits usable there and sender compatibility.
+    const groups = sms.groupByNetwork(prepared.recipients, prepared.networks);
+    const spendable = await sms.spendableByNetwork(req.org!.id, groups.map((g) => g.networkId));
+    const sender = body.senderId ? await prisma.senderId.findFirst({ where: { id: body.senderId, organizationId: req.org!.id } }) : null;
+    const compat = sender ? await sms.senderCompatibilityFor(sender, groups) : null;
+    const byNetwork = groups.map((g, i) => {
+      const credits = g.recipients.length * q.creditsPerRecipient;
+      return {
+        networkId: g.networkId,
+        networkName: g.network?.name ?? null,
+        countryCode: g.network?.countryCode ?? null,
+        recipients: g.recipients.length,
+        credits,
+        availableCredits: spendable.get(g.networkId) ?? 0,
+        sufficientCredits: (spendable.get(g.networkId) ?? 0) >= credits,
+        sender: compat ? compat[i] : null,
+      };
+    });
     return ok(res, {
       ...q,
       invalid: prepared.invalid,
@@ -68,7 +103,9 @@ smsRouter.post(
       optedOut: prepared.optedOut,
       balance: wallet?.balance ?? 0,
       remainingAfterSend: (wallet?.balance ?? 0) - q.totalCredits,
-      sufficientBalance: (wallet?.balance ?? 0) >= q.totalCredits,
+      sufficientBalance: (wallet?.balance ?? 0) >= q.totalCredits && byNetwork.every((n) => n.sufficientCredits),
+      byNetwork,
+      senderCompatible: compat ? compat.every((c) => !c || c.compatible) : null,
     });
   }),
 );
@@ -91,6 +128,7 @@ smsRouter.post(
       scheduledAt: body.scheduledAt ?? null,
       timezone: body.timezone,
       idempotencyKey: body.idempotencyKey,
+      networkIds: body.networkIds,
     });
     const m = result.message;
     return created(

@@ -10,6 +10,8 @@ import { asyncHandler, parse } from '../../utils/http';
 import { authenticateApiKey } from '../api-keys/apiKey.service';
 import { MESSAGE_INPUT_HARD_LIMIT, analyzeMessage, serializeEstimate } from './segmentation.service';
 import * as sms from './sms.service';
+import { destinationCatalog } from '../pricing/networkPricing.service';
+import { networkBalances } from '../wallet/networkBalances.service';
 
 /**
  * Public REST API authenticated with API keys. Every request goes through the exact same
@@ -91,6 +93,8 @@ const sendSchema = z
     message: z.string().min(1).max(MESSAGE_INPUT_HARD_LIMIT),
     reference: z.string().trim().max(100).optional(),
     scheduledAt: z.coerce.date().optional(),
+    // Destination networks to send to, by network code (e.g. ["RW-MTN"]); numbers on other networks are refused.
+    networks: z.array(z.string().trim().min(1).max(30)).min(1).max(50).optional(),
   })
   .refine((b) => !!(b.senderId ?? b.sender), { message: 'Provide "senderId" (your approved sender name)', path: ['senderId'] })
   .refine((b) => [b.to, b.recipient, b.recipients].filter((x) => x !== undefined).length === 1, { message: 'Provide exactly one of "to", "recipient" or "recipients"', path: ['to'] });
@@ -127,6 +131,14 @@ publicRouter.post(
     const body = parse(sendSchema, req.body);
     const idem = req.get('idempotency-key');
     if (idem && !/^[\w-]{8,100}$/.test(idem)) throw AppError.badRequest('Idempotency-Key must be 8-100 characters [A-Za-z0-9_-]', 'INVALID_IDEMPOTENCY_KEY');
+    let networkIds: string[] | null = null;
+    if (body.networks) {
+      const codes = [...new Set(body.networks.map((c) => c.toUpperCase()))];
+      const found = await prisma.smsNetwork.findMany({ where: { code: { in: codes }, isActive: true }, select: { id: true, code: true } });
+      const missing = codes.filter((c) => !found.some((f) => f.code === c));
+      if (missing.length) throw AppError.unprocessable(`Unknown or unavailable network: ${missing.join(', ')}`, 'NETWORK_NOT_AVAILABLE', [{ field: 'networks', message: 'Use network codes from GET /destinations' }]);
+      networkIds = found.map((f) => f.id);
+    }
     const result = await sms.sendSms({
       organizationId: req.org!.id,
       actor: actorFromRequest(req),
@@ -139,6 +151,7 @@ publicRouter.post(
       idempotencyKey: idem ?? null,
       clientReference: body.reference ?? null,
       scheduledAt: body.scheduledAt ?? null,
+      networkIds,
     });
     const recipients = await prisma.smsRecipient.findMany({ where: { messageId: result.message.id }, orderBy: { createdAt: 'asc' } });
     const m = result.message;
@@ -179,7 +192,36 @@ publicRouter.get(
   '/balance',
   requireScope('balance.read'),
   asyncHandler(async (req, res) => {
-    const wallet = await prisma.wallet.findUniqueOrThrow({ where: { organizationId: req.org!.id } });
-    res.json({ success: true, data: { balance: wallet.balance, unit: 'credits' } });
+    const b = await networkBalances(req.org!.id);
+    res.json({
+      success: true,
+      data: {
+        balance: b.total,
+        unit: 'credits',
+        general: b.general.credits,
+        networks: b.networks.map((n) => ({ network: n.code, name: n.name, country: n.countryCode, credits: n.credits })),
+      },
+    });
+  }),
+);
+
+/** Destinations you can buy and send SMS to, with network codes and prices per SMS segment. */
+publicRouter.get(
+  '/destinations',
+  requireScope('balance.read'),
+  asyncHandler(async (_req, res) => {
+    const { countries, currency } = await destinationCatalog();
+    res.json({
+      success: true,
+      data: {
+        currency,
+        countries: countries.map((c) => ({
+          country: c.isoCode,
+          name: c.name,
+          callingCode: c.callingCode,
+          networks: c.networks.map((n) => ({ network: n.code, name: n.name, available: n.available, status: n.availability, fromPrice: n.fromPrice, senderRegistrationRequired: n.requiresSenderRegistration, tiers: n.tiers.map(({ id: _id, ...t }) => t) })),
+        })),
+      },
+    });
   }),
 );

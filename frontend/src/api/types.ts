@@ -76,6 +76,9 @@ export interface SenderId {
   reviewNote: string | null;
   createdAt: string;
   approvedAt: string | null;
+  /** Requested for specific telecoms: usable only where approved. */
+  restrictToNetworks?: boolean;
+  networks?: { status: string; network: { id: string; name: string } }[];
   organization?: { id: string; name: string; status: OrganizationStatus };
 }
 
@@ -140,6 +143,152 @@ export interface Payment {
   verifiedAt: string | null;
   invoice: { id: string; number: string } | null;
   organization?: { id: string; name: string };
+  /** Network purchases: one line per destination network (empty for general credits). */
+  items?: PaymentItem[];
+}
+
+export interface PaymentItem {
+  id: string;
+  networkId: string;
+  networkName: string;
+  countryCode: string;
+  quantity: number;
+  unitPrice: string;
+  subtotal: string;
+  pricingMetric?: PricingMetric;
+  rateApplication?: RateApplication;
+  tierMinQuantity: number;
+  tierMaxQuantity: number | null;
+}
+
+export type NetworkAvailability = 'AVAILABLE' | 'OUT_OF_STOCK' | 'NO_ROUTE' | 'NO_PRICE' | 'MAINTENANCE' | 'OUTBOUND_UNAVAILABLE';
+
+export interface CatalogTier {
+  id: string;
+  name: string | null;
+  minQuantity: number;
+  maxQuantity: number | null;
+  label: string;
+  unitPrice: string;
+  currency: string;
+}
+
+export interface CatalogNetwork {
+  id: string;
+  code: string;
+  name: string;
+  countryCode: string;
+  availability: NetworkAvailability;
+  available: boolean;
+  availabilityText: string;
+  requiresSenderRegistration: boolean;
+  currency: string | null;
+  fromPrice: string | null;
+  minQuantity: number | null;
+  maxQuantity: number | null;
+  tiers: CatalogTier[];
+  directions?: { outbound: boolean; inbound: boolean };
+  pricing?: {
+    service: 'BULK_SMS';
+    direction: 'OUTBOUND';
+    priceType: 'CUSTOMER_SELLING_PRICE';
+    unit: string;
+    metric: PricingMetric;
+    metricText: string;
+    rateApplication: RateApplication;
+    rateText: string;
+    notes: string | null;
+  };
+}
+
+export interface CountrySummary {
+  isoCode: string;
+  name: string;
+  callingCode: string | null;
+  available: boolean;
+  networkCount: number;
+  networksOnSale: number;
+  fromPrice: string | null;
+}
+
+export interface CountryDirectory {
+  countries: CountrySummary[];
+  total: number;
+  defaultIsoCode: string | null;
+  currency: string;
+}
+
+export type PricingMetric = 'PURCHASE_QUANTITY' | 'MONTHLY_PURCHASE_QUANTITY';
+export type RateApplication = 'WHOLE_PURCHASE' | 'GRADUATED';
+
+export interface DestinationCountry {
+  isoCode: string;
+  name: string;
+  callingCode: string | null;
+  available: boolean;
+  services?: { key: 'BULK_SMS'; name: string; direction: 'OUTBOUND'; available: boolean }[];
+  networks: CatalogNetwork[];
+}
+
+export interface NetworkQuoteLine {
+  networkId: string;
+  networkName: string;
+  networkCode: string;
+  countryCode: string;
+  countryName: string;
+  quantity: number;
+  tier: { id: string; name: string | null; minQuantity: number; maxQuantity: number | null; label: string };
+  unitPrice: string;
+  subtotal: string;
+  total: string;
+  savings: { comparedToUnitPrice: string; amount: string; percent: number } | null;
+  currency: string;
+  pricing: { priceListId: string | null; metric: PricingMetric; rateApplication: RateApplication; volumeBefore: number; breakdown: { tierId: string; label: string; units: number; unitPrice: string; amount: string }[] };
+}
+
+export interface NetworkQuote {
+  items: NetworkQuoteLine[];
+  totalQuantity: number;
+  subtotal: string;
+  discount: string;
+  taxRate: string;
+  taxIncluded: string;
+  total: string;
+  currency: string;
+}
+
+export interface NetworkBalances {
+  total: number;
+  general: { credits: number; nextExpiry: string | null };
+  networks: { networkId: string; name: string; code: string | null; countryCode: string | null; countryName: string | null; credits: number; nextExpiry: string | null; sendable: boolean }[];
+  policy: string;
+  usage: { from: string; to: string; networks: { networkId: string | null; name: string; countryCode: string | null; messages: number; credits: number }[] };
+}
+
+export type SenderNetworkStatus = 'NOT_REQUIRED' | 'APPROVED' | 'PENDING' | 'REJECTED' | 'SUSPENDED' | 'NOT_REGISTERED' | 'SENDER_NOT_APPROVED';
+
+export interface SenderNetworkCheck {
+  networkId: string;
+  networkName: string;
+  status: SenderNetworkStatus;
+  compatible: boolean;
+  reason: string | null;
+}
+
+export interface SenderNetworkRow extends SenderNetworkCheck {
+  countryCode: string;
+  requested?: boolean;
+  requiresRegistration: boolean;
+  note: string | null;
+  reviewedAt: string | null;
+  requestedAt: string | null;
+}
+
+export interface EligibleSender {
+  id: string;
+  name: string;
+  compatible: boolean;
+  networks: SenderNetworkCheck[];
 }
 
 export interface Invoice {
@@ -218,6 +367,17 @@ export interface Quote {
   balance: number;
   remainingAfterSend: number;
   sufficientBalance: boolean;
+  byNetwork?: {
+    networkId: string | null;
+    networkName: string | null;
+    countryCode: string | null;
+    recipients: number;
+    credits: number;
+    availableCredits: number;
+    sufficientCredits: boolean;
+    sender: SenderNetworkCheck | null;
+  }[];
+  senderCompatible?: boolean | null;
 }
 
 export interface MessageEstimate {
@@ -290,6 +450,7 @@ export interface Campaign {
   groups?: { id: string; name: string; color: string | null; contactCount: number }[];
   recipients?: { id: string; phone: string; contactId: string | null }[];
   explicitRecipientCount?: number;
+  networkIds?: string[] | null;
   smsMessage?: { id: string; status: BatchStatus; segments: number; encoding: string; totalCredits: number; recipientCount: number } | null;
   organization?: { id: string; name: string };
 }
@@ -405,6 +566,11 @@ export interface SmsTotals {
 export interface PricingTier {
   id: string;
   name: string | null;
+  networkId?: string | null;
+  network?: { name: string; countryCode: string } | null;
+  direction?: 'OUTBOUND' | 'INBOUND';
+  effectiveFrom?: string | null;
+  effectiveTo?: string | null;
   minQuantity: number;
   maxQuantity: number | null;
   unitPrice: string;

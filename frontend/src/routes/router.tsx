@@ -39,6 +39,7 @@ const adminOrgs = () => import('@/pages/admin/OrganizationPages');
 const adminReview = () => import('@/pages/admin/ReviewPages');
 const adminBilling = () => import('@/pages/admin/BillingPages');
 const smsCommerce = () => import('@/pages/admin/SmsCommercePages');
+const pricingStudio = () => import('@/pages/admin/PricingStudio');
 const smsConfig = () => import('@/pages/admin/SmsConfigurationPage');
 const providerMgmt = () => import('@/pages/admin/ProviderManagementPages');
 const adminAccess = () => import('@/pages/admin/AccessPages');
@@ -61,6 +62,7 @@ const appRoutes: RouteObject[] = [
   { path: 'senders', element: guard('senders.view', page(senders, 'SendersPage')) },
   { path: 'wallet', element: <Navigate to="/app/wallet/transactions" replace /> },
   { path: 'wallet/buy', element: guard('wallet.purchase', page(wallet, 'BuySmsPage')) },
+  { path: 'pricing', element: page(wallet, 'AppPricingPage') },
   { path: 'wallet/transactions', element: guard('wallet.view', page(wallet, 'TransactionsPage')) },
   { path: 'wallet/payments', element: guard('payments.view', page(wallet, 'PaymentsPage')) },
   { path: 'wallet/invoices', element: guard('invoices.view', page(wallet, 'InvoicesPage')) },
@@ -91,7 +93,7 @@ const adminRoutes: RouteObject[] = [
   { path: 'payments/invoices', element: guard('invoices.view', page(adminBilling, 'AdminInvoicesPage'), true) },
   { path: 'payments/invoices/:id', element: guard('invoices.view', page(adminBilling, 'AdminInvoicePage'), true) },
   { path: 'wallets', element: guard('wallet.view', page(adminBilling, 'WalletsPage'), true) },
-  { path: 'pricing', element: guard('packages.view', page(smsCommerce, 'PricingTiersPage'), true) },
+  { path: 'pricing', element: guard('packages.view', page(pricingStudio, 'PricingAdminPage'), true) },
   { path: 'customer-report', element: guard('finance.view', page(smsCommerce, 'CustomerFinanceReportPage'), true) },
   { path: 'reports', element: guard('reports.view', page(admin, 'AdminReportsPage'), true) },
   { path: 'finance', element: guard('finance.view', page(business, 'FinancePage'), true) },
@@ -128,6 +130,7 @@ export const router = createBrowserRouter([
     ],
   },
   { path: '/', element: page(site, 'LandingPage') },
+  { path: '/pricing', element: page(site, 'PricingPage') },
   { path: '/privacy', element: page(site, 'PrivacyPage') },
   { path: '/terms', element: page(site, 'TermsPage') },
   { path: '/verify-email', element: page(auth, 'VerifyEmailPage') },

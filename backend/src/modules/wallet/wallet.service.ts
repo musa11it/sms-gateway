@@ -10,7 +10,7 @@ import { audit } from '../audit-logs/audit.service';
 import { notifyOrganization } from '../notifications/notification.service';
 import { releaseSenderCredits } from '../senders/allocation.service';
 import { emitWebhookEvent } from '../webhooks/webhook.service';
-import { consumedPrice, consumeLots, createLot, latestExpiry, readConsumption, restoreLots, type LotConsumption } from './creditLots';
+import { consumedNetwork, consumedPrice, consumeLots, createLot, latestExpiry, readConsumption, restoreLots, type LotConsumption, type NetworkScope } from './creditLots';
 
 export interface LedgerEntry {
   organizationId: string;
@@ -32,6 +32,10 @@ export interface LedgerEntry {
   unitPrice?: Prisma.Decimal | null;
   /** Credits with restoreOf: the exact lots to refill (e.g. one recipient's share of a batch debit). */
   restoreLots?: LotConsumption[];
+  /** Debits: split of the amount by destination network; each part may only use credits valid there (see creditLots.ts). */
+  networkScopes?: NetworkScope[];
+  /** Credits: destination network the new lot is restricted to (null/omitted = general credits). */
+  networkId?: string | null;
 }
 
 export function isDuplicateReference(err: unknown): boolean {
@@ -82,7 +86,7 @@ export async function applyLedgerEntry(tx: Tx, entry: LedgerEntry) {
   const transactionId = crypto.randomUUID();
   let metadata = entry.metadata;
   if (entry.amount < 0) {
-    metadata = { ...metadata, lots: await consumeLots(tx, wallet.id, -entry.amount, entry.preferLotId) };
+    metadata = { ...metadata, lots: await consumeLots(tx, wallet.id, -entry.amount, entry.preferLotId, entry.networkScopes) };
   } else {
     const original = entry.restoreOf ? await tx.walletTransaction.findUnique({ where: { reference: entry.restoreOf } }) : null;
     let leftover = entry.amount;
@@ -93,10 +97,18 @@ export async function applyLedgerEntry(tx: Tx, entry: LedgerEntry) {
       metadata = { ...metadata, restoredLots: r.restored };
       const allocationId = (original.metadata as { allocationId?: unknown } | null)?.allocationId;
       if (typeof allocationId === 'string') await releaseSenderCredits(tx, allocationId, entry.amount);
-      if (leftover > 0) entry = { ...entry, expiresAt: await latestExpiry(tx, consumed), unitPrice: entry.unitPrice ?? (consumedPrice(consumed) ? new Prisma.Decimal(consumedPrice(consumed)!) : null) };
+      if (leftover > 0) {
+        entry = {
+          ...entry,
+          expiresAt: await latestExpiry(tx, consumed),
+          unitPrice: entry.unitPrice ?? (consumedPrice(consumed) ? new Prisma.Decimal(consumedPrice(consumed)!) : null),
+          // Restored credits stay on the network they were bought for (never silently turned into general credits).
+          networkId: entry.networkId !== undefined ? entry.networkId : await consumedNetwork(tx, consumed),
+        };
+      }
     }
     if (leftover > 0) {
-      await createLot(tx, { walletId: wallet.id, organizationId: entry.organizationId, transactionId, type: entry.type, credits: leftover, expiresAt: entry.expiresAt, unitPrice: entry.unitPrice });
+      await createLot(tx, { walletId: wallet.id, organizationId: entry.organizationId, transactionId, type: entry.type, credits: leftover, expiresAt: entry.expiresAt, unitPrice: entry.unitPrice, networkId: entry.networkId });
     }
   }
 

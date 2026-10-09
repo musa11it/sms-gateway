@@ -6,6 +6,7 @@ import { requireOrgPermission } from '../../middlewares/rbac';
 import { actorFromRequest, metaFromRequest } from '../../types/actor';
 import { asyncHandler, ok, paginated, paginationSchema, parse, toSkipTake } from '../../utils/http';
 import { getWallet, updateLowBalanceThreshold } from './wallet.service';
+import { networkBalances, networkUsage } from './networkBalances.service';
 
 export const walletRouter = Router();
 
@@ -35,6 +36,19 @@ walletRouter.get(
       expiringSoon: { credits: expiring._sum.remaining ?? 0, withinDays: EXPIRING_SOON_DAYS, nextExpiry: nextLot ? { at: nextLot.expiresAt, credits: nextLot.remaining } : null },
       updatedAt: wallet.updatedAt,
     });
+  }),
+);
+
+/** Credits by destination network (general credits separately) and usage per network for a period (default: this month). */
+walletRouter.get(
+  '/balances',
+  requireOrgPermission('wallet.view'),
+  asyncHandler(async (req, res) => {
+    const q = parse(z.object({ from: z.coerce.date().optional(), to: z.coerce.date().optional() }), req.query);
+    const from = q.from ?? new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+    const to = q.to ?? new Date();
+    const [balances, usage] = await Promise.all([networkBalances(req.org!.id), networkUsage(req.org!.id, from, to)]);
+    return ok(res, { ...balances, usage: { from, to, networks: usage } });
   }),
 );
 
@@ -81,7 +95,7 @@ walletRouter.get(
     const wallet = await getWallet(req.org!.id);
     const lots = await prisma.smsCreditLot.findMany({
       where: { walletId: wallet.id, remaining: { gt: 0 } },
-      select: { id: true, sourceType: true, credits: true, remaining: true, expiresAt: true, createdAt: true },
+      select: { id: true, sourceType: true, credits: true, remaining: true, expiresAt: true, createdAt: true, networkId: true, network: { select: { name: true } } },
     });
     lots.sort((a, b) => (a.expiresAt?.getTime() ?? Infinity) - (b.expiresAt?.getTime() ?? Infinity) || a.createdAt.getTime() - b.createdAt.getTime());
     return ok(res, lots);

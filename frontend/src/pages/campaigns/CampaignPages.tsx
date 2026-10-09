@@ -18,6 +18,7 @@ import { campaignService } from '@/services/campaignService';
 import { contactService } from '@/services/contactService';
 import { senderService } from '@/services/senderService';
 import { smsService } from '@/services/smsService';
+import { NetworkPicker } from '@/components/sms/Destinations';
 import { cn, fmtDateTime, fmtNumber, fmtRelative } from '@/utils/format';
 import { MessageEstimateBar, useMessageEstimate } from '@/components/sms/MessageEstimate';
 import { recipientColumns, MessageDrawer } from '../sms/SmsPages';
@@ -102,6 +103,7 @@ export function CampaignFormPage() {
   const [message, setMessage] = useState('');
   const [groupIds, setGroupIds] = useState<string[]>([]);
   const [phonesText, setPhonesText] = useState('');
+  const [networkIds, setNetworkIds] = useState<string[]>([]);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -112,6 +114,7 @@ export function CampaignFormPage() {
       setMessage(c.message);
       setGroupIds(c.groups?.map((g) => g.id) ?? []);
       setPhonesText((c.recipients ?? []).map((r) => r.phone).join('\n'));
+      setNetworkIds(c.networkIds ?? []);
     }
   }, [existing.data]);
   const usable = (senders.data ?? []).filter((s) => ['APPROVED', 'PENDING', 'UNDER_REVIEW'].includes(s.status));
@@ -120,7 +123,7 @@ export function CampaignFormPage() {
   }, [usable, senderId, editing]);
 
   const phones = useMemo(() => phonesText.split(/[\n,;]+/).map((p) => p.trim()).filter(Boolean), [phonesText]);
-  const quoteInput = useDebounce({ message, recipients: phones, groupIds }, 400);
+  const quoteInput = useDebounce({ message, recipients: phones, groupIds, networkIds: networkIds.length ? networkIds : undefined, senderId: senderId || undefined }, 400);
   const quote = useQuery({
     queryKey: ['sms-quote', quoteInput],
     queryFn: () => smsService.quote(quoteInput),
@@ -132,7 +135,7 @@ export function CampaignFormPage() {
 
   const save = useApiMutation(
     () => {
-      const body = { name, senderId, message, groupIds, phones };
+      const body = { name, senderId, message, groupIds, phones, networkIds: networkIds.length ? networkIds : null };
       return editing ? campaignService.update(id!, body) : campaignService.create(body);
     },
     { success: editing ? 'Campaign updated' : 'Draft saved', invalidate: [['campaigns'], ['campaign', id]], onSuccess: (c) => navigate(`/app/campaigns/${c.id}`) },
@@ -165,6 +168,7 @@ export function CampaignFormPage() {
               {usable.map((s) => <option key={s.id} value={s.id}>{s.name}{s.status !== 'APPROVED' ? ` (${s.status.toLowerCase().replace('_', ' ')})` : ''}</option>)}
             </Select>
           </Field>
+          <NetworkPicker selected={networkIds} onChange={setNetworkIds} label="Networks (optional)" />
           <div>
             <p className="label">Audience <span className="text-red-500">*</span></p>
             {groups.data?.length ? (
@@ -206,6 +210,15 @@ export function CampaignFormPage() {
               <div className="flex justify-between border-t border-slate-100 pt-2"><dt className="font-medium">Total SMS credits required</dt><dd className="text-lg font-semibold tabular-nums">{fmtNumber(q.totalCredits)}</dd></div>
               <div className="flex justify-between text-xs"><dt className="text-slate-500">Current balance</dt><dd className="tabular-nums">{fmtNumber(q.balance)}</dd></div>
               <div className="flex justify-between text-xs"><dt className="text-slate-500">Remaining after send</dt><dd className={cn('tabular-nums', !q.sufficientBalance && 'font-semibold text-red-600')}>{fmtNumber(q.remainingAfterSend)}</dd></div>
+              {(q.byNetwork ?? []).map((n) => (
+                <div key={n.networkId ?? 'other'} className="flex justify-between gap-2 text-xs">
+                  <dt className="text-slate-500">
+                    {n.networkName ?? 'Other numbers'} · {fmtNumber(n.recipients)}
+                    {n.sender && !n.sender.compatible && <span className="block text-red-600">Sender ID {n.sender.reason}</span>}
+                  </dt>
+                  <dd className={cn('tabular-nums', !n.sufficientCredits && 'font-semibold text-red-600')}>{fmtNumber(n.credits)} / {fmtNumber(n.availableCredits)} cr</dd>
+                </div>
+              ))}
             </dl>
           ) : (
             <p className="mt-4 text-sm text-slate-500">Add a message and recipients to see the cost.</p>

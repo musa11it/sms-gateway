@@ -1,8 +1,9 @@
-import type { Campaign } from '@prisma/client';
+import { Prisma, type Campaign } from '@prisma/client';
 import { prisma } from '../../config/prisma';
 import type { Actor, RequestMeta } from '../../types/actor';
 import { actorUserId } from '../../types/actor';
 import { AppError } from '../../utils/errors';
+import { stringList } from '../../utils/json';
 import { normalizePhone } from '../../utils/phone';
 import { audit } from '../audit-logs/audit.service';
 import { resolveAudience } from '../contacts/contact.service';
@@ -19,6 +20,18 @@ export interface CampaignInput {
   phones?: string[];
   scheduledAt?: Date | null;
   timezone?: string;
+  /** Destination networks the campaign is limited to (empty/null = any configured network). */
+  networkIds?: string[] | null;
+}
+
+/** Selected networks must exist and be active; stored as a JSON list (null = no restriction). */
+async function networkSelection(networkIds: string[] | null | undefined): Promise<Prisma.InputJsonValue | typeof Prisma.DbNull | undefined> {
+  if (networkIds === undefined) return undefined;
+  if (!networkIds?.length) return Prisma.DbNull;
+  const unique = [...new Set(networkIds)];
+  const found = await prisma.smsNetwork.count({ where: { id: { in: unique }, isActive: true } });
+  if (found !== unique.length) throw AppError.unprocessable('One or more selected networks are not available', 'NETWORK_NOT_AVAILABLE', [{ field: 'networkIds', message: 'Unknown or inactive network' }]);
+  return unique;
 }
 
 async function assertOwnedSender(organizationId: string, senderId: string) {
@@ -54,6 +67,7 @@ export async function createCampaign(organizationId: string, input: CampaignInpu
   await assertOwnedSender(organizationId, input.senderId);
   await assertSendable(await analyzeMessage(input.message));
   const recipients = await buildAudienceRows(organizationId, input);
+  const networkIds = await networkSelection(input.networkIds);
   const campaign = await prisma.$transaction(async (tx) => {
     const c = await tx.campaign.create({
       data: {
@@ -61,6 +75,7 @@ export async function createCampaign(organizationId: string, input: CampaignInpu
         name: input.name,
         senderId: input.senderId,
         message: input.message,
+        networkIds,
         scheduledAt: input.scheduledAt ?? null,
         timezone: input.timezone ?? 'Africa/Kigali',
         createdById: actorUserId(actor)!,
@@ -88,6 +103,7 @@ export async function updateCampaign(organizationId: string, id: string, input: 
   if (input.message !== undefined) await assertSendable(await analyzeMessage(input.message));
   const audienceChanged = input.groupIds !== undefined || input.contactIds !== undefined || input.phones !== undefined;
   const recipients = audienceChanged ? await buildAudienceRows(organizationId, input) : null;
+  const networkIds = await networkSelection(input.networkIds);
   return prisma.$transaction(async (tx) => {
     if (input.groupIds !== undefined) {
       await tx.campaignGroup.deleteMany({ where: { campaignId: id } });
@@ -99,7 +115,7 @@ export async function updateCampaign(organizationId: string, id: string, input: 
     }
     const updated = await tx.campaign.update({
       where: { id },
-      data: { name: input.name, senderId: input.senderId, message: input.message, scheduledAt: input.scheduledAt, timezone: input.timezone },
+      data: { name: input.name, senderId: input.senderId, message: input.message, scheduledAt: input.scheduledAt, timezone: input.timezone, networkIds },
     });
     await audit({ actor, action: 'CAMPAIGN_UPDATED', resource: 'campaign', resourceId: id, organizationId, meta }, tx);
     return updated;
@@ -148,6 +164,8 @@ export async function launchCampaign(organizationId: string, id: string, schedul
       campaignId: c.id,
       scheduledAt,
       timezone: c.timezone,
+      // Recipients outside the selected networks are skipped (never charged), like invalid numbers.
+      networkIds: c.networkIds ? stringList(c.networkIds) : null,
     });
     await prisma.campaign.update({
       where: { id },

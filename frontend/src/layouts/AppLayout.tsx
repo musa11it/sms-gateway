@@ -129,6 +129,7 @@ export function AppLayout() {
       icon: Wallet,
       children: [
         { label: 'Buy SMS', to: '/app/wallet/buy', visible: can('wallet.purchase') },
+        { label: 'Pricing', to: '/app/pricing' },
         { label: 'Transactions', to: '/app/wallet/transactions', visible: can('wallet.view') },
         { label: 'Payments', to: '/app/wallet/payments', visible: can('payments.view') },
         { label: 'Invoices', to: '/app/wallet/invoices', visible: can('invoices.view') },

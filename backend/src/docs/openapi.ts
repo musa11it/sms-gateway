@@ -119,6 +119,13 @@ export function buildOpenApi() {
             message: { type: 'string', minLength: 1, maxLength: 1600 },
             reference: { type: 'string', maxLength: 100, description: 'Your own reference, echoed back.' },
             scheduledAt: { type: 'string', format: 'date-time', description: 'Send later instead of immediately.' },
+            networks: {
+              type: 'array',
+              items: { type: 'string' },
+              maxItems: 50,
+              description: 'Optional. Destination network codes to send to (from `GET /public/destinations`, e.g. `RW-MTN`). Numbers on any other network are refused before anything is charged.',
+              examples: [['RW-MTN']],
+            },
           },
         },
         MessageRecipient: {
@@ -171,15 +178,17 @@ export function buildOpenApi() {
         post: {
           tags: ['Organization API'],
           summary: 'Send an SMS',
-          description: 'Sends to one or many recipients. Credits are charged from the organization’s wallet. Send an `Idempotency-Key` header to make retries safe.',
+          description:
+            'Sends to one or many recipients. Every number is validated against its country’s numbering plan and its destination network is identified by the longest matching prefix. Credits are charged per SMS segment from credits valid for each recipient’s network: credits bought for a network are only used for that network; general credits can be used for any network. The sender name must be approved, and approved on every destination network that requires sender registration. Send an `Idempotency-Key` header to make retries safe.',
           security: [{ OrganizationApiKey: ['sms.send'] }],
           parameters: [{ name: 'Idempotency-Key', in: 'header', required: false, description: '8–100 characters `[A-Za-z0-9_-]`. Repeating a request with the same key returns the original result.', schema: { type: 'string' } }],
           requestBody: { required: true, content: json(ref('SendSms'), { senderId: 'ABCFOOD', to: ['+250788123456'], message: 'Your order is ready', reference: 'order-1042' }) },
           responses: {
             201: { description: 'Accepted for delivery', content: json({ type: 'object', properties: { success: { const: true }, messageId: { type: 'string', format: 'uuid', description: 'Present when there is a single recipient.' }, data: { type: 'object', properties: { batchId: { type: 'string', format: 'uuid' }, status: { type: 'string' }, segments: { type: 'integer' }, encoding: { type: 'string' }, recipientCount: { type: 'integer' }, totalCredits: { type: 'integer' }, reference: { type: ['string', 'null'] }, scheduledAt: { type: ['string', 'null'], format: 'date-time' }, messages: { type: 'array', items: ref('MessageRecipient') } } } } }) },
             200: { description: 'Duplicate request (same `Idempotency-Key`) — the original result is returned' },
-            402: errorResponse('Not enough credits (`INSUFFICIENT_CREDITS`)'),
-            422: errorResponse('Validation failed, or the sender name is not approved'),
+            402: errorResponse('Not enough credits (`INSUFFICIENT_CREDITS`), or not enough credits valid for a destination network (`INSUFFICIENT_NETWORK_CREDITS`)'),
+            422: errorResponse('Validation failed (`INVALID_RECIPIENTS` lists each refused number), the sender name is not approved (`SENDER_NOT_APPROVED`) or not approved on a destination network (`SENDER_NOT_APPROVED_FOR_NETWORK`)'),
+            503: errorResponse('No provider can currently deliver to a destination (`PROVIDER_CAPACITY_UNAVAILABLE`); nothing was charged'),
             ...common,
           },
         },
@@ -197,8 +206,86 @@ export function buildOpenApi() {
         get: {
           tags: ['Organization API'],
           summary: 'Get the SMS credit balance',
+          description: '`balance` is the total. `general` credits can be used for any network; each entry of `networks` can only be used for that destination network.',
           security: [{ OrganizationApiKey: ['balance.read'] }],
-          responses: { 200: { description: 'Current balance', content: json({ type: 'object', properties: { success: { const: true }, data: { type: 'object', properties: { balance: { type: 'integer' }, unit: { const: 'credits' } } } } }, { success: true, data: { balance: 1250, unit: 'credits' } }) }, ...common },
+          responses: {
+            200: {
+              description: 'Current balance',
+              content: json(
+                {
+                  type: 'object',
+                  properties: {
+                    success: { const: true },
+                    data: {
+                      type: 'object',
+                      properties: {
+                        balance: { type: 'integer' },
+                        unit: { const: 'credits' },
+                        general: { type: 'integer' },
+                        networks: { type: 'array', items: { type: 'object', properties: { network: { type: 'string' }, name: { type: 'string' }, country: { type: 'string' }, credits: { type: 'integer' } } } },
+                      },
+                    },
+                  },
+                },
+                { success: true, data: { balance: 1250, unit: 'credits', general: 250, networks: [{ network: 'RW-MTN', name: 'MTN Rwanda', country: 'RW', credits: 1000 }] } },
+              ),
+            },
+            ...common,
+          },
+        },
+      },
+      '/public/destinations': {
+        get: {
+          tags: ['Organization API'],
+          summary: 'List destination countries and networks',
+          description: 'Countries and networks you can buy and send SMS to, with network codes (use them in `networks` when sending), availability and the price per SMS segment by quantity range.',
+          security: [{ OrganizationApiKey: ['balance.read'] }],
+          responses: {
+            200: {
+              description: 'Destinations',
+              content: json(
+                {
+                  type: 'object',
+                  properties: {
+                    success: { const: true },
+                    data: {
+                      type: 'object',
+                      properties: {
+                        currency: { type: 'string' },
+                        countries: {
+                          type: 'array',
+                          items: {
+                            type: 'object',
+                            properties: {
+                              country: { type: 'string' },
+                              name: { type: 'string' },
+                              callingCode: { type: ['string', 'null'] },
+                              networks: {
+                                type: 'array',
+                                items: {
+                                  type: 'object',
+                                  properties: {
+                                    network: { type: 'string' },
+                                    name: { type: 'string' },
+                                    available: { type: 'boolean' },
+                                    status: { type: 'string', enum: ['AVAILABLE', 'OUT_OF_STOCK', 'NO_ROUTE', 'NO_PRICE', 'MAINTENANCE', 'OUTBOUND_UNAVAILABLE'] },
+                                    fromPrice: { type: ['string', 'null'] },
+                                    senderRegistrationRequired: { type: 'boolean' },
+                                    tiers: { type: 'array', items: { type: 'object', properties: { minQuantity: { type: 'integer' }, maxQuantity: { type: ['integer', 'null'] }, unitPrice: { type: 'string' }, currency: { type: 'string' } } } },
+                                  },
+                                },
+                              },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              ),
+            },
+            ...common,
+          },
         },
       },
       '/integrations/finance/verifications': {

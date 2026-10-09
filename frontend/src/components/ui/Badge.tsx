@@ -45,6 +45,7 @@ const STATUS_COLORS: Record<string, BadgeColor> = {
   NEW: 'blue',
   HANDLED: 'green',
   INACTIVE: 'gray',
+  MAINTENANCE: 'amber',
   LOW: 'amber',
   EMPTY: 'red',
   OK: 'green',

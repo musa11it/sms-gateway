@@ -298,6 +298,19 @@ describe('edge cases', () => {
     expect(await snapshot()).toEqual(before);
   });
 
+  it('never shows provider cost, stock lots, routing notes or revenue accounting to customers', async () => {
+    await restock('MTN', 100, '6');
+    const { token, sender } = await createActiveOrg();
+    await buy(token, 100);
+    const { recipients } = await sendAccepted(token, sender.id, mtn(1));
+    const list = (await request(app).get('/api/v1/sms/messages').set(auth(token))).body.data[0];
+    const one = (await request(app).get(`/api/v1/sms/messages/${recipients[0].id}`).set(auth(token))).body.data;
+    for (const r of [list, one]) {
+      expect(r.id).toBe(recipients[0].id);
+      for (const k of ['providerCost', 'costLots', 'revenue', 'revenueLots', 'routingNote', 'providerId', 'routingRuleId', 'networkId', 'capacityReleased']) expect(r).not.toHaveProperty(k);
+    }
+  });
+
   it('keeps profit figures away from staff without profit.view', async () => {
     const support = await createStaff('SUPPORT');
     expect((await request(app).get('/api/v1/admin/finance/profit').set(auth(support.token))).status).toBe(403);

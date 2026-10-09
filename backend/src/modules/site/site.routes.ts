@@ -9,6 +9,8 @@ import { AppError } from '../../utils/errors';
 import { asyncHandler, created, ok, paginated, paginationSchema, parse, toSkipTake, uuidParam } from '../../utils/http';
 import { audit } from '../audit-logs/audit.service';
 import { notifyStaff } from '../notifications/notification.service';
+import { activeTiers } from '../pricing/pricing.service';
+import { countryDirectory, countryNetworks, destinationCatalog, quoteNetworkPurchase } from '../pricing/networkPricing.service';
 
 /** Public website API (no authentication). */
 export const siteRouter = Router();
@@ -22,15 +24,58 @@ const contactLimiter = rateLimit({
   handler: (_req, res) => res.status(429).json({ success: false, message: 'Too many messages. Please try again later.', code: 'RATE_LIMITED' }),
 });
 
-/** Active pricing ranges for the public pricing section — prices come from admin configuration. */
+/** Current general-credit price ranges (any network) — prices come from admin configuration. */
 siteRouter.get(
   '/pricing',
   asyncHandler(async (_req, res) => {
-    const tiers = await prisma.smsPricingTier.findMany({ where: { isActive: true }, orderBy: { minQuantity: 'asc' } });
+    const tiers = await activeTiers();
     return ok(
       res,
       tiers.map((t) => ({ id: t.id, name: t.name, minQuantity: t.minQuantity, maxQuantity: t.maxQuantity, unitPrice: t.unitPrice.toFixed(2), currency: t.currency })),
     );
+  }),
+);
+
+/** Public pricing page: countries, services, networks, customer selling prices and availability (never provider data). */
+siteRouter.get(
+  '/destinations',
+  asyncHandler(async (_req, res) => ok(res, await destinationCatalog(prisma, { includeUnavailableCountries: true }))),
+);
+
+const quoteLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 60,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  skip: () => isTest,
+  handler: (_req, res) => res.status(429).json({ success: false, message: 'Too many requests. Please slow down.', code: 'RATE_LIMITED' }),
+});
+
+/** Searchable country list (light: no prices per tier). `prefer` = ISO code or country name to open first. */
+siteRouter.get(
+  '/countries',
+  asyncHandler(async (req, res) => {
+    const q = parse(z.object({ search: z.string().trim().max(60).optional(), limit: z.coerce.number().int().min(1).max(50).optional(), prefer: z.string().trim().max(80).optional() }), req.query);
+    return ok(res, await countryDirectory(q));
+  }),
+);
+
+/** One country: its services, telecoms, prices and availability. */
+siteRouter.get(
+  '/countries/:isoCode',
+  asyncHandler(async (req, res) => {
+    const { isoCode } = parse(z.object({ isoCode: z.string().trim().length(2) }), req.params);
+    return ok(res, await countryNetworks(isoCode));
+  }),
+);
+
+/** Public price calculator: same engine as checkout, without account history (monthly-volume tiers count from zero). */
+siteRouter.post(
+  '/quote',
+  quoteLimiter,
+  asyncHandler(async (req, res) => {
+    const { items } = parse(z.object({ items: z.unknown() }).strict(), req.body);
+    return ok(res, await quoteNetworkPurchase(items));
   }),
 );
 

@@ -10,12 +10,14 @@ export interface SendPayload {
   scheduledAt?: string | null;
   timezone?: string;
   idempotencyKey?: string;
+  /** Destination networks to send to (recipients on other networks are refused). */
+  networkIds?: string[];
 }
 
 export const smsService = {
   /** Server-side encoding/segment analysis of a message (preview only). */
   estimate: (message: string) => post<MessageEstimate>('/sms/estimate', { message }),
-  quote: (body: { message: string; recipients?: string[]; contactIds?: string[]; groupIds?: string[] }) => post<Quote>('/sms/quote', body),
+  quote: (body: { message: string; recipients?: string[]; contactIds?: string[]; groupIds?: string[]; networkIds?: string[]; senderId?: string }) => post<Quote>('/sms/quote', body),
   send: (body: SendPayload) =>
     post<{ id: string; status: string; recipientCount: number; segments: number; totalCredits: number; skipped: { invalid: number; duplicates: number; optedOut: number } }>(
       '/sms/send',
